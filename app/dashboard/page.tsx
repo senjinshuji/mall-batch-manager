@@ -795,11 +795,15 @@ export default function DashboardPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis
                   dataKey="date"
-                  tick={{ fill: "#6b7280", fontSize: 12 }}
+                  tick={{ fill: "#6b7280", fontSize: 10 }}
                   tickFormatter={(value) => {
                     const date = new Date(value);
                     return `${date.getMonth() + 1}/${date.getDate()}`;
                   }}
+                  interval={0}
+                  angle={-45}
+                  textAnchor="end"
+                  height={50}
                 />
                 <YAxis
                   yAxisId="sales"
