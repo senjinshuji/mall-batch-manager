@@ -238,14 +238,6 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* 注意書き */}
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-        <p className="text-yellow-800 text-sm">
-          <strong>注意:</strong> API認証情報は安全に保管してください。
-          これらの情報は暗号化されてFirestoreに保存されます。
-        </p>
-      </div>
-
       {/* モール設定カード */}
       <div className="grid gap-6">
         {/* Amazon SP-API */}
