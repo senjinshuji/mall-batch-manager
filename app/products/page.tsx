@@ -1,15 +1,17 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Package, Plus, Trash2, Edit2, Save, X, Upload, Download, ChevronDown } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Save, X, Upload, Download, ChevronDown, RefreshCw } from "lucide-react";
 import {
   RegisteredProduct,
   MallProduct,
   mockAmazonProducts,
   mockRakutenProducts,
-  mockQoo10Products,
-  mockRegisteredProducts,
 } from "@/lib/mockData";
+import { db } from "@/lib/firebase";
+import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from "firebase/firestore";
+
+const BACKEND_URL = "https://mall-batch-manager-983678294034.asia-northeast1.run.app";
 
 type NewProduct = {
   productName: string;
@@ -18,9 +20,20 @@ type NewProduct = {
   qoo10Code: string;
 };
 
+type Qoo10Product = {
+  itemCode: string;
+  sellerCode: string;
+  itemTitle: string;
+  itemPrice: string;
+  itemQty: string;
+  itemStatus: string;
+};
+
 export default function ProductsPage() {
-  const [products, setProducts] = useState<RegisteredProduct[]>(mockRegisteredProducts);
+  const [products, setProducts] = useState<RegisteredProduct[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newProduct, setNewProduct] = useState<NewProduct>({
     productName: "",
@@ -38,26 +51,99 @@ export default function ProductsPage() {
   const [csvSuccess, setCsvSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleAddProduct = () => {
-    if (!newProduct.productName) return;
+  // Qoo10商品一覧をAPIから取得
+  const [qoo10Products, setQoo10Products] = useState<MallProduct[]>([]);
+  const [qoo10Loading, setQoo10Loading] = useState(true);
+  const [qoo10Error, setQoo10Error] = useState<string | null>(null);
 
-    const product: RegisteredProduct = {
-      id: `prod-${Date.now()}`,
-      ...newProduct,
-    };
+  // Firestoreから商品一覧を取得
+  useEffect(() => {
+    fetchProducts();
+    fetchQoo10Products();
+  }, []);
 
-    setProducts([...products, product]);
-    setNewProduct({
-      productName: "",
-      amazonCode: "",
-      rakutenCode: "",
-      qoo10Code: "",
-    });
-    setIsAdding(false);
+  const fetchProducts = async () => {
+    setIsLoading(true);
+    try {
+      const q = query(collection(db, "registered_products"), orderBy("createdAt", "desc"));
+      const snapshot = await getDocs(q);
+      const productsData = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as RegisteredProduct[];
+      setProducts(productsData);
+    } catch (error) {
+      console.error("商品一覧取得エラー:", error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleDeleteProduct = (id: string) => {
-    setProducts(products.filter((p) => p.id !== id));
+  const fetchQoo10Products = async () => {
+    setQoo10Loading(true);
+    setQoo10Error(null);
+    try {
+      const response = await fetch(`${BACKEND_URL}/qoo10/products-with-details`);
+      const data = await response.json();
+      if (data.success && data.products) {
+        // MallProduct形式に変換（商品コードを先頭に表示）
+        const formatted: MallProduct[] = data.products.map((p: Qoo10Product) => ({
+          code: p.itemCode,
+          name: `[${p.sellerCode}] ${p.itemTitle}`,
+        }));
+        setQoo10Products(formatted);
+      } else {
+        setQoo10Error(data.message || "Qoo10商品の取得に失敗しました");
+      }
+    } catch (error) {
+      console.error("Qoo10商品取得エラー:", error);
+      setQoo10Error("Qoo10商品の取得に失敗しました");
+    } finally {
+      setQoo10Loading(false);
+    }
+  };
+
+  const handleAddProduct = async () => {
+    if (!newProduct.productName) return;
+    setIsSaving(true);
+
+    try {
+      const docRef = await addDoc(collection(db, "registered_products"), {
+        ...newProduct,
+        createdAt: new Date(),
+      });
+
+      const product: RegisteredProduct = {
+        id: docRef.id,
+        ...newProduct,
+      };
+
+      setProducts([product, ...products]);
+      setNewProduct({
+        productName: "",
+        amazonCode: "",
+        rakutenCode: "",
+        qoo10Code: "",
+      });
+      setIsAdding(false);
+    } catch (error) {
+      console.error("商品登録エラー:", error);
+      alert("商品の登録に失敗しました");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteProduct = async (id: string) => {
+    if (!confirm("この商品を削除しますか？")) return;
+
+    try {
+      await deleteDoc(doc(db, "registered_products", id));
+      setProducts(products.filter((p) => p.id !== id));
+    } catch (error) {
+      console.error("商品削除エラー:", error);
+      alert("商品の削除に失敗しました");
+    }
   };
 
   const handleStartEdit = (product: RegisteredProduct) => {
@@ -70,18 +156,31 @@ export default function ProductsPage() {
     });
   };
 
-  const handleSaveEdit = (id: string) => {
-    setProducts(
-      products.map((p) =>
-        p.id === id
-          ? {
-              ...p,
-              ...editProduct,
-            }
-          : p
-      )
-    );
-    setEditingId(null);
+  const handleSaveEdit = async (id: string) => {
+    setIsSaving(true);
+    try {
+      await updateDoc(doc(db, "registered_products", id), {
+        ...editProduct,
+        updatedAt: new Date(),
+      });
+
+      setProducts(
+        products.map((p) =>
+          p.id === id
+            ? {
+                ...p,
+                ...editProduct,
+              }
+            : p
+        )
+      );
+      setEditingId(null);
+    } catch (error) {
+      console.error("商品更新エラー:", error);
+      alert("商品の更新に失敗しました");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleCancelEdit = () => {
@@ -216,7 +315,7 @@ export default function ProductsPage() {
 
     const selectedProduct = mallProducts.find((p) => p.code === value);
     const displayText = selectedProduct
-      ? `${selectedProduct.code} - ${selectedProduct.name}`
+      ? `${selectedProduct.code}: ${selectedProduct.name}`
       : "-- 選択してください --";
 
     const colorClasses: Record<string, string> = {
@@ -259,7 +358,7 @@ export default function ProductsPage() {
                   }}
                   className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${value === product.code ? "bg-blue-100 font-medium" : ""}`}
                 >
-                  {product.code} - {product.name}
+                  {product.code}: {product.name}
                 </button>
               ))}
             </div>
@@ -443,13 +542,33 @@ export default function ProductsPage() {
                 mallName="楽天"
                 mallColor="red"
               />
-              <ProductCodeDropdown
-                value={newProduct.qoo10Code}
-                onChange={(value) => setNewProduct({ ...newProduct, qoo10Code: value })}
-                mallProducts={mockQoo10Products}
-                mallName="Qoo10"
-                mallColor="blue"
-              />
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-gray-500">Qoo10</label>
+                  {qoo10Loading && (
+                    <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />
+                  )}
+                </div>
+                {qoo10Error ? (
+                  <div className="text-xs text-red-500 p-2 bg-red-50 rounded">
+                    {qoo10Error}
+                    <button
+                      onClick={fetchQoo10Products}
+                      className="ml-2 text-blue-600 hover:underline"
+                    >
+                      再取得
+                    </button>
+                  </div>
+                ) : (
+                  <ProductCodeDropdown
+                    value={newProduct.qoo10Code}
+                    onChange={(value) => setNewProduct({ ...newProduct, qoo10Code: value })}
+                    mallProducts={qoo10Products}
+                    mallName=""
+                    mallColor="blue"
+                  />
+                )}
+              </div>
             </div>
 
             <div className="flex gap-3 pt-2">
@@ -560,7 +679,7 @@ export default function ProductsPage() {
                                 qoo10Code: value,
                               })
                             }
-                            mallProducts={mockQoo10Products}
+                            mallProducts={qoo10Products}
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -630,7 +749,7 @@ export default function ProductsPage() {
                               <p className="text-xs text-gray-500 truncate max-w-[200px]">
                                 {getProductNameByCode(
                                   product.qoo10Code,
-                                  mockQoo10Products
+                                  qoo10Products
                                 )}
                               </p>
                             </div>

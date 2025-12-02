@@ -11,16 +11,35 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, Megaphone, Share2, ChevronDown } from "lucide-react";
-import {
-  getMockSalesData,
-  getDefaultDateRange,
-  calculateTotalSales,
-  calculateTotalAdCost,
-  calculateTotalExternalAdCost,
-  formatCurrency,
-  mockRegisteredProducts,
-} from "@/lib/mockData";
+import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw } from "lucide-react";
+import { db } from "@/lib/firebase";
+import { collection, query, orderBy, onSnapshot, Timestamp, getDocs } from "firebase/firestore";
+import { formatCurrency } from "@/lib/mockData";
+
+// 登録商品の型
+interface RegisteredProduct {
+  id: string;
+  productName: string;
+  amazonCode: string;
+  rakutenCode: string;
+  qoo10Code: string;
+}
+
+// Firestoreのデータ型
+interface SalesData {
+  id: string;
+  date: string;
+  amazon: number;
+  rakuten: number;
+  qoo10: number;
+  amazonAd: number;
+  rakutenAd: number;
+  qoo10Ad: number;
+  xAd: number;
+  tiktokAd: number;
+  status?: string;
+  createdAt?: Timestamp;
+}
 
 // モールのテーマカラー
 const MALL_COLORS = {
@@ -38,11 +57,29 @@ const EXTERNAL_AD_COLORS = {
   tiktok: "#FF0050",  // TikTok（ピンク）
 };
 
-export default function DashboardPage() {
-  const defaultRange = getDefaultDateRange();
+const BACKEND_URL = "https://mall-batch-manager-983678294034.asia-northeast1.run.app";
 
-  const [startDate, setStartDate] = useState(defaultRange.startDate);
-  const [endDate, setEndDate] = useState(defaultRange.endDate);
+// 商品別売上データの型
+interface ProductSalesData {
+  date: string;
+  sales: number;
+  quantity: number;
+}
+
+export default function DashboardPage() {
+  const [salesData, setSalesData] = useState<SalesData[]>([]);
+  const [registeredProducts, setRegisteredProducts] = useState<RegisteredProduct[]>([]);
+  const [productSalesData, setProductSalesData] = useState<ProductSalesData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [productLoading, setProductLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const today = new Date();
+  const thirtyDaysAgo = new Date(today);
+  thirtyDaysAgo.setDate(today.getDate() - 30);
+
+  const [startDate, setStartDate] = useState(thirtyDaysAgo.toISOString().split("T")[0]);
+  const [endDate, setEndDate] = useState(today.toISOString().split("T")[0]);
   const [selectedMalls, setSelectedMalls] = useState({
     amazon: true,
     rakuten: true,
@@ -61,6 +98,65 @@ export default function DashboardPage() {
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // Firestoreから登録商品を取得
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const q = query(collection(db, "registered_products"), orderBy("createdAt", "desc"));
+        const snapshot = await getDocs(q);
+        const products = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          productName: doc.data().productName || "",
+          amazonCode: doc.data().amazonCode || "",
+          rakutenCode: doc.data().rakutenCode || "",
+          qoo10Code: doc.data().qoo10Code || "",
+        })) as RegisteredProduct[];
+        setRegisteredProducts(products);
+      } catch (err) {
+        console.error("商品取得エラー:", err);
+      }
+    };
+    fetchProducts();
+  }, []);
+
+  // Firestoreからリアルタイムでデータを取得
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+
+    const salesRef = collection(db, "sales_data");
+    const q = query(salesRef, orderBy("date", "desc"));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const data: SalesData[] = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          date: doc.data().date || "",
+          amazon: doc.data().amazon || 0,
+          rakuten: doc.data().rakuten || 0,
+          qoo10: doc.data().qoo10 || 0,
+          amazonAd: doc.data().amazonAd || 0,
+          rakutenAd: doc.data().rakutenAd || 0,
+          qoo10Ad: doc.data().qoo10Ad || 0,
+          xAd: doc.data().xAd || 0,
+          tiktokAd: doc.data().tiktokAd || 0,
+          status: doc.data().status,
+          createdAt: doc.data().createdAt,
+        }));
+        setSalesData(data);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Firestore error:", err);
+        setError("データの取得に失敗しました");
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
   // ドロップダウン外クリックで閉じる
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -72,19 +168,95 @@ export default function DashboardPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // 商品選択時にQoo10 APIから売上データを取得
+  const fetchProductSales = async (product: RegisteredProduct) => {
+    if (!product.qoo10Code) {
+      setProductSalesData([]);
+      return;
+    }
+
+    setProductLoading(true);
+    try {
+      const response = await fetch(
+        `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
+      );
+      const data = await response.json();
+
+      if (data.success && data.dailySales) {
+        setProductSalesData(data.dailySales);
+      } else {
+        setProductSalesData([]);
+      }
+    } catch (err) {
+      console.error("商品別売上取得エラー:", err);
+      setProductSalesData([]);
+    } finally {
+      setProductLoading(false);
+    }
+  };
+
+  // 商品選択時の処理
+  const handleProductSelect = (productId: string) => {
+    setSelectedProduct(productId);
+    setIsProductDropdownOpen(false);
+
+    if (productId) {
+      const product = registeredProducts.find(p => p.id === productId);
+      if (product) {
+        fetchProductSales(product);
+      }
+    } else {
+      // ダミー商品選択時はクリア
+      setProductSalesData([]);
+    }
+  };
+
+  // 日付変更時に商品別売上を再取得
+  useEffect(() => {
+    if (selectedProduct && registeredProducts.length > 0) {
+      const product = registeredProducts.find(p => p.id === selectedProduct);
+      if (product && product.qoo10Code) {
+        setProductLoading(true);
+        fetch(
+          `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
+        )
+          .then(res => res.json())
+          .then(data => {
+            if (data.success && data.dailySales) {
+              setProductSalesData(data.dailySales);
+            } else {
+              setProductSalesData([]);
+            }
+          })
+          .catch(err => {
+            console.error("商品別売上取得エラー:", err);
+            setProductSalesData([]);
+          })
+          .finally(() => {
+            setProductLoading(false);
+          });
+      }
+    }
+  }, [startDate, endDate, selectedProduct, registeredProducts]);
+
   // 選択中の商品名を取得
   const selectedProductName = selectedProduct
-    ? mockRegisteredProducts.find((p) => p.id === selectedProduct)?.productName || ""
-    : "全商品";
+    ? registeredProducts.find((p) => p.id === selectedProduct)?.productName || ""
+    : "ダミー商品";
 
-  // 売上データを取得
-  const salesData = useMemo(() => {
-    return getMockSalesData(startDate, endDate);
-  }, [startDate, endDate]);
+  // 期間フィルタ済みデータ
+  const filteredData = useMemo(() => {
+    return salesData
+      .filter((item) => {
+        if (!item.date) return false;
+        return item.date >= startDate && item.date <= endDate;
+      })
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [salesData, startDate, endDate]);
 
   // グラフ用データ（広告費合計を追加）
   const chartData = useMemo(() => {
-    return salesData.map((day) => {
+    return filteredData.map((day) => {
       let totalAd = 0;
       if (showAdCost.amazon) totalAd += day.amazonAd;
       if (showAdCost.rakuten) totalAd += day.rakutenAd;
@@ -94,22 +266,52 @@ export default function DashboardPage() {
         totalAd,
       };
     });
-  }, [salesData, showAdCost]);
+  }, [filteredData, showAdCost]);
 
-  // 合計売上を計算
+  // 合計売上を計算（商品選択時はproductSalesDataを使用）
   const totalSales = useMemo(() => {
-    return calculateTotalSales(salesData, selectedMalls);
-  }, [salesData, selectedMalls]);
+    if (selectedProduct && productSalesData.length > 0) {
+      // 商品選択時：productSalesDataから合計
+      return productSalesData.reduce((sum, day) => sum + day.sales, 0);
+    }
+    // ダミー商品時：filteredDataから合計
+    return filteredData.reduce((sum, day) => {
+      let dayTotal = 0;
+      if (selectedMalls.amazon) dayTotal += day.amazon;
+      if (selectedMalls.rakuten) dayTotal += day.rakuten;
+      if (selectedMalls.qoo10) dayTotal += day.qoo10;
+      return sum + dayTotal;
+    }, 0);
+  }, [filteredData, selectedMalls, selectedProduct, productSalesData]);
 
-  // 合計広告費を計算
+  // 合計広告費を計算（商品選択時は0）
   const totalAdCost = useMemo(() => {
-    return calculateTotalAdCost(salesData, showAdCost);
-  }, [salesData, showAdCost]);
+    if (selectedProduct) {
+      // 商品選択時：広告費データなし
+      return 0;
+    }
+    return filteredData.reduce((sum, day) => {
+      let dayTotal = 0;
+      if (showAdCost.amazon) dayTotal += day.amazonAd;
+      if (showAdCost.rakuten) dayTotal += day.rakutenAd;
+      if (showAdCost.qoo10) dayTotal += day.qoo10Ad;
+      return sum + dayTotal;
+    }, 0);
+  }, [filteredData, showAdCost, selectedProduct]);
 
-  // 外部広告費合計を計算
+  // 外部広告費合計を計算（商品選択時は0）
   const totalExternalAdCost = useMemo(() => {
-    return calculateTotalExternalAdCost(salesData, showExternalAd);
-  }, [salesData, showExternalAd]);
+    if (selectedProduct) {
+      // 商品選択時：外部広告費データなし
+      return 0;
+    }
+    return filteredData.reduce((sum, day) => {
+      let dayTotal = 0;
+      if (showExternalAd.x) dayTotal += day.xAd;
+      if (showExternalAd.tiktok) dayTotal += day.tiktokAd;
+      return sum + dayTotal;
+    }, 0);
+  }, [filteredData, showExternalAd, selectedProduct]);
 
   // 広告費が1つでも選択されているか
   const isAnyAdSelected = showAdCost.amazon || showAdCost.rakuten || showAdCost.qoo10;
@@ -195,11 +397,39 @@ export default function DashboardPage() {
     return null;
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
+        <span className="ml-2 text-gray-600">データを読み込み中...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <p className="text-red-500 mb-2">{error}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+          >
+            再読み込み
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {/* ページタイトル */}
-      <div>
+      <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-gray-800">ダッシュボード</h1>
+        <div className="text-sm text-gray-500">
+          Firestoreデータ: {salesData.length}件
+        </div>
       </div>
 
       {/* フィルターエリア */}
@@ -253,25 +483,22 @@ export default function DashboardPage() {
                 <div className="absolute top-full left-0 mt-1 w-full bg-white border border-gray-300 rounded-lg shadow-lg z-50 max-h-60 overflow-auto">
                   <button
                     type="button"
-                    onClick={() => {
-                      setSelectedProduct("");
-                      setIsProductDropdownOpen(false);
-                    }}
+                    onClick={() => handleProductSelect("")}
                     className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${selectedProduct === "" ? "bg-blue-100 font-medium" : ""}`}
                   >
-                    全商品
+                    ダミー商品
                   </button>
-                  {mockRegisteredProducts.map((product) => (
+                  {registeredProducts.map((product) => (
                     <button
                       key={product.id}
                       type="button"
-                      onClick={() => {
-                        setSelectedProduct(product.id);
-                        setIsProductDropdownOpen(false);
-                      }}
+                      onClick={() => handleProductSelect(product.id)}
                       className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${selectedProduct === product.id ? "bg-blue-100 font-medium" : ""}`}
                     >
                       {product.productName}
+                      {product.qoo10Code && (
+                        <span className="ml-2 text-xs text-blue-500">Qoo10</span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -467,12 +694,88 @@ export default function DashboardPage() {
       {/* グラフエリア */}
       <div className="bg-white rounded-xl shadow-sm p-4">
         <h2 className="text-base font-semibold text-gray-700 mb-2">
-          日次売上・広告費推移
+          {selectedProduct ? `${selectedProductName} - 日次売上推移` : "日次売上・広告費推移"}
+          {productLoading && (
+            <RefreshCw className="inline-block ml-2 w-4 h-4 animate-spin text-blue-500" />
+          )}
         </h2>
 
-        {chartData.length === 0 ? (
+        {/* 商品選択時は商品別グラフを表示 */}
+        {selectedProduct ? (
+          productSalesData.length === 0 ? (
+            <div className="h-72 flex items-center justify-center text-gray-500">
+              <div className="text-center">
+                {productLoading ? (
+                  <p>データを取得中...</p>
+                ) : (
+                  <>
+                    <p>この商品の売上データがありません</p>
+                    <p className="text-sm mt-2">Qoo10コードが設定されていないか、指定期間に注文がありません</p>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart
+                  data={productSalesData}
+                  margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fill: "#6b7280", fontSize: 12 }}
+                    tickFormatter={(value) => {
+                      const date = new Date(value);
+                      return `${date.getMonth() + 1}/${date.getDate()}`;
+                    }}
+                  />
+                  <YAxis
+                    tick={{ fill: "#6b7280", fontSize: 12 }}
+                    tickFormatter={(value) =>
+                      `¥${(value / 10000).toFixed(0)}万`
+                    }
+                  />
+                  <Tooltip
+                    content={({ active, payload, label }) => {
+                      if (active && payload && payload.length) {
+                        return (
+                          <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
+                            <p className="font-semibold text-gray-700 mb-2">{label}</p>
+                            <p style={{ color: MALL_COLORS.qoo10 }} className="text-sm">
+                              Qoo10: {formatCurrency(payload[0]?.value as number || 0)}
+                            </p>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Bar
+                    dataKey="sales"
+                    fill={MALL_COLORS.qoo10}
+                    barSize={30}
+                    radius={[4, 4, 0, 0]}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+
+              {/* カスタム凡例 */}
+              <div className="flex flex-wrap justify-center gap-4 mt-2 text-sm">
+                <div className="flex items-center gap-1">
+                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.qoo10 }} />
+                  <span>Qoo10</span>
+                </div>
+              </div>
+            </div>
+          )
+        ) : chartData.length === 0 ? (
           <div className="h-72 flex items-center justify-center text-gray-500">
-            データがありません
+            <div className="text-center">
+              <p>データがありません</p>
+              <p className="text-sm mt-2">バックエンドの /scrape エンドポイントを呼び出してデータを追加してください</p>
+            </div>
           </div>
         ) : (
           <div className="h-72">
