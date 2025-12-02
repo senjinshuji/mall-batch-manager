@@ -389,7 +389,7 @@ export default function SettingsPage() {
               <p className="font-medium mb-1">RMS API認証情報の取得方法:</p>
               <ol className="list-decimal list-inside space-y-1">
                 <li>RMS (楽天市場店舗管理システム) にログイン</li>
-                <li>2:店舗様向け情報・サービス → 5:WEB APIサービス</li>
+                <li>店舗様向け情報・サービス → 6:WEB APIサービス</li>
                 <li>サービスシークレットとライセンスキーを取得</li>
               </ol>
             </div>
