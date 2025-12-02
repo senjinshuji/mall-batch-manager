@@ -5,18 +5,30 @@ import { Save, Eye, EyeOff, Key, RefreshCw, CheckCircle, AlertCircle } from "luc
 import { db } from "@/lib/firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 
-type MallCredentials = {
-  id: string;
-  password: string;
+// 楽天RMS認証情報
+type RakutenCredentials = {
+  serviceSecret: string;
+  licenseKey: string;
 };
 
+// Amazon SP-API認証情報
+type AmazonCredentials = {
+  sellerId: string;
+  lwaClientId: string;
+  lwaClientSecret: string;
+  refreshToken: string;
+  awsAccessKey: string;
+  awsSecretKey: string;
+};
+
+// Qoo10認証情報
 type Qoo10Credentials = {
   apiKey: string;
 };
 
 type Credentials = {
-  amazon: MallCredentials;
-  rakuten: MallCredentials;
+  amazon: AmazonCredentials;
+  rakuten: RakutenCredentials;
   qoo10: Qoo10Credentials;
 };
 
@@ -26,35 +38,52 @@ const MALL_INFO = {
     color: "#FF9900",
     bgColor: "bg-orange-50",
     borderColor: "border-orange-200",
-    authType: "id_password" as const,
   },
   rakuten: {
     name: "楽天",
     color: "#BF0000",
     bgColor: "bg-red-50",
     borderColor: "border-red-200",
-    authType: "id_password" as const,
   },
   qoo10: {
     name: "Qoo10",
     color: "#3266CC",
     bgColor: "bg-blue-50",
     borderColor: "border-blue-200",
-    authType: "api_key" as const,
+  },
+};
+
+const initialCredentials: Credentials = {
+  amazon: {
+    sellerId: "",
+    lwaClientId: "",
+    lwaClientSecret: "",
+    refreshToken: "",
+    awsAccessKey: "",
+    awsSecretKey: "",
+  },
+  rakuten: {
+    serviceSecret: "",
+    licenseKey: "",
+  },
+  qoo10: {
+    apiKey: "",
   },
 };
 
 export default function SettingsPage() {
-  const [credentials, setCredentials] = useState<Credentials>({
-    amazon: { id: "", password: "" },
-    rakuten: { id: "", password: "" },
-    qoo10: { apiKey: "" },
-  });
+  const [credentials, setCredentials] = useState<Credentials>(initialCredentials);
 
-  const [showPasswords, setShowPasswords] = useState({
-    amazon: false,
-    rakuten: false,
-    qoo10: false,
+  const [showSecrets, setShowSecrets] = useState({
+    // Amazon
+    lwaClientSecret: false,
+    refreshToken: false,
+    awsSecretKey: false,
+    // Rakuten
+    serviceSecret: false,
+    licenseKey: false,
+    // Qoo10
+    qoo10ApiKey: false,
   });
 
   const [saveStatus, setSaveStatus] = useState<{
@@ -75,9 +104,9 @@ export default function SettingsPage() {
         if (docSnap.exists()) {
           const data = docSnap.data();
           setCredentials({
-            amazon: data.amazon || { id: "", password: "" },
-            rakuten: data.rakuten || { id: "", password: "" },
-            qoo10: data.qoo10 || { apiKey: "" },
+            amazon: data.amazon || initialCredentials.amazon,
+            rakuten: data.rakuten || initialCredentials.rakuten,
+            qoo10: data.qoo10 || initialCredentials.qoo10,
           });
         }
       } catch (error) {
@@ -90,15 +119,21 @@ export default function SettingsPage() {
     loadSettings();
   }, []);
 
-  const handleChange = (
-    mall: "amazon" | "rakuten",
-    field: keyof MallCredentials,
-    value: string
-  ) => {
+  const handleAmazonChange = (field: keyof AmazonCredentials, value: string) => {
     setCredentials((prev) => ({
       ...prev,
-      [mall]: {
-        ...prev[mall],
+      amazon: {
+        ...prev.amazon,
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleRakutenChange = (field: keyof RakutenCredentials, value: string) => {
+    setCredentials((prev) => ({
+      ...prev,
+      rakuten: {
+        ...prev.rakuten,
         [field]: value,
       },
     }));
@@ -111,10 +146,10 @@ export default function SettingsPage() {
     }));
   };
 
-  const togglePasswordVisibility = (mall: keyof typeof showPasswords) => {
-    setShowPasswords((prev) => ({
+  const toggleVisibility = (field: keyof typeof showSecrets) => {
+    setShowSecrets((prev) => ({
       ...prev,
-      [mall]: !prev[mall],
+      [field]: !prev[field],
     }));
   };
 
@@ -141,6 +176,49 @@ export default function SettingsPage() {
     }
   };
 
+  // 秘密情報入力フィールドのコンポーネント
+  const SecretInput = ({
+    id,
+    label,
+    value,
+    onChange,
+    showKey,
+    placeholder,
+  }: {
+    id: string;
+    label: string;
+    value: string;
+    onChange: (value: string) => void;
+    showKey: keyof typeof showSecrets;
+    placeholder: string;
+  }) => (
+    <div>
+      <label htmlFor={id} className="block text-sm font-medium text-gray-600 mb-1">
+        <span className="flex items-center gap-1">
+          <Key size={14} />
+          {label}
+        </span>
+      </label>
+      <div className="relative">
+        <input
+          type={showSecrets[showKey] ? "text" : "password"}
+          id={id}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm"
+        />
+        <button
+          type="button"
+          onClick={() => toggleVisibility(showKey)}
+          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+        >
+          {showSecrets[showKey] ? <EyeOff size={18} /> : <Eye size={18} />}
+        </button>
+      </div>
+    </div>
+  );
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -156,115 +234,165 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-800">媒体設定</h1>
         <p className="text-gray-600 mt-1">
-          各モールの認証情報を登録してください
+          各モールのAPI認証情報を登録してください
         </p>
       </div>
 
       {/* 注意書き */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <p className="text-blue-800 text-sm">
-          <strong>Qoo10:</strong> APIキーを入力することで、注文データを自動取得できます。
-          APIキーはQoo10セラー管理画面から取得してください。
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+        <p className="text-yellow-800 text-sm">
+          <strong>注意:</strong> API認証情報は安全に保管してください。
+          これらの情報は暗号化されてFirestoreに保存されます。
         </p>
       </div>
 
       {/* モール設定カード */}
-      <div className="grid gap-6 md:grid-cols-3">
-        {/* Amazon */}
+      <div className="grid gap-6">
+        {/* Amazon SP-API */}
         <div className={`bg-white rounded-xl shadow-sm border-2 ${MALL_INFO.amazon.borderColor} overflow-hidden`}>
           <div className={`${MALL_INFO.amazon.bgColor} px-6 py-4 border-b ${MALL_INFO.amazon.borderColor}`}>
-            <h3 className="text-lg font-bold" style={{ color: MALL_INFO.amazon.color }}>
-              {MALL_INFO.amazon.name}
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-bold" style={{ color: MALL_INFO.amazon.color }}>
+                {MALL_INFO.amazon.name}
+              </h3>
+              <span className="px-2 py-0.5 bg-orange-600 text-white text-xs rounded-full">
+                SP-API
+              </span>
+            </div>
           </div>
-          <div className="p-6 space-y-4">
-            <div>
-              <label htmlFor="amazon-id" className="block text-sm font-medium text-gray-600 mb-1">
-                ID
-              </label>
-              <input
-                type="text"
-                id="amazon-id"
-                value={credentials.amazon.id}
-                onChange={(e) => handleChange("amazon", "id", e.target.value)}
-                placeholder="ログインIDを入力"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+          <div className="p-6">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {/* 出品者ID */}
+              <div>
+                <label htmlFor="amazon-seller-id" className="block text-sm font-medium text-gray-600 mb-1">
+                  出品者ID (Seller ID)
+                </label>
+                <input
+                  type="text"
+                  id="amazon-seller-id"
+                  value={credentials.amazon.sellerId}
+                  onChange={(e) => handleAmazonChange("sellerId", e.target.value)}
+                  placeholder="A1B2C3D4E5F6G7"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              {/* LWA Client ID */}
+              <div>
+                <label htmlFor="amazon-lwa-client-id" className="block text-sm font-medium text-gray-600 mb-1">
+                  LWA Client ID
+                </label>
+                <input
+                  type="text"
+                  id="amazon-lwa-client-id"
+                  value={credentials.amazon.lwaClientId}
+                  onChange={(e) => handleAmazonChange("lwaClientId", e.target.value)}
+                  placeholder="amzn1.application-oa2-client.xxx"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              {/* LWA Client Secret */}
+              <SecretInput
+                id="amazon-lwa-client-secret"
+                label="LWA Client Secret"
+                value={credentials.amazon.lwaClientSecret}
+                onChange={(v) => handleAmazonChange("lwaClientSecret", v)}
+                showKey="lwaClientSecret"
+                placeholder="クライアントシークレットを入力"
+              />
+
+              {/* Refresh Token */}
+              <SecretInput
+                id="amazon-refresh-token"
+                label="Refresh Token"
+                value={credentials.amazon.refreshToken}
+                onChange={(v) => handleAmazonChange("refreshToken", v)}
+                showKey="refreshToken"
+                placeholder="リフレッシュトークンを入力"
+              />
+
+              {/* AWS Access Key */}
+              <div>
+                <label htmlFor="amazon-aws-access-key" className="block text-sm font-medium text-gray-600 mb-1">
+                  AWS Access Key
+                </label>
+                <input
+                  type="text"
+                  id="amazon-aws-access-key"
+                  value={credentials.amazon.awsAccessKey}
+                  onChange={(e) => handleAmazonChange("awsAccessKey", e.target.value)}
+                  placeholder="AKIAXXXXXXXXXXXXXXXX"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm"
+                />
+              </div>
+
+              {/* AWS Secret Key */}
+              <SecretInput
+                id="amazon-aws-secret-key"
+                label="AWS Secret Key"
+                value={credentials.amazon.awsSecretKey}
+                onChange={(v) => handleAmazonChange("awsSecretKey", v)}
+                showKey="awsSecretKey"
+                placeholder="AWSシークレットキーを入力"
               />
             </div>
-            <div>
-              <label htmlFor="amazon-password" className="block text-sm font-medium text-gray-600 mb-1">
-                パスワード
-              </label>
-              <div className="relative">
-                <input
-                  type={showPasswords.amazon ? "text" : "password"}
-                  id="amazon-password"
-                  value={credentials.amazon.password}
-                  onChange={(e) => handleChange("amazon", "password", e.target.value)}
-                  placeholder="パスワードを入力"
-                  className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => togglePasswordVisibility("amazon")}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  {showPasswords.amazon ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
+
+            <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 mt-4">
+              <p className="font-medium mb-1">SP-API認証情報の取得方法:</p>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>Amazon Seller Centralにログイン</li>
+                <li>アプリとサービス → アプリの開発 でアプリを作成</li>
+                <li>AWS IAMでSP-API用のユーザーを作成</li>
+                <li>上記の情報を入力してください</li>
+              </ol>
             </div>
-            <p className="text-xs text-gray-400">
-              ※ Amazon/楽天のスクレイピングは今後実装予定
-            </p>
           </div>
         </div>
 
-        {/* 楽天 */}
+        {/* 楽天 RMS */}
         <div className={`bg-white rounded-xl shadow-sm border-2 ${MALL_INFO.rakuten.borderColor} overflow-hidden`}>
           <div className={`${MALL_INFO.rakuten.bgColor} px-6 py-4 border-b ${MALL_INFO.rakuten.borderColor}`}>
-            <h3 className="text-lg font-bold" style={{ color: MALL_INFO.rakuten.color }}>
-              {MALL_INFO.rakuten.name}
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-bold" style={{ color: MALL_INFO.rakuten.color }}>
+                {MALL_INFO.rakuten.name}
+              </h3>
+              <span className="px-2 py-0.5 bg-red-600 text-white text-xs rounded-full">
+                RMS API
+              </span>
+            </div>
           </div>
-          <div className="p-6 space-y-4">
-            <div>
-              <label htmlFor="rakuten-id" className="block text-sm font-medium text-gray-600 mb-1">
-                ID
-              </label>
-              <input
-                type="text"
-                id="rakuten-id"
-                value={credentials.rakuten.id}
-                onChange={(e) => handleChange("rakuten", "id", e.target.value)}
-                placeholder="ログインIDを入力"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+          <div className="p-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              {/* Service Secret */}
+              <SecretInput
+                id="rakuten-service-secret"
+                label="serviceSecret (サービスシークレット)"
+                value={credentials.rakuten.serviceSecret}
+                onChange={(v) => handleRakutenChange("serviceSecret", v)}
+                showKey="serviceSecret"
+                placeholder="サービスシークレットを入力"
+              />
+
+              {/* License Key */}
+              <SecretInput
+                id="rakuten-license-key"
+                label="licenseKey (ライセンスキー)"
+                value={credentials.rakuten.licenseKey}
+                onChange={(v) => handleRakutenChange("licenseKey", v)}
+                showKey="licenseKey"
+                placeholder="ライセンスキーを入力"
               />
             </div>
-            <div>
-              <label htmlFor="rakuten-password" className="block text-sm font-medium text-gray-600 mb-1">
-                パスワード
-              </label>
-              <div className="relative">
-                <input
-                  type={showPasswords.rakuten ? "text" : "password"}
-                  id="rakuten-password"
-                  value={credentials.rakuten.password}
-                  onChange={(e) => handleChange("rakuten", "password", e.target.value)}
-                  placeholder="パスワードを入力"
-                  className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => togglePasswordVisibility("rakuten")}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  {showPasswords.rakuten ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
+
+            <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 mt-4">
+              <p className="font-medium mb-1">RMS API認証情報の取得方法:</p>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>RMS (楽天市場店舗管理システム) にログイン</li>
+                <li>2:店舗様向け情報・サービス → 5:WEB APIサービス</li>
+                <li>サービスシークレットとライセンスキーを取得</li>
+              </ol>
             </div>
-            <p className="text-xs text-gray-400">
-              ※ Amazon/楽天のスクレイピングは今後実装予定
-            </p>
           </div>
         </div>
 
@@ -280,33 +408,19 @@ export default function SettingsPage() {
               </span>
             </div>
           </div>
-          <div className="p-6 space-y-4">
-            <div>
-              <label htmlFor="qoo10-apikey" className="block text-sm font-medium text-gray-600 mb-1">
-                <span className="flex items-center gap-1">
-                  <Key size={14} />
-                  APIキー
-                </span>
-              </label>
-              <div className="relative">
-                <input
-                  type={showPasswords.qoo10 ? "text" : "password"}
-                  id="qoo10-apikey"
-                  value={credentials.qoo10.apiKey}
-                  onChange={(e) => handleQoo10Change(e.target.value)}
-                  placeholder="Qoo10 APIキーを入力"
-                  className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => togglePasswordVisibility("qoo10")}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  {showPasswords.qoo10 ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
+          <div className="p-6">
+            <div className="max-w-md">
+              <SecretInput
+                id="qoo10-apikey"
+                label="APIキー"
+                value={credentials.qoo10.apiKey}
+                onChange={handleQoo10Change}
+                showKey="qoo10ApiKey"
+                placeholder="Qoo10 APIキーを入力"
+              />
             </div>
-            <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600">
+
+            <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 mt-4">
               <p className="font-medium mb-1">APIキーの取得方法:</p>
               <ol className="list-decimal list-inside space-y-1">
                 <li>Qoo10セラー管理画面にログイン</li>
