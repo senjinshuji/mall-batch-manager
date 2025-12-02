@@ -736,8 +736,7 @@ export default function DashboardPage() {
                     tickFormatter={(value) =>
                       `¥${(value / 10000).toFixed(0)}万`
                     }
-                    domain={[0, 'auto']}
-                    allowDataOverflow={false}
+                    domain={[0, (dataMax: number) => Math.ceil(dataMax * 1.1 / 10000) * 10000]}
                   />
                   <Tooltip
                     content={({ active, payload, label }) => {
