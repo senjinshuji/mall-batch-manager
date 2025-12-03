@@ -9,6 +9,8 @@
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-sts": "^3.943.0",
+    "axios": "^1.13.2",
     "express": "^4.18.2",
     "firebase-admin": "^12.0.0",
     "playwright": "^1.57.0"

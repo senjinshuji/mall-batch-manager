@@ -5,8 +5,6 @@ import { Package, Plus, Trash2, Edit2, Save, X, Upload, Download, ChevronDown, R
 import {
   RegisteredProduct,
   MallProduct,
-  mockAmazonProducts,
-  mockRakutenProducts,
 } from "@/lib/mockData";
 import { db } from "@/lib/firebase";
 import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from "firebase/firestore";
@@ -51,7 +49,15 @@ export default function ProductsPage() {
   const [csvSuccess, setCsvSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Qoo10商品一覧をAPIから取得
+  // 各モール商品一覧をAPIから取得
+  const [amazonProducts, setAmazonProducts] = useState<MallProduct[]>([]);
+  const [amazonLoading, setAmazonLoading] = useState(true);
+  const [amazonError, setAmazonError] = useState<string | null>(null);
+
+  const [rakutenProducts, setRakutenProducts] = useState<MallProduct[]>([]);
+  const [rakutenLoading, setRakutenLoading] = useState(true);
+  const [rakutenError, setRakutenError] = useState<string | null>(null);
+
   const [qoo10Products, setQoo10Products] = useState<MallProduct[]>([]);
   const [qoo10Loading, setQoo10Loading] = useState(true);
   const [qoo10Error, setQoo10Error] = useState<string | null>(null);
@@ -59,6 +65,8 @@ export default function ProductsPage() {
   // Firestoreから商品一覧を取得
   useEffect(() => {
     fetchProducts();
+    fetchAmazonProducts();
+    fetchRakutenProducts();
     fetchQoo10Products();
   }, []);
 
@@ -76,6 +84,52 @@ export default function ProductsPage() {
       console.error("商品一覧取得エラー:", error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchAmazonProducts = async () => {
+    setAmazonLoading(true);
+    setAmazonError(null);
+    try {
+      const response = await fetch(`${BACKEND_URL}/amazon/products`);
+      const data = await response.json();
+      if (data.success && data.products) {
+        const formatted: MallProduct[] = data.products.map((p: { code: string; name: string; sku?: string }) => ({
+          code: p.sku || p.code,
+          name: p.name,
+        }));
+        setAmazonProducts(formatted);
+      } else {
+        setAmazonError(data.message || "Amazon商品の取得に失敗しました");
+      }
+    } catch (error) {
+      console.error("Amazon商品取得エラー:", error);
+      setAmazonError("Amazon商品の取得に失敗しました");
+    } finally {
+      setAmazonLoading(false);
+    }
+  };
+
+  const fetchRakutenProducts = async () => {
+    setRakutenLoading(true);
+    setRakutenError(null);
+    try {
+      const response = await fetch(`${BACKEND_URL}/rakuten/products`);
+      const data = await response.json();
+      if (data.success && data.products) {
+        const formatted: MallProduct[] = data.products.map((p: { code: string; name: string }) => ({
+          code: p.code,
+          name: p.name,
+        }));
+        setRakutenProducts(formatted);
+      } else {
+        setRakutenError(data.message || "楽天商品の取得に失敗しました");
+      }
+    } catch (error) {
+      console.error("楽天商品取得エラー:", error);
+      setRakutenError("楽天商品の取得に失敗しました");
+    } finally {
+      setRakutenLoading(false);
     }
   };
 
@@ -528,20 +582,65 @@ export default function ProductsPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <ProductCodeDropdown
-                value={newProduct.amazonCode}
-                onChange={(value) => setNewProduct({ ...newProduct, amazonCode: value })}
-                mallProducts={mockAmazonProducts}
-                mallName="Amazon"
-                mallColor="orange"
-              />
-              <ProductCodeDropdown
-                value={newProduct.rakutenCode}
-                onChange={(value) => setNewProduct({ ...newProduct, rakutenCode: value })}
-                mallProducts={mockRakutenProducts}
-                mallName="楽天"
-                mallColor="red"
-              />
+              {/* Amazon */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-gray-500">Amazon</label>
+                  {amazonLoading && (
+                    <RefreshCw className="w-3 h-3 text-orange-500 animate-spin" />
+                  )}
+                </div>
+                {amazonError ? (
+                  <div className="text-xs text-red-500 p-2 bg-red-50 rounded">
+                    {amazonError}
+                    <button
+                      onClick={fetchAmazonProducts}
+                      className="ml-2 text-blue-600 hover:underline"
+                    >
+                      再取得
+                    </button>
+                  </div>
+                ) : (
+                  <ProductCodeDropdown
+                    value={newProduct.amazonCode}
+                    onChange={(value) => setNewProduct({ ...newProduct, amazonCode: value })}
+                    mallProducts={amazonProducts}
+                    mallName=""
+                    mallColor="orange"
+                  />
+                )}
+              </div>
+
+              {/* 楽天 */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-gray-500">楽天</label>
+                  {rakutenLoading && (
+                    <RefreshCw className="w-3 h-3 text-red-500 animate-spin" />
+                  )}
+                </div>
+                {rakutenError ? (
+                  <div className="text-xs text-red-500 p-2 bg-red-50 rounded">
+                    {rakutenError}
+                    <button
+                      onClick={fetchRakutenProducts}
+                      className="ml-2 text-blue-600 hover:underline"
+                    >
+                      再取得
+                    </button>
+                  </div>
+                ) : (
+                  <ProductCodeDropdown
+                    value={newProduct.rakutenCode}
+                    onChange={(value) => setNewProduct({ ...newProduct, rakutenCode: value })}
+                    mallProducts={rakutenProducts}
+                    mallName=""
+                    mallColor="red"
+                  />
+                )}
+              </div>
+
+              {/* Qoo10 */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-medium text-gray-500">Qoo10</label>
@@ -655,7 +754,7 @@ export default function ProductsPage() {
                                 amazonCode: value,
                               })
                             }
-                            mallProducts={mockAmazonProducts}
+                            mallProducts={amazonProducts}
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -667,7 +766,7 @@ export default function ProductsPage() {
                                 rakutenCode: value,
                               })
                             }
-                            mallProducts={mockRakutenProducts}
+                            mallProducts={rakutenProducts}
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -715,7 +814,7 @@ export default function ProductsPage() {
                               <p className="text-xs text-gray-500 truncate max-w-[200px]">
                                 {getProductNameByCode(
                                   product.amazonCode,
-                                  mockAmazonProducts
+                                  amazonProducts
                                 )}
                               </p>
                             </div>
@@ -732,7 +831,7 @@ export default function ProductsPage() {
                               <p className="text-xs text-gray-500 truncate max-w-[200px]">
                                 {getProductNameByCode(
                                   product.rakutenCode,
-                                  mockRakutenProducts
+                                  rakutenProducts
                                 )}
                               </p>
                             </div>

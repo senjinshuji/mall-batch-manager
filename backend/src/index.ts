@@ -1257,6 +1257,187 @@ app.get("/qoo10/product-sales/:itemCode", async (req: Request, res: Response) =>
 
 // ==================== End Qoo10 API連携 ====================
 
+// ==================== Amazon SP-API連携 ====================
+
+// Amazon SP-APIアクセストークン取得
+async function getAmazonAccessToken(credentials: {
+  lwaClientId: string;
+  lwaClientSecret: string;
+  refreshToken: string;
+}): Promise<string> {
+  const axios = (await import('axios')).default;
+
+  const response = await axios.post(
+    'https://api.amazon.com/auth/o2/token',
+    new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: credentials.refreshToken,
+      client_id: credentials.lwaClientId,
+      client_secret: credentials.lwaClientSecret,
+    }).toString(),
+    {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    }
+  );
+
+  return response.data.access_token;
+}
+
+// Amazon商品一覧取得エンドポイント
+app.get("/amazon/products", async (req: Request, res: Response) => {
+  try {
+    console.log("Amazon products endpoint triggered");
+    const axios = (await import('axios')).default;
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const amazonCreds = settings?.amazon;
+
+    if (!amazonCreds?.sellerId || !amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Amazon SP-APIの認証情報が不完全です。",
+      });
+    }
+
+    // アクセストークン取得
+    const accessToken = await getAmazonAccessToken({
+      lwaClientId: amazonCreds.lwaClientId,
+      lwaClientSecret: amazonCreds.lwaClientSecret,
+      refreshToken: amazonCreds.refreshToken,
+    });
+
+    // SP-API: Catalog Items API を使用して商品一覧取得
+    // まず出品情報を取得
+    const listingsResponse = await axios.get(
+      `https://sellingpartnerapi-fe.amazon.com/listings/2021-08-01/items/${amazonCreds.sellerId}`,
+      {
+        headers: {
+          'x-amz-access-token': accessToken,
+          'Content-Type': 'application/json',
+        },
+        params: {
+          marketplaceIds: 'A1VC38T7YXB528', // Amazon.co.jp
+          includedData: 'summaries',
+        },
+      }
+    );
+
+    // 商品情報を整形
+    const products = (listingsResponse.data?.items || []).map((item: any) => ({
+      code: item.sku || item.asin,
+      name: item.summaries?.[0]?.itemName || item.sku || 'Unknown',
+      asin: item.asin,
+      sku: item.sku,
+    }));
+
+    res.json({
+      success: true,
+      products,
+      count: products.length,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching Amazon products:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "Amazon商品一覧の取得に失敗しました",
+      error: error?.response?.data?.errors?.[0]?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// ==================== End Amazon SP-API連携 ====================
+
+// ==================== 楽天RMS API連携 ====================
+
+// 楽天RMS API認証ヘッダー生成
+function getRakutenAuthHeader(serviceSecret: string, licenseKey: string): string {
+  const authString = `${serviceSecret}:${licenseKey}`;
+  return `ESA ${Buffer.from(authString).toString('base64')}`;
+}
+
+// 楽天商品一覧取得エンドポイント
+app.get("/rakuten/products", async (req: Request, res: Response) => {
+  try {
+    console.log("Rakuten products endpoint triggered");
+    const axios = (await import('axios')).default;
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const rakutenCreds = settings?.rakuten;
+
+    if (!rakutenCreds?.serviceSecret || !rakutenCreds?.licenseKey) {
+      return res.status(400).json({
+        success: false,
+        message: "楽天RMS APIの認証情報が不完全です。",
+      });
+    }
+
+    // 認証ヘッダー生成
+    const authHeader = getRakutenAuthHeader(rakutenCreds.serviceSecret, rakutenCreds.licenseKey);
+
+    // RMS API: 商品検索API (item.search)
+    const response = await axios.get(
+      'https://api.rms.rakuten.co.jp/es/2.0/items/search',
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/json',
+        },
+        params: {
+          hits: 100, // 最大100件
+        },
+      }
+    );
+
+    // 商品情報を整形
+    const items = response.data?.results || response.data?.Items || [];
+    const products = items.map((item: any) => ({
+      code: item.manageNumber || item.itemUrl?.split('/').pop() || '',
+      name: item.itemName || item.title || 'Unknown',
+      itemUrl: item.itemUrl,
+      price: item.itemPrice,
+    }));
+
+    res.json({
+      success: true,
+      products,
+      count: products.length,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching Rakuten products:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "楽天商品一覧の取得に失敗しました",
+      error: error?.response?.data?.error?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// ==================== End 楽天RMS API連携 ====================
+
 // バッチ処理トリガー（将来のスクレイピング用）
 app.post("/trigger-batch", async (req: Request, res: Response) => {
   try {
