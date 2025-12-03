@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Upload } from "lucide-react";
+import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Upload, Flag } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +21,11 @@ const menuItems = [
     name: "外部データ入稿",
     href: "/external-data",
     icon: Upload,
+  },
+  {
+    name: "フラグ登録",
+    href: "/flags",
+    icon: Flag,
   },
   {
     name: "媒体設定",

@@ -11,7 +11,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw } from "lucide-react";
+import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X } from "lucide-react";
+import { ReferenceLine } from "recharts";
 import { db } from "@/lib/firebase";
 import { collection, query, orderBy, onSnapshot, Timestamp, getDocs } from "firebase/firestore";
 import { formatCurrency } from "@/lib/mockData";
@@ -67,6 +68,20 @@ interface ProductSalesData {
   quantity: number;
 }
 
+// イベントフラグの型
+interface EventFlag {
+  id: string;
+  name: string;
+  date: string;
+  description: string;
+}
+
+// デモ用のフラグデータ
+const demoFlags: EventFlag[] = [
+  { id: "demo-1", name: "セール開始", date: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0], description: "ブラックフライデーセール開始" },
+  { id: "demo-2", name: "広告開始", date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString().split("T")[0], description: "TikTok広告キャンペーン開始" },
+];
+
 // デモ用のダミーデータ
 const generateDemoData = (): SalesData[] => {
   const data: SalesData[] = [];
@@ -102,6 +117,9 @@ export default function DashboardPage() {
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [registeredProducts, setRegisteredProducts] = useState<RegisteredProduct[]>([]);
   const [productSalesData, setProductSalesData] = useState<ProductSalesData[]>([]);
+  const [eventFlags, setEventFlags] = useState<EventFlag[]>([]);
+  const [showFlags, setShowFlags] = useState(true);
+  const [selectedFlag, setSelectedFlag] = useState<EventFlag | null>(null);
   const [loading, setLoading] = useState(true);
   const [productLoading, setProductLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,6 +147,31 @@ export default function DashboardPage() {
   const [selectedProduct, setSelectedProduct] = useState("");
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Firestoreからイベントフラグを取得
+  useEffect(() => {
+    if (!isRealDataUser) {
+      setEventFlags(demoFlags);
+      return;
+    }
+
+    const fetchFlags = async () => {
+      try {
+        const q = query(collection(db, "event_flags"), orderBy("date", "desc"));
+        const snapshot = await getDocs(q);
+        const flags = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          name: doc.data().name || "",
+          date: doc.data().date || "",
+          description: doc.data().description || "",
+        })) as EventFlag[];
+        setEventFlags(flags);
+      } catch (err) {
+        console.error("フラグ取得エラー:", err);
+      }
+    };
+    fetchFlags();
+  }, [isRealDataUser]);
 
   // Firestoreから登録商品を取得（実データユーザーのみ）
   useEffect(() => {
@@ -704,6 +747,28 @@ export default function DashboardPage() {
                 </label>
               </div>
             </div>
+
+            {/* フラグ表示 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-2">
+                イベントフラグ
+              </label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showFlags}
+                    onChange={() => setShowFlags(!showFlags)}
+                    className="w-4 h-4 rounded"
+                    style={{ accentColor: "#9333EA" }}
+                  />
+                  <span className="font-medium text-sm text-purple-600">
+                    <Flag className="inline w-4 h-4 mr-1" />
+                    フラグ表示
+                  </span>
+                </label>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -944,6 +1009,30 @@ export default function DashboardPage() {
                     activeDot={{ r: 5 }}
                   />
                 )}
+
+                {/* イベントフラグの縦線 */}
+                {showFlags && eventFlags
+                  .filter(flag => flag.date >= startDate && flag.date <= endDate)
+                  .map((flag) => (
+                    <ReferenceLine
+                      key={flag.id}
+                      x={flag.date}
+                      yAxisId="sales"
+                      stroke="#9333EA"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      label={{
+                        value: `🚩 ${flag.name}`,
+                        position: "top",
+                        fill: "#9333EA",
+                        fontSize: 10,
+                        fontWeight: "bold",
+                        onClick: () => setSelectedFlag(flag),
+                        style: { cursor: "pointer" },
+                      }}
+                    />
+                  ))
+                }
               </ComposedChart>
             </ResponsiveContainer>
 
@@ -988,7 +1077,77 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
+
+        {/* フラグリスト（グラフ下に表示） */}
+        {showFlags && eventFlags.filter(flag => flag.date >= startDate && flag.date <= endDate).length > 0 && (
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <h3 className="text-sm font-medium text-gray-600 mb-2 flex items-center gap-1">
+              <Flag className="w-4 h-4 text-purple-600" />
+              期間内のイベント
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {eventFlags
+                .filter(flag => flag.date >= startDate && flag.date <= endDate)
+                .sort((a, b) => a.date.localeCompare(b.date))
+                .map((flag) => (
+                  <button
+                    key={flag.id}
+                    onClick={() => setSelectedFlag(flag)}
+                    className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm hover:bg-purple-200 transition-colors"
+                  >
+                    <Flag className="w-3 h-3" />
+                    <span className="font-medium">{flag.name}</span>
+                    <span className="text-purple-500 text-xs">
+                      ({new Date(flag.date).getMonth() + 1}/{new Date(flag.date).getDate()})
+                    </span>
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* フラグ詳細モーダル */}
+      {selectedFlag && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Flag className="w-6 h-6 text-purple-600" />
+                <h3 className="text-lg font-bold text-gray-800">{selectedFlag.name}</h3>
+              </div>
+              <button
+                onClick={() => setSelectedFlag(null)}
+                className="p-1 hover:bg-gray-100 rounded"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <p className="text-sm text-gray-500">日付</p>
+                <p className="font-medium">
+                  {new Date(selectedFlag.date).getFullYear()}年
+                  {new Date(selectedFlag.date).getMonth() + 1}月
+                  {new Date(selectedFlag.date).getDate()}日
+                </p>
+              </div>
+              {selectedFlag.description && (
+                <div>
+                  <p className="text-sm text-gray-500">詳細</p>
+                  <p className="text-gray-700">{selectedFlag.description}</p>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => setSelectedFlag(null)}
+              className="mt-6 w-full py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
