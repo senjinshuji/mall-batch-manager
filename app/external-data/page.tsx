@@ -19,13 +19,13 @@ export default function ExternalDataPage() {
   const [xAdFile, setXAdFile] = useState<File | null>(null);
   const [xAdStatus, setXAdStatus] = useState<UploadStatus>({ type: "idle", message: "" });
   const [xAdHistory, setXAdHistory] = useState<UploadedFile[]>([]);
-  const xAdInputRef = useRef<HTMLInputElement>(null);
+  const xAdInputRef = useRef<HTMLInputElement>(null!);
 
   // TikTok広告データ
   const [tiktokAdFile, setTiktokAdFile] = useState<File | null>(null);
   const [tiktokAdStatus, setTiktokAdStatus] = useState<UploadStatus>({ type: "idle", message: "" });
   const [tiktokAdHistory, setTiktokAdHistory] = useState<UploadedFile[]>([]);
-  const tiktokAdInputRef = useRef<HTMLInputElement>(null);
+  const tiktokAdInputRef = useRef<HTMLInputElement>(null!);
 
   const handleFileSelect = (
     event: React.ChangeEvent<HTMLInputElement>,
@@ -113,7 +113,7 @@ export default function ExternalDataPage() {
     setStatus: (status: UploadStatus) => void;
     history: UploadedFile[];
     setHistory: React.Dispatch<React.SetStateAction<UploadedFile[]>>;
-    inputRef: React.RefObject<HTMLInputElement | null>;
+    inputRef: React.RefObject<HTMLInputElement>;
     type: "x" | "tiktok";
   }) => (
     <div className={`bg-white rounded-xl shadow-sm border-2 ${borderColor} overflow-hidden`}>
