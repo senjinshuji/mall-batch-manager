@@ -8,8 +8,34 @@ import {
 } from "@/lib/mockData";
 import { db } from "@/lib/firebase";
 import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from "firebase/firestore";
+import { useAuth } from "@/lib/auth-context";
 
 const BACKEND_URL = "https://mall-batch-manager-983678294034.asia-northeast1.run.app";
+
+// デモ用のモール商品データ
+const demoAmazonProducts: MallProduct[] = [
+  { code: "DEMO-AMZ-001", name: "デモAmazon商品A" },
+  { code: "DEMO-AMZ-002", name: "デモAmazon商品B" },
+  { code: "DEMO-AMZ-003", name: "デモAmazon商品C" },
+];
+
+const demoRakutenProducts: MallProduct[] = [
+  { code: "DEMO-RKT-001", name: "デモ楽天商品A" },
+  { code: "DEMO-RKT-002", name: "デモ楽天商品B" },
+  { code: "DEMO-RKT-003", name: "デモ楽天商品C" },
+];
+
+const demoQoo10Products: MallProduct[] = [
+  { code: "DEMO-Q10-001", name: "デモQoo10商品A" },
+  { code: "DEMO-Q10-002", name: "デモQoo10商品B" },
+  { code: "DEMO-Q10-003", name: "デモQoo10商品C" },
+];
+
+// デモ用の登録済み商品
+const demoRegisteredProducts: RegisteredProduct[] = [
+  { id: "demo-1", productName: "デモ商品A", amazonCode: "DEMO-AMZ-001", rakutenCode: "DEMO-RKT-001", qoo10Code: "DEMO-Q10-001" },
+  { id: "demo-2", productName: "デモ商品B", amazonCode: "DEMO-AMZ-002", rakutenCode: "", qoo10Code: "DEMO-Q10-002" },
+];
 
 type NewProduct = {
   productName: string;
@@ -28,6 +54,7 @@ type Qoo10Product = {
 };
 
 export default function ProductsPage() {
+  const { isRealDataUser } = useAuth();
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -62,13 +89,26 @@ export default function ProductsPage() {
   const [qoo10Loading, setQoo10Loading] = useState(true);
   const [qoo10Error, setQoo10Error] = useState<string | null>(null);
 
-  // Firestoreから商品一覧を取得
+  // Firestoreから商品一覧を取得（実データユーザーのみ）
   useEffect(() => {
+    if (!isRealDataUser) {
+      // デモユーザーはデモデータを表示
+      setProducts(demoRegisteredProducts);
+      setAmazonProducts(demoAmazonProducts);
+      setRakutenProducts(demoRakutenProducts);
+      setQoo10Products(demoQoo10Products);
+      setIsLoading(false);
+      setAmazonLoading(false);
+      setRakutenLoading(false);
+      setQoo10Loading(false);
+      return;
+    }
+
     fetchProducts();
     fetchAmazonProducts();
     fetchRakutenProducts();
     fetchQoo10Products();
-  }, []);
+  }, [isRealDataUser]);
 
   const fetchProducts = async () => {
     setIsLoading(true);
@@ -162,17 +202,27 @@ export default function ProductsPage() {
     setIsSaving(true);
 
     try {
-      const docRef = await addDoc(collection(db, "registered_products"), {
-        ...newProduct,
-        createdAt: new Date(),
-      });
+      if (!isRealDataUser) {
+        // デモユーザーはローカルのみで追加
+        const product: RegisteredProduct = {
+          id: `demo-${Date.now()}`,
+          ...newProduct,
+        };
+        setProducts([product, ...products]);
+      } else {
+        const docRef = await addDoc(collection(db, "registered_products"), {
+          ...newProduct,
+          createdAt: new Date(),
+        });
 
-      const product: RegisteredProduct = {
-        id: docRef.id,
-        ...newProduct,
-      };
+        const product: RegisteredProduct = {
+          id: docRef.id,
+          ...newProduct,
+        };
 
-      setProducts([product, ...products]);
+        setProducts([product, ...products]);
+      }
+
       setNewProduct({
         productName: "",
         amazonCode: "",
@@ -192,8 +242,13 @@ export default function ProductsPage() {
     if (!confirm("この商品を削除しますか？")) return;
 
     try {
-      await deleteDoc(doc(db, "registered_products", id));
-      setProducts(products.filter((p) => p.id !== id));
+      if (!isRealDataUser) {
+        // デモユーザーはローカルのみで削除
+        setProducts(products.filter((p) => p.id !== id));
+      } else {
+        await deleteDoc(doc(db, "registered_products", id));
+        setProducts(products.filter((p) => p.id !== id));
+      }
     } catch (error) {
       console.error("商品削除エラー:", error);
       alert("商品の削除に失敗しました");
@@ -213,21 +268,35 @@ export default function ProductsPage() {
   const handleSaveEdit = async (id: string) => {
     setIsSaving(true);
     try {
-      await updateDoc(doc(db, "registered_products", id), {
-        ...editProduct,
-        updatedAt: new Date(),
-      });
+      if (!isRealDataUser) {
+        // デモユーザーはローカルのみで更新
+        setProducts(
+          products.map((p) =>
+            p.id === id
+              ? {
+                  ...p,
+                  ...editProduct,
+                }
+              : p
+          )
+        );
+      } else {
+        await updateDoc(doc(db, "registered_products", id), {
+          ...editProduct,
+          updatedAt: new Date(),
+        });
 
-      setProducts(
-        products.map((p) =>
-          p.id === id
-            ? {
-                ...p,
-                ...editProduct,
-              }
-            : p
-        )
-      );
+        setProducts(
+          products.map((p) =>
+            p.id === id
+              ? {
+                  ...p,
+                  ...editProduct,
+                }
+              : p
+          )
+        );
+      }
       setEditingId(null);
     } catch (error) {
       console.error("商品更新エラー:", error);
@@ -497,6 +566,11 @@ export default function ProductsPage() {
         <div className="flex items-center gap-3">
           <Package className="w-8 h-8 text-blue-600" />
           <h1 className="text-2xl font-bold text-gray-800">商品登録</h1>
+          {!isRealDataUser && (
+            <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-medium rounded-full">
+              デモモード
+            </span>
+          )}
         </div>
         <button
           onClick={() => setIsAdding(true)}
