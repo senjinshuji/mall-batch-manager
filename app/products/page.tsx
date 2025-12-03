@@ -54,7 +54,7 @@ type Qoo10Product = {
 };
 
 export default function ProductsPage() {
-  const { isRealDataUser } = useAuth();
+  const { isRealDataUser, isAuthLoading } = useAuth();
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -89,8 +89,16 @@ export default function ProductsPage() {
   const [qoo10Loading, setQoo10Loading] = useState(true);
   const [qoo10Error, setQoo10Error] = useState<string | null>(null);
 
+  // 楽天商品手動追加用ステート
+  const [showRakutenAddForm, setShowRakutenAddForm] = useState(false);
+  const [newRakutenProduct, setNewRakutenProduct] = useState({ code: "", name: "" });
+  const [rakutenAddLoading, setRakutenAddLoading] = useState(false);
+
   // Firestoreから商品一覧を取得（実データユーザーのみ）
   useEffect(() => {
+    // 認証ロード中は何もしない
+    if (isAuthLoading) return;
+
     if (!isRealDataUser) {
       // デモユーザーはデモデータを表示
       setProducts(demoRegisteredProducts);
@@ -108,7 +116,7 @@ export default function ProductsPage() {
     fetchAmazonProducts();
     fetchRakutenProducts();
     fetchQoo10Products();
-  }, [isRealDataUser]);
+  }, [isRealDataUser, isAuthLoading]);
 
   const fetchProducts = async () => {
     setIsLoading(true);
@@ -150,24 +158,114 @@ export default function ProductsPage() {
     }
   };
 
+  // 保存済み楽天商品リストを取得
   const fetchRakutenProducts = async () => {
     setRakutenLoading(true);
     setRakutenError(null);
     try {
-      const response = await fetch(`${BACKEND_URL}/rakuten/products`);
+      const response = await fetch(`${BACKEND_URL}/rakuten/saved-products`);
       const data = await response.json();
-      if (data.success && data.products) {
-        const formatted: MallProduct[] = data.products.map((p: { code: string; name: string }) => ({
-          code: p.code,
-          name: p.name,
-        }));
-        setRakutenProducts(formatted);
+      if (data.success) {
+        if (data.products && data.products.length > 0) {
+          const formatted: MallProduct[] = data.products.map((p: { code: string; name: string }) => ({
+            code: p.code,
+            name: p.name,
+          }));
+          setRakutenProducts(formatted);
+        } else if (data.message) {
+          setRakutenError(data.message);
+        }
       } else {
         setRakutenError(data.message || "楽天商品の取得に失敗しました");
       }
     } catch (error) {
       console.error("楽天商品取得エラー:", error);
       setRakutenError("楽天商品の取得に失敗しました");
+    } finally {
+      setRakutenLoading(false);
+    }
+  };
+
+  // 楽天商品を手動で追加
+  const addRakutenProductManually = async () => {
+    if (!newRakutenProduct.code || !newRakutenProduct.name) return;
+    setRakutenAddLoading(true);
+    try {
+      const response = await fetch(`${BACKEND_URL}/rakuten/add-product`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newRakutenProduct),
+      });
+      const data = await response.json();
+      if (data.success) {
+        const formatted: MallProduct[] = data.products.map((p: { code: string; name: string }) => ({
+          code: p.code,
+          name: p.name,
+        }));
+        setRakutenProducts(formatted);
+        setNewRakutenProduct({ code: "", name: "" });
+        setShowRakutenAddForm(false);
+        setRakutenError(null);
+      } else {
+        alert(data.message || "商品の追加に失敗しました");
+      }
+    } catch (error) {
+      console.error("楽天商品追加エラー:", error);
+      alert("商品の追加に失敗しました");
+    } finally {
+      setRakutenAddLoading(false);
+    }
+  };
+
+  // 楽天商品を削除
+  const deleteRakutenProduct = async (code: string) => {
+    if (!confirm("この商品を削除しますか？")) return;
+    try {
+      const response = await fetch(`${BACKEND_URL}/rakuten/delete-product/${encodeURIComponent(code)}`, {
+        method: "DELETE",
+      });
+      const data = await response.json();
+      if (data.success) {
+        const formatted: MallProduct[] = data.products.map((p: { code: string; name: string }) => ({
+          code: p.code,
+          name: p.name,
+        }));
+        setRakutenProducts(formatted);
+      } else {
+        alert(data.message || "商品の削除に失敗しました");
+      }
+    } catch (error) {
+      console.error("楽天商品削除エラー:", error);
+      alert("商品の削除に失敗しました");
+    }
+  };
+
+  // 過去の注文から楽天商品リストを抽出・更新
+  const extractRakutenProductsFromOrders = async () => {
+    setRakutenLoading(true);
+    setRakutenError(null);
+    try {
+      const response = await fetch(`${BACKEND_URL}/rakuten/extract-products-from-orders`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      if (data.success) {
+        if (data.products && data.products.length > 0) {
+          const formatted: MallProduct[] = data.products.map((p: { code: string; name: string }) => ({
+            code: p.code,
+            name: p.name,
+          }));
+          setRakutenProducts(formatted);
+          alert(data.message || "商品リストを更新しました");
+        } else {
+          setRakutenError(data.message || "抽出できる商品がありませんでした");
+        }
+      } else {
+        setRakutenError(data.message || "楽天商品の抽出に失敗しました");
+      }
+    } catch (error) {
+      console.error("楽天商品抽出エラー:", error);
+      setRakutenError("楽天商品の抽出に失敗しました");
     } finally {
       setRakutenLoading(false);
     }
@@ -689,19 +787,80 @@ export default function ProductsPage() {
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-medium text-gray-500">楽天</label>
-                  {rakutenLoading && (
-                    <RefreshCw className="w-3 h-3 text-red-500 animate-spin" />
-                  )}
-                </div>
-                {rakutenError ? (
-                  <div className="text-xs text-red-500 p-2 bg-red-50 rounded">
-                    {rakutenError}
+                  <div className="flex items-center gap-2">
+                    {rakutenLoading && (
+                      <RefreshCw className="w-3 h-3 text-red-500 animate-spin" />
+                    )}
                     <button
-                      onClick={fetchRakutenProducts}
-                      className="ml-2 text-blue-600 hover:underline"
+                      onClick={() => setShowRakutenAddForm(true)}
+                      className="text-xs text-green-600 hover:underline"
+                      title="商品を手動で追加"
                     >
-                      再取得
+                      + 追加
                     </button>
+                    <button
+                      onClick={extractRakutenProductsFromOrders}
+                      disabled={rakutenLoading}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                      title="過去30日の注文から商品を抽出"
+                    >
+                      注文から更新
+                    </button>
+                  </div>
+                </div>
+                {showRakutenAddForm && (
+                  <div className="p-3 bg-gray-50 rounded border space-y-2">
+                    <input
+                      type="text"
+                      placeholder="商品コード"
+                      value={newRakutenProduct.code}
+                      onChange={(e) => setNewRakutenProduct({ ...newRakutenProduct, code: e.target.value })}
+                      className="w-full px-2 py-1 text-sm border rounded"
+                    />
+                    <input
+                      type="text"
+                      placeholder="商品名"
+                      value={newRakutenProduct.name}
+                      onChange={(e) => setNewRakutenProduct({ ...newRakutenProduct, name: e.target.value })}
+                      className="w-full px-2 py-1 text-sm border rounded"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={addRakutenProductManually}
+                        disabled={!newRakutenProduct.code || !newRakutenProduct.name || rakutenAddLoading}
+                        className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                      >
+                        {rakutenAddLoading ? "追加中..." : "追加"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowRakutenAddForm(false);
+                          setNewRakutenProduct({ code: "", name: "" });
+                        }}
+                        className="px-3 py-1 text-xs bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+                      >
+                        キャンセル
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {rakutenError ? (
+                  <div className="text-xs text-red-500 p-2 bg-red-50 rounded whitespace-pre-wrap">
+                    {rakutenError}
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={extractRakutenProductsFromOrders}
+                        className="text-blue-600 hover:underline"
+                      >
+                        注文から取得
+                      </button>
+                      <button
+                        onClick={() => setShowRakutenAddForm(true)}
+                        className="text-green-600 hover:underline"
+                      >
+                        手動で追加
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <ProductCodeDropdown

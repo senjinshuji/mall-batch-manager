@@ -21,7 +21,7 @@ const demoFlags: EventFlag[] = [
 ];
 
 export default function FlagsPage() {
-  const { isRealDataUser } = useAuth();
+  const { isRealDataUser, isAuthLoading } = useAuth();
   const [flags, setFlags] = useState<EventFlag[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -42,6 +42,8 @@ export default function FlagsPage() {
 
   // Firestoreからフラグ一覧を取得
   useEffect(() => {
+    if (isAuthLoading) return;
+
     if (!isRealDataUser) {
       setFlags(demoFlags);
       setIsLoading(false);
@@ -70,7 +72,7 @@ export default function FlagsPage() {
     };
 
     fetchFlags();
-  }, [isRealDataUser]);
+  }, [isRealDataUser, isAuthLoading]);
 
   const handleAddFlag = async () => {
     if (!newFlag.name || !newFlag.date) return;

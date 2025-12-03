@@ -12,6 +12,7 @@ type AuthContextType = {
   login: (email: string, password: string) => boolean;
   logout: () => void;
   isRealDataUser: boolean;
+  isAuthLoading: boolean;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -24,6 +25,7 @@ const REAL_DATA_CREDENTIALS = {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   // ページロード時にセッションストレージから復元
   useEffect(() => {
@@ -31,6 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (storedUser) {
       setUser(JSON.parse(storedUser));
     }
+    setIsAuthLoading(false);
   }, []);
 
   const login = (email: string, password: string): boolean => {
@@ -60,6 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         isRealDataUser: user?.isRealDataUser ?? false,
+        isAuthLoading,
       }}
     >
       {children}

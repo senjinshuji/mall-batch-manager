@@ -1364,7 +1364,10 @@ app.get("/amazon/products", async (req: Request, res: Response) => {
 
 // 楽天RMS API認証ヘッダー生成
 function getRakutenAuthHeader(serviceSecret: string, licenseKey: string): string {
-  const authString = `${serviceSecret}:${licenseKey}`;
+  // 余分な空白やタブ文字をトリム
+  const cleanServiceSecret = serviceSecret.trim();
+  const cleanLicenseKey = licenseKey.trim();
+  const authString = `${cleanServiceSecret}:${cleanLicenseKey}`;
   return `ESA ${Buffer.from(authString).toString('base64')}`;
 }
 
@@ -1397,33 +1400,17 @@ app.get("/rakuten/products", async (req: Request, res: Response) => {
     // 認証ヘッダー生成
     const authHeader = getRakutenAuthHeader(rakutenCreds.serviceSecret, rakutenCreds.licenseKey);
 
-    // RMS API: 商品検索API (item.search)
-    const response = await axios.get(
-      'https://api.rms.rakuten.co.jp/es/2.0/items/search',
-      {
-        headers: {
-          'Authorization': authHeader,
-          'Content-Type': 'application/json',
-        },
-        params: {
-          hits: 100, // 最大100件
-        },
-      }
-    );
+    // 楽天RMS API 2.0は商品API利用にはRMSへの申請が必要
+    // 一旦、認証情報が設定されていることを確認してメッセージを返す
+    console.log("Rakuten credentials found, API integration pending");
 
-    // 商品情報を整形
-    const items = response.data?.results || response.data?.Items || [];
-    const products = items.map((item: any) => ({
-      code: item.manageNumber || item.itemUrl?.split('/').pop() || '',
-      name: item.itemName || item.title || 'Unknown',
-      itemUrl: item.itemUrl,
-      price: item.itemPrice,
-    }));
-
+    // TODO: 楽天RMSの商品一括登録オプション契約と商品API 2.0の利用申請が必要
+    // 現時点では空の商品リストを返す
     res.json({
       success: true,
-      products,
-      count: products.length,
+      products: [],
+      count: 0,
+      message: "楽天RMS商品APIは準備中です。商品一括登録オプションの契約と商品API 2.0の利用申請が必要です。",
     });
 
   } catch (error: any) {
@@ -1432,6 +1419,668 @@ app.get("/rakuten/products", async (req: Request, res: Response) => {
       success: false,
       message: "楽天商品一覧の取得に失敗しました",
       error: error?.response?.data?.error?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// 楽天受注データから商品リストを抽出するエンドポイント
+app.post("/rakuten/extract-products-from-orders", async (req: Request, res: Response) => {
+  try {
+    console.log("Rakuten extract products from orders endpoint triggered");
+    const axios = (await import('axios')).default;
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const rakutenCreds = settings?.rakuten;
+
+    if (!rakutenCreds?.serviceSecret || !rakutenCreds?.licenseKey) {
+      return res.status(400).json({
+        success: false,
+        message: "楽天RMS APIの認証情報が不完全です。",
+      });
+    }
+
+    // 認証ヘッダー生成
+    console.log("Rakuten credentials check:");
+    console.log("  serviceSecret length:", rakutenCreds.serviceSecret?.length);
+    console.log("  serviceSecret first 10 chars:", rakutenCreds.serviceSecret?.substring(0, 10));
+    console.log("  licenseKey length:", rakutenCreds.licenseKey?.length);
+    console.log("  licenseKey first 10 chars:", rakutenCreds.licenseKey?.substring(0, 10));
+
+    const authHeader = getRakutenAuthHeader(rakutenCreds.serviceSecret, rakutenCreds.licenseKey);
+    console.log("  Full auth header:", authHeader);
+
+    // 30日前の日付を計算（より短い期間で試す）
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+
+    // 楽天RMS APIの日付フォーマット: yyyy-MM-dd'T'HH:mm:ss+0900
+    const formatDate = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}T00:00:00+0900`;
+    };
+
+    console.log("Search date range:", formatDate(startDate), "to", formatDate(endDate));
+
+    // 楽天RMS 受注API (searchOrder) を呼び出し
+    // エンドポイント: https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/
+    // PHP サンプルに倣った最小限のリクエスト
+    const requestBody = {
+      dateType: 1, // 1: 注文日
+      startDatetime: formatDate(startDate),
+      endDatetime: formatDate(endDate),
+      orderProgressList: [100, 200, 300, 400, 500, 600, 700, 800, 900],
+      PaginationRequestModel: {
+        requestRecordsAmount: 1000,
+        requestPage: 1,
+      },
+    };
+
+    console.log("searchOrder request URL:", 'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/');
+    console.log("searchOrder auth header:", authHeader.substring(0, 20) + '...');
+    console.log("searchOrder request body:", JSON.stringify(requestBody, null, 2));
+
+    const searchResponse = await axios.post(
+      'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/',
+      requestBody,
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+      }
+    );
+
+    console.log("searchOrder raw response:", JSON.stringify(searchResponse.data, null, 2).substring(0, 1000));
+
+    console.log("Rakuten searchOrder response status:", searchResponse.status);
+
+    const orderNumbers = searchResponse.data?.orderNumberList || [];
+    console.log(`Found ${orderNumbers.length} orders`);
+
+    if (orderNumbers.length === 0) {
+      return res.json({
+        success: true,
+        products: [],
+        count: 0,
+        message: "直近60日間の注文がありません。",
+      });
+    }
+
+    // 注文詳細を取得して商品を抽出
+    const productMap = new Map<string, { code: string; name: string }>();
+
+    // 注文番号を100件ずつ分割して詳細を取得
+    const chunkSize = 100;
+    for (let i = 0; i < orderNumbers.length; i += chunkSize) {
+      const chunk = orderNumbers.slice(i, i + chunkSize);
+
+      const detailResponse = await axios.post(
+        'https://api.rms.rakuten.co.jp/es/2.0/order/getOrder',
+        {
+          orderNumberList: chunk,
+          version: 7,
+        },
+        {
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json; charset=utf-8',
+          },
+        }
+      );
+
+      const orders = detailResponse.data?.OrderModelList || [];
+
+      for (const order of orders) {
+        const items = order.PackageModelList?.[0]?.ItemModelList || [];
+        for (const item of items) {
+          const itemUrl = item.itemUrl || item.manageNumber || item.itemNumber || '';
+          const itemName = item.itemName || 'Unknown';
+
+          if (itemUrl && !productMap.has(itemUrl)) {
+            productMap.set(itemUrl, {
+              code: itemUrl,
+              name: itemName,
+            });
+          }
+        }
+      }
+    }
+
+    const products = Array.from(productMap.values());
+
+    // Firestoreに保存
+    await db.collection("rakuten_products").doc("list").set({
+      products,
+      updatedAt: Timestamp.now(),
+      source: "orders",
+    });
+
+    res.json({
+      success: true,
+      products,
+      count: products.length,
+      message: `${orderNumbers.length}件の注文から${products.length}件の商品を抽出しました。`,
+    });
+
+  } catch (error: any) {
+    console.error("Error extracting Rakuten products from orders:", JSON.stringify(error?.response?.data, null, 2) || error);
+    console.error("Error status:", error?.response?.status);
+    console.error("Error headers:", JSON.stringify(error?.response?.headers, null, 2));
+
+    // APIレスポンスのエラー詳細を取得
+    const apiError = error?.response?.data;
+    let errorMessage = "Unknown error";
+
+    if (apiError?.MessageModelList?.[0]?.messageContent) {
+      errorMessage = apiError.MessageModelList[0].messageContent;
+    } else if (apiError?.Results?.message) {
+      errorMessage = apiError.Results.message + " (" + apiError.Results.errorCode + ")";
+    } else if (error?.message) {
+      errorMessage = error.message;
+    }
+
+    // ES04-01エラーの場合は、RMSでAPIが有効になっていない可能性を伝える
+    let helpMessage = "";
+    if (apiError?.Results?.errorCode === "ES04-01") {
+      helpMessage = "\n\n【対処法】RMSで楽天ペイ受注APIの利用設定を確認してください：\n" +
+        "RMS > 店舗様向け情報・サービス > 5 WEB APIサービス > 2-1 WEB API > 利用機能編集\n" +
+        "→「楽天ペイ受注API（RakutenPay_OrderAPI）」の「rpay.order.searchOrder」「rpay.order.getOrder」を「利用する」に設定";
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "楽天受注データからの商品抽出に失敗しました" + helpMessage,
+      error: errorMessage,
+      details: apiError,
+    });
+  }
+});
+
+// 保存済み楽天商品リストを取得するエンドポイント
+app.get("/rakuten/saved-products", async (req: Request, res: Response) => {
+  try {
+    const doc = await db.collection("rakuten_products").doc("list").get();
+
+    if (!doc.exists) {
+      return res.json({
+        success: true,
+        products: [],
+        count: 0,
+        message: "商品リストがまだ作成されていません。「過去の注文から商品リストを更新」ボタンを押してください。",
+      });
+    }
+
+    const data = doc.data();
+    res.json({
+      success: true,
+      products: data?.products || [],
+      count: data?.products?.length || 0,
+      updatedAt: data?.updatedAt?.toDate?.() || null,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching saved Rakuten products:", error);
+    res.status(500).json({
+      success: false,
+      message: "保存済み商品リストの取得に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 楽天商品を手動で追加するエンドポイント
+app.post("/rakuten/add-product", async (req: Request, res: Response) => {
+  try {
+    const { code, name } = req.body;
+
+    if (!code || !name) {
+      return res.status(400).json({
+        success: false,
+        message: "商品コードと商品名は必須です",
+      });
+    }
+
+    // 既存の商品リストを取得
+    const doc = await db.collection("rakuten_products").doc("list").get();
+    let products = doc.exists ? doc.data()?.products || [] : [];
+
+    // 重複チェック
+    if (products.find((p: any) => p.code === code)) {
+      return res.status(400).json({
+        success: false,
+        message: "この商品コードは既に登録されています",
+      });
+    }
+
+    // 新しい商品を追加
+    products.push({ code, name });
+
+    // Firestoreに保存
+    await db.collection("rakuten_products").doc("list").set({
+      products,
+      updatedAt: Timestamp.now(),
+      source: "manual",
+    });
+
+    res.json({
+      success: true,
+      message: "商品を追加しました",
+      products,
+      count: products.length,
+    });
+
+  } catch (error: any) {
+    console.error("Error adding Rakuten product:", error);
+    res.status(500).json({
+      success: false,
+      message: "商品の追加に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 楽天商品を削除するエンドポイント
+app.delete("/rakuten/delete-product/:code", async (req: Request, res: Response) => {
+  try {
+    const code = req.params.code;
+
+    // 既存の商品リストを取得
+    const doc = await db.collection("rakuten_products").doc("list").get();
+    if (!doc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "商品リストが見つかりません",
+      });
+    }
+
+    let products = doc.data()?.products || [];
+    const initialLength = products.length;
+    products = products.filter((p: any) => p.code !== code);
+
+    if (products.length === initialLength) {
+      return res.status(404).json({
+        success: false,
+        message: "指定された商品が見つかりません",
+      });
+    }
+
+    // Firestoreに保存
+    await db.collection("rakuten_products").doc("list").set({
+      products,
+      updatedAt: Timestamp.now(),
+      source: "manual",
+    });
+
+    res.json({
+      success: true,
+      message: "商品を削除しました",
+      products,
+      count: products.length,
+    });
+
+  } catch (error: any) {
+    console.error("Error deleting Rakuten product:", error);
+    res.status(500).json({
+      success: false,
+      message: "商品の削除に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 楽天受注から日別売上を取得するエンドポイント
+app.get("/rakuten/daily-sales", async (req: Request, res: Response) => {
+  try {
+    console.log("Rakuten daily sales endpoint triggered");
+    const axios = (await import('axios')).default;
+
+    // クエリパラメータから日数を取得（デフォルト30日）
+    const days = parseInt(req.query.days as string) || 30;
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const rakutenCreds = settings?.rakuten;
+
+    if (!rakutenCreds?.serviceSecret || !rakutenCreds?.licenseKey) {
+      return res.status(400).json({
+        success: false,
+        message: "楽天RMS APIの認証情報が不完全です。",
+      });
+    }
+
+    const authHeader = getRakutenAuthHeader(rakutenCreds.serviceSecret, rakutenCreds.licenseKey);
+
+    // 日付範囲を計算
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const formatDate = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}T00:00:00+0900`;
+    };
+
+    console.log("Fetching orders from", formatDate(startDate), "to", formatDate(endDate));
+
+    // 注文番号を検索
+    const searchResponse = await axios.post(
+      'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/',
+      {
+        dateType: 1, // 注文日
+        startDatetime: formatDate(startDate),
+        endDatetime: formatDate(endDate),
+        orderProgressList: [100, 200, 300, 400, 500, 600, 700, 800, 900],
+        PaginationRequestModel: {
+          requestRecordsAmount: 1000,
+          requestPage: 1,
+        },
+      },
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+      }
+    );
+
+    const orderNumbers = searchResponse.data?.orderNumberList || [];
+    console.log(`Found ${orderNumbers.length} orders`);
+
+    if (orderNumbers.length === 0) {
+      return res.json({
+        success: true,
+        dailySales: {},
+        totalOrders: 0,
+        message: "指定期間の注文がありません。",
+      });
+    }
+
+    // 日別売上を集計するMap
+    const dailySales: { [date: string]: number } = {};
+
+    // 注文詳細を100件ずつ取得
+    const chunkSize = 100;
+    for (let i = 0; i < orderNumbers.length; i += chunkSize) {
+      const chunk = orderNumbers.slice(i, i + chunkSize);
+
+      const detailResponse = await axios.post(
+        'https://api.rms.rakuten.co.jp/es/2.0/order/getOrder/',
+        {
+          orderNumberList: chunk,
+          version: 7,
+        },
+        {
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json; charset=utf-8',
+          },
+        }
+      );
+
+      const orders = detailResponse.data?.OrderModelList || [];
+
+      for (const order of orders) {
+        // 注文日を取得 (orderDatetime)
+        const orderDatetime = order.orderDatetime;
+        if (!orderDatetime) continue;
+
+        // 日付部分のみ抽出 (YYYY-MM-DD)
+        const dateStr = orderDatetime.split('T')[0];
+
+        // 合計金額を取得 (totalPrice: 商品合計 + 送料 + ラッピング料 - クーポン - ポイント)
+        // goodsPrice: 商品金額合計
+        // postagePrice: 送料
+        // totalPrice: 請求金額
+        const totalPrice = order.totalPrice || 0;
+
+        // 日別に集計
+        if (!dailySales[dateStr]) {
+          dailySales[dateStr] = 0;
+        }
+        dailySales[dateStr] += totalPrice;
+      }
+    }
+
+    // 日付順にソート
+    const sortedDailySales: { [date: string]: number } = {};
+    Object.keys(dailySales).sort().forEach(key => {
+      sortedDailySales[key] = dailySales[key];
+    });
+
+    // Firestoreに保存（sales_dataコレクションに楽天データを追加）
+    for (const [date, amount] of Object.entries(sortedDailySales)) {
+      const docRef = db.collection("sales_data").doc(date);
+      const existingDoc = await docRef.get();
+
+      if (existingDoc.exists) {
+        await docRef.update({
+          rakuten: amount,
+          updatedAt: Timestamp.now(),
+        });
+      } else {
+        await docRef.set({
+          date,
+          rakuten: amount,
+          amazon: 0,
+          qoo10: 0,
+          amazonAd: 0,
+          rakutenAd: 0,
+          qoo10Ad: 0,
+          xAd: 0,
+          tiktokAd: 0,
+          createdAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+          source: "rakuten-order-api",
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      dailySales: sortedDailySales,
+      totalOrders: orderNumbers.length,
+      totalSales: Object.values(sortedDailySales).reduce((a, b) => a + b, 0),
+      message: `${orderNumbers.length}件の注文から日別売上を集計しました。`,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching Rakuten daily sales:", JSON.stringify(error?.response?.data, null, 2) || error);
+    res.status(500).json({
+      success: false,
+      message: "楽天売上データの取得に失敗しました",
+      error: error?.response?.data?.Results?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// 楽天商品別売上を取得するエンドポイント
+app.get("/rakuten/product-sales/:productCode", async (req: Request, res: Response) => {
+  try {
+    const productCode = req.params.productCode;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
+
+    console.log(`Rakuten product sales endpoint: productCode=${productCode}, startDate=${startDate}, endDate=${endDate}`);
+    const axios = (await import('axios')).default;
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const rakutenCreds = settings?.rakuten;
+
+    if (!rakutenCreds?.serviceSecret || !rakutenCreds?.licenseKey) {
+      return res.status(400).json({
+        success: false,
+        message: "楽天RMS APIの認証情報が不完全です。",
+      });
+    }
+
+    const authHeader = getRakutenAuthHeader(rakutenCreds.serviceSecret, rakutenCreds.licenseKey);
+
+    // 日付範囲を設定
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+    // 終了日を翌日に設定（その日の注文も含めるため）
+    end.setDate(end.getDate() + 1);
+
+    const formatDate = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}T00:00:00+0900`;
+    };
+
+    console.log("Fetching orders from", formatDate(start), "to", formatDate(end));
+
+    // 注文番号を検索
+    const searchResponse = await axios.post(
+      'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/',
+      {
+        dateType: 1,
+        startDatetime: formatDate(start),
+        endDatetime: formatDate(end),
+        orderProgressList: [100, 200, 300, 400, 500, 600, 700, 800, 900],
+        PaginationRequestModel: {
+          requestRecordsAmount: 1000,
+          requestPage: 1,
+        },
+      },
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+      }
+    );
+
+    const orderNumbers = searchResponse.data?.orderNumberList || [];
+    console.log(`Found ${orderNumbers.length} orders`);
+
+    if (orderNumbers.length === 0) {
+      return res.json({
+        success: true,
+        productCode,
+        dailySales: [],
+        totalSales: 0,
+        totalQuantity: 0,
+        message: "指定期間の注文がありません。",
+      });
+    }
+
+    // 日別売上を集計するMap
+    const dailySales: { [date: string]: { sales: number; quantity: number } } = {};
+
+    // 注文詳細を100件ずつ取得
+    const chunkSize = 100;
+    for (let i = 0; i < orderNumbers.length; i += chunkSize) {
+      const chunk = orderNumbers.slice(i, i + chunkSize);
+
+      const detailResponse = await axios.post(
+        'https://api.rms.rakuten.co.jp/es/2.0/order/getOrder/',
+        {
+          orderNumberList: chunk,
+          version: 7,
+        },
+        {
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json; charset=utf-8',
+          },
+        }
+      );
+
+      const orders = detailResponse.data?.OrderModelList || [];
+
+      for (const order of orders) {
+        const orderDatetime = order.orderDatetime;
+        if (!orderDatetime) continue;
+
+        const dateStr = orderDatetime.split('T')[0];
+
+        // 各パッケージ内のアイテムをチェック
+        const packages = order.PackageModelList || [];
+        for (const pkg of packages) {
+          const items = pkg.ItemModelList || [];
+          for (const item of items) {
+            // 商品コードをチェック（itemUrl, manageNumber, itemNumberのいずれかにマッチ）
+            const itemCode = item.itemUrl || item.manageNumber || item.itemNumber || '';
+
+            if (itemCode === productCode) {
+              // この商品の売上を集計
+              const itemPrice = item.price || 0;
+              const itemQuantity = item.units || 1;
+              const itemTotal = itemPrice * itemQuantity;
+
+              if (!dailySales[dateStr]) {
+                dailySales[dateStr] = { sales: 0, quantity: 0 };
+              }
+              dailySales[dateStr].sales += itemTotal;
+              dailySales[dateStr].quantity += itemQuantity;
+            }
+          }
+        }
+      }
+    }
+
+    // 配列形式に変換してソート
+    const salesArray = Object.entries(dailySales)
+      .map(([date, data]) => ({
+        date,
+        sales: data.sales,
+        quantity: data.quantity,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const totalSales = salesArray.reduce((sum, d) => sum + d.sales, 0);
+    const totalQuantity = salesArray.reduce((sum, d) => sum + d.quantity, 0);
+
+    res.json({
+      success: true,
+      productCode,
+      dailySales: salesArray,
+      totalSales,
+      totalQuantity,
+      message: `${orderNumbers.length}件の注文から商品別売上を集計しました。`,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching Rakuten product sales:", JSON.stringify(error?.response?.data, null, 2) || error);
+    res.status(500).json({
+      success: false,
+      message: "楽天商品別売上の取得に失敗しました",
+      error: error?.response?.data?.Results?.message || error?.message || "Unknown error",
     });
   }
 });
