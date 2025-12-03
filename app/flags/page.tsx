@@ -15,9 +15,9 @@ type EventFlag = {
 
 // デモ用のフラグデータ
 const demoFlags: EventFlag[] = [
-  { id: "demo-1", name: "セール開始", date: "2024-11-01", description: "ブラックフライデーセール開始日" },
-  { id: "demo-2", name: "新商品発売", date: "2024-11-15", description: "オーガニックシャンプー新発売" },
-  { id: "demo-3", name: "広告開始", date: "2024-11-20", description: "TikTok広告キャンペーン開始" },
+  { id: "demo-1", name: "セール開始", date: "2025-11-01", description: "ブラックフライデーセール開始日" },
+  { id: "demo-2", name: "新商品発売", date: "2025-11-15", description: "オーガニックシャンプー新発売" },
+  { id: "demo-3", name: "広告開始", date: "2025-11-20", description: "TikTok広告キャンペーン開始" },
 ];
 
 export default function FlagsPage() {
@@ -51,14 +51,16 @@ export default function FlagsPage() {
     const fetchFlags = async () => {
       setIsLoading(true);
       try {
-        const q = query(collection(db, "event_flags"), orderBy("date", "desc"));
-        const snapshot = await getDocs(q);
+        // インデックスなしで取得し、クライアント側でソート
+        const snapshot = await getDocs(collection(db, "event_flags"));
         const flagsData = snapshot.docs.map((doc) => ({
           id: doc.id,
           name: doc.data().name || "",
           date: doc.data().date || "",
           description: doc.data().description || "",
         })) as EventFlag[];
+        // 日付降順でソート
+        flagsData.sort((a, b) => b.date.localeCompare(a.date));
         setFlags(flagsData);
       } catch (error) {
         console.error("フラグ取得エラー:", error);

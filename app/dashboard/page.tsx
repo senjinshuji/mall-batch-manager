@@ -157,14 +157,16 @@ export default function DashboardPage() {
 
     const fetchFlags = async () => {
       try {
-        const q = query(collection(db, "event_flags"), orderBy("date", "desc"));
-        const snapshot = await getDocs(q);
+        // インデックスなしで取得し、クライアント側でソート
+        const snapshot = await getDocs(collection(db, "event_flags"));
         const flags = snapshot.docs.map((doc) => ({
           id: doc.id,
           name: doc.data().name || "",
           date: doc.data().date || "",
           description: doc.data().description || "",
         })) as EventFlag[];
+        // 日付降順でソート
+        flags.sort((a, b) => b.date.localeCompare(a.date));
         setEventFlags(flags);
       } catch (err) {
         console.error("フラグ取得エラー:", err);
