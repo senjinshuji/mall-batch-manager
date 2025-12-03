@@ -2136,6 +2136,402 @@ app.get("/rakuten/product-sales/:productCode", async (req: Request, res: Respons
 
 // ==================== End 楽天RMS API連携 ====================
 
+// ==================== 売上データ同期・取得 ====================
+
+// Firestoreから商品別売上データを取得（キャッシュされたデータ）
+app.get("/product-sales/:productCode", async (req: Request, res: Response) => {
+  try {
+    const productCode = req.params.productCode;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
+    const mall = req.query.mall as string; // 'rakuten' or 'qoo10' or undefined (both)
+
+    console.log(`Fetching cached product sales: productCode=${productCode}, startDate=${startDate}, endDate=${endDate}, mall=${mall}`);
+
+    // Firestoreから売上データを取得
+    let query = db.collection("product_sales")
+      .where("productCode", "==", productCode);
+
+    if (startDate) {
+      query = query.where("date", ">=", startDate);
+    }
+    if (endDate) {
+      query = query.where("date", "<=", endDate);
+    }
+
+    const snapshot = await query.get();
+
+    if (snapshot.empty) {
+      return res.json({
+        success: true,
+        productCode,
+        dailySales: [],
+        totalSales: 0,
+        totalQuantity: 0,
+        message: "保存された売上データがありません。同期を実行してください。",
+      });
+    }
+
+    // 日付ごとに集計
+    const dailyMap: { [date: string]: { qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number } } = {};
+
+    snapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const date = data.date;
+      const source = data.mall; // 'rakuten' or 'qoo10'
+
+      if (!dailyMap[date]) {
+        dailyMap[date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+      }
+
+      if (source === 'rakuten' && (!mall || mall === 'rakuten')) {
+        dailyMap[date].rakutenSales += data.sales || 0;
+        dailyMap[date].rakutenQuantity += data.quantity || 0;
+      } else if (source === 'qoo10' && (!mall || mall === 'qoo10')) {
+        dailyMap[date].qoo10Sales += data.sales || 0;
+        dailyMap[date].qoo10Quantity += data.quantity || 0;
+      }
+    });
+
+    const dailySales = Object.entries(dailyMap)
+      .map(([date, data]) => ({
+        date,
+        qoo10Sales: data.qoo10Sales,
+        qoo10Quantity: data.qoo10Quantity,
+        rakutenSales: data.rakutenSales,
+        rakutenQuantity: data.rakutenQuantity,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const totalSales = dailySales.reduce((sum, d) => sum + d.qoo10Sales + d.rakutenSales, 0);
+    const totalQuantity = dailySales.reduce((sum, d) => sum + d.qoo10Quantity + d.rakutenQuantity, 0);
+
+    res.json({
+      success: true,
+      productCode,
+      dailySales,
+      totalSales,
+      totalQuantity,
+      message: `${dailySales.length}日分のデータを取得しました。`,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching cached product sales:", error);
+    res.status(500).json({
+      success: false,
+      message: "売上データの取得に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 商品売上をFirestoreに同期（初回/履歴用）
+app.post("/sync/product-sales", async (req: Request, res: Response) => {
+  try {
+    const { days = 365 } = req.body;
+    console.log(`Syncing product sales for ${days} days`);
+    const axios = (await import('axios')).default;
+
+    // 登録商品一覧を取得
+    const productsSnapshot = await db.collection("registered_products").get();
+    const products = productsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    if (products.length === 0) {
+      return res.json({
+        success: false,
+        message: "登録商品がありません。",
+      });
+    }
+
+    // API認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+    const settings = settingsDoc.data();
+    const rakutenCreds = settings?.rakuten;
+    const qoo10Creds = settings?.qoo10;
+
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const formatDateStr = (d: Date) => d.toISOString().split('T')[0];
+    const startDateStr = formatDateStr(startDate);
+    const endDateStr = formatDateStr(endDate);
+
+    let totalSynced = 0;
+    const results: any[] = [];
+
+    for (const product of products) {
+      const productCode = (product as any).rakutenCode || (product as any).qoo10Code;
+      const productName = (product as any).productName;
+
+      // 楽天売上を同期
+      if ((product as any).rakutenCode && rakutenCreds?.serviceSecret && rakutenCreds?.licenseKey) {
+        try {
+          const rakutenResponse = await axios.get(
+            `http://localhost:${process.env.PORT || 8080}/rakuten/product-sales/${encodeURIComponent((product as any).rakutenCode)}?startDate=${startDateStr}&endDate=${endDateStr}`
+          );
+
+          if (rakutenResponse.data.success && rakutenResponse.data.dailySales) {
+            const batch = db.batch();
+            let batchCount = 0;
+
+            for (const sale of rakutenResponse.data.dailySales) {
+              const docId = `${(product as any).rakutenCode}_rakuten_${sale.date}`;
+              const docRef = db.collection("product_sales").doc(docId);
+              batch.set(docRef, {
+                productCode: (product as any).rakutenCode,
+                productName,
+                mall: 'rakuten',
+                date: sale.date,
+                sales: sale.sales,
+                quantity: sale.quantity,
+                updatedAt: Timestamp.now(),
+              }, { merge: true });
+              batchCount++;
+            }
+
+            if (batchCount > 0) {
+              await batch.commit();
+              totalSynced += batchCount;
+            }
+
+            results.push({
+              product: productName,
+              mall: 'rakuten',
+              synced: batchCount,
+            });
+          }
+        } catch (err: any) {
+          console.error(`Error syncing Rakuten for ${productName}:`, err.message);
+          results.push({
+            product: productName,
+            mall: 'rakuten',
+            error: err.message,
+          });
+        }
+      }
+
+      // Qoo10売上を同期
+      if ((product as any).qoo10Code && qoo10Creds?.apiKey) {
+        try {
+          const qoo10Response = await axios.get(
+            `http://localhost:${process.env.PORT || 8080}/qoo10/product-sales/${encodeURIComponent((product as any).qoo10Code)}?startDate=${startDateStr}&endDate=${endDateStr}`
+          );
+
+          if (qoo10Response.data.success && qoo10Response.data.dailySales) {
+            const batch = db.batch();
+            let batchCount = 0;
+
+            for (const sale of qoo10Response.data.dailySales) {
+              const docId = `${(product as any).qoo10Code}_qoo10_${sale.date}`;
+              const docRef = db.collection("product_sales").doc(docId);
+              batch.set(docRef, {
+                productCode: (product as any).qoo10Code,
+                productName,
+                mall: 'qoo10',
+                date: sale.date,
+                sales: sale.sales,
+                quantity: sale.quantity,
+                updatedAt: Timestamp.now(),
+              }, { merge: true });
+              batchCount++;
+            }
+
+            if (batchCount > 0) {
+              await batch.commit();
+              totalSynced += batchCount;
+            }
+
+            results.push({
+              product: productName,
+              mall: 'qoo10',
+              synced: batchCount,
+            });
+          }
+        } catch (err: any) {
+          console.error(`Error syncing Qoo10 for ${productName}:`, err.message);
+          results.push({
+            product: productName,
+            mall: 'qoo10',
+            error: err.message,
+          });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      totalSynced,
+      results,
+      message: `${totalSynced}件の売上データを同期しました。`,
+    });
+
+  } catch (error: any) {
+    console.error("Error syncing product sales:", error);
+    res.status(500).json({
+      success: false,
+      message: "売上データの同期に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 前日分の売上を同期（毎朝の定期実行用）
+app.post("/sync/daily", async (req: Request, res: Response) => {
+  try {
+    console.log("Daily sync triggered");
+    const axios = (await import('axios')).default;
+
+    // 登録商品一覧を取得
+    const productsSnapshot = await db.collection("registered_products").get();
+    const products = productsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    if (products.length === 0) {
+      return res.json({
+        success: false,
+        message: "登録商品がありません。",
+      });
+    }
+
+    // API認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+    const settings = settingsDoc.data();
+    const rakutenCreds = settings?.rakuten;
+    const qoo10Creds = settings?.qoo10;
+
+    // 昨日の日付
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+    // 今日の日付（念のため今日も取得）
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+
+    let totalSynced = 0;
+    const results: any[] = [];
+
+    for (const product of products) {
+      const productName = (product as any).productName;
+
+      // 楽天売上を同期
+      if ((product as any).rakutenCode && rakutenCreds?.serviceSecret && rakutenCreds?.licenseKey) {
+        try {
+          const rakutenResponse = await axios.get(
+            `http://localhost:${process.env.PORT || 8080}/rakuten/product-sales/${encodeURIComponent((product as any).rakutenCode)}?startDate=${yesterdayStr}&endDate=${todayStr}`
+          );
+
+          if (rakutenResponse.data.success && rakutenResponse.data.dailySales) {
+            const batch = db.batch();
+            let batchCount = 0;
+
+            for (const sale of rakutenResponse.data.dailySales) {
+              const docId = `${(product as any).rakutenCode}_rakuten_${sale.date}`;
+              const docRef = db.collection("product_sales").doc(docId);
+              batch.set(docRef, {
+                productCode: (product as any).rakutenCode,
+                productName,
+                mall: 'rakuten',
+                date: sale.date,
+                sales: sale.sales,
+                quantity: sale.quantity,
+                updatedAt: Timestamp.now(),
+              }, { merge: true });
+              batchCount++;
+            }
+
+            if (batchCount > 0) {
+              await batch.commit();
+              totalSynced += batchCount;
+            }
+
+            results.push({
+              product: productName,
+              mall: 'rakuten',
+              synced: batchCount,
+            });
+          }
+        } catch (err: any) {
+          console.error(`Daily sync error (Rakuten) for ${productName}:`, err.message);
+        }
+      }
+
+      // Qoo10売上を同期
+      if ((product as any).qoo10Code && qoo10Creds?.apiKey) {
+        try {
+          const qoo10Response = await axios.get(
+            `http://localhost:${process.env.PORT || 8080}/qoo10/product-sales/${encodeURIComponent((product as any).qoo10Code)}?startDate=${yesterdayStr}&endDate=${todayStr}`
+          );
+
+          if (qoo10Response.data.success && qoo10Response.data.dailySales) {
+            const batch = db.batch();
+            let batchCount = 0;
+
+            for (const sale of qoo10Response.data.dailySales) {
+              const docId = `${(product as any).qoo10Code}_qoo10_${sale.date}`;
+              const docRef = db.collection("product_sales").doc(docId);
+              batch.set(docRef, {
+                productCode: (product as any).qoo10Code,
+                productName,
+                mall: 'qoo10',
+                date: sale.date,
+                sales: sale.sales,
+                quantity: sale.quantity,
+                updatedAt: Timestamp.now(),
+              }, { merge: true });
+              batchCount++;
+            }
+
+            if (batchCount > 0) {
+              await batch.commit();
+              totalSynced += batchCount;
+            }
+
+            results.push({
+              product: productName,
+              mall: 'qoo10',
+              synced: batchCount,
+            });
+          }
+        } catch (err: any) {
+          console.error(`Daily sync error (Qoo10) for ${productName}:`, err.message);
+        }
+      }
+    }
+
+    // 同期ログを保存
+    await db.collection("sync_logs").add({
+      type: 'daily',
+      syncedAt: Timestamp.now(),
+      totalSynced,
+      results,
+    });
+
+    res.json({
+      success: true,
+      totalSynced,
+      results,
+      message: `${totalSynced}件の売上データを同期しました。`,
+    });
+
+  } catch (error: any) {
+    console.error("Error in daily sync:", error);
+    res.status(500).json({
+      success: false,
+      message: "日次同期に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// ==================== End 売上データ同期・取得 ====================
+
 // バッチ処理トリガー（将来のスクレイピング用）
 app.post("/trigger-batch", async (req: Request, res: Response) => {
   try {

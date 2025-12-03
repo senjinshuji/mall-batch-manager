@@ -287,7 +287,7 @@ export default function DashboardPage() {
     }
   };
 
-  // 商品選択時に各モールAPIから売上データを取得（実データユーザーのみ）
+  // 商品選択時にFirestoreキャッシュから売上データを取得（実データユーザーのみ）
   const fetchProductSales = async (product: RegisteredProduct) => {
     if (!isRealDataUser) {
       setProductSalesData([]);
@@ -304,20 +304,35 @@ export default function DashboardPage() {
     try {
       const allSalesData: { [date: string]: { qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number } } = {};
 
-      // Qoo10の売上を取得
+      // まずFirestoreキャッシュから取得を試みる（Qoo10）
       if (product.qoo10Code) {
         try {
-          const qoo10Response = await fetch(
-            `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
+          const cacheResponse = await fetch(
+            `${BACKEND_URL}/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
           );
-          const qoo10Data = await qoo10Response.json();
-          if (qoo10Data.success && qoo10Data.dailySales) {
-            for (const item of qoo10Data.dailySales) {
+          const cacheData = await cacheResponse.json();
+          if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
+            for (const item of cacheData.dailySales) {
               if (!allSalesData[item.date]) {
                 allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
               }
-              allSalesData[item.date].qoo10Sales += item.sales;
-              allSalesData[item.date].qoo10Quantity += item.quantity;
+              allSalesData[item.date].qoo10Sales += item.qoo10Sales || 0;
+              allSalesData[item.date].qoo10Quantity += item.qoo10Quantity || 0;
+            }
+          } else {
+            // キャッシュがなければAPIから直接取得
+            const qoo10Response = await fetch(
+              `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
+            );
+            const qoo10Data = await qoo10Response.json();
+            if (qoo10Data.success && qoo10Data.dailySales) {
+              for (const item of qoo10Data.dailySales) {
+                if (!allSalesData[item.date]) {
+                  allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                }
+                allSalesData[item.date].qoo10Sales += item.sales;
+                allSalesData[item.date].qoo10Quantity += item.quantity;
+              }
             }
           }
         } catch (err) {
@@ -325,20 +340,35 @@ export default function DashboardPage() {
         }
       }
 
-      // 楽天の売上を取得
+      // Firestoreキャッシュから取得を試みる（楽天）
       if (product.rakutenCode) {
         try {
-          const rakutenResponse = await fetch(
-            `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
+          const cacheResponse = await fetch(
+            `${BACKEND_URL}/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
           );
-          const rakutenData = await rakutenResponse.json();
-          if (rakutenData.success && rakutenData.dailySales) {
-            for (const item of rakutenData.dailySales) {
+          const cacheData = await cacheResponse.json();
+          if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
+            for (const item of cacheData.dailySales) {
               if (!allSalesData[item.date]) {
                 allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
               }
-              allSalesData[item.date].rakutenSales += item.sales;
-              allSalesData[item.date].rakutenQuantity += item.quantity;
+              allSalesData[item.date].rakutenSales += item.rakutenSales || 0;
+              allSalesData[item.date].rakutenQuantity += item.rakutenQuantity || 0;
+            }
+          } else {
+            // キャッシュがなければAPIから直接取得
+            const rakutenResponse = await fetch(
+              `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
+            );
+            const rakutenData = await rakutenResponse.json();
+            if (rakutenData.success && rakutenData.dailySales) {
+              for (const item of rakutenData.dailySales) {
+                if (!allSalesData[item.date]) {
+                  allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                }
+                allSalesData[item.date].rakutenSales += item.sales;
+                allSalesData[item.date].rakutenQuantity += item.quantity;
+              }
             }
           }
         } catch (err) {

@@ -21,5 +21,13 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+    match /product_sales/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /sync_logs/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }
