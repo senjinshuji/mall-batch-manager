@@ -1786,29 +1786,53 @@ app.get("/rakuten/daily-sales", async (req: Request, res: Response) => {
 
     console.log("Fetching orders from", formatDate(startDate), "to", formatDate(endDate));
 
-    // 注文番号を検索
-    const searchResponse = await axios.post(
-      'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/',
-      {
-        dateType: 1, // 注文日
-        startDatetime: formatDate(startDate),
-        endDatetime: formatDate(endDate),
-        orderProgressList: [100, 200, 300, 400, 500, 600, 700, 800, 900],
-        PaginationRequestModel: {
-          requestRecordsAmount: 1000,
-          requestPage: 1,
-        },
-      },
-      {
-        headers: {
-          'Authorization': authHeader,
-          'Content-Type': 'application/json; charset=utf-8',
-        },
-      }
-    );
+    // 注文番号を全ページ取得（ページネーション対応）
+    let allOrderNumbers: string[] = [];
+    let currentPage = 1;
+    let hasMorePages = true;
 
-    const orderNumbers = searchResponse.data?.orderNumberList || [];
-    console.log(`Found ${orderNumbers.length} orders`);
+    while (hasMorePages) {
+      const searchResponse = await axios.post(
+        'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/',
+        {
+          dateType: 1, // 注文日
+          startDatetime: formatDate(startDate),
+          endDatetime: formatDate(endDate),
+          orderProgressList: [100, 200, 300, 400, 500, 600, 700, 800, 900],
+          PaginationRequestModel: {
+            requestRecordsAmount: 1000,
+            requestPage: currentPage,
+          },
+        },
+        {
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json; charset=utf-8',
+          },
+        }
+      );
+
+      const pageOrderNumbers = searchResponse.data?.orderNumberList || [];
+      const paginationResponse = searchResponse.data?.PaginationResponseModel;
+
+      allOrderNumbers = allOrderNumbers.concat(pageOrderNumbers);
+      console.log(`Page ${currentPage}: ${pageOrderNumbers.length} orders (total: ${allOrderNumbers.length})`);
+
+      // 次のページがあるかチェック
+      if (paginationResponse) {
+        const totalPages = paginationResponse.totalPages || 1;
+        if (currentPage >= totalPages || pageOrderNumbers.length === 0) {
+          hasMorePages = false;
+        } else {
+          currentPage++;
+        }
+      } else {
+        hasMorePages = false;
+      }
+    }
+
+    const orderNumbers = allOrderNumbers;
+    console.log(`Found ${orderNumbers.length} orders total`);
 
     if (orderNumbers.length === 0) {
       return res.json({
@@ -1964,29 +1988,54 @@ app.get("/rakuten/product-sales/:productCode", async (req: Request, res: Respons
 
     console.log("Fetching orders from", formatDate(start), "to", formatDate(end));
 
-    // 注文番号を検索
-    const searchResponse = await axios.post(
-      'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/',
-      {
-        dateType: 1,
-        startDatetime: formatDate(start),
-        endDatetime: formatDate(end),
-        orderProgressList: [100, 200, 300, 400, 500, 600, 700, 800, 900],
-        PaginationRequestModel: {
-          requestRecordsAmount: 1000,
-          requestPage: 1,
-        },
-      },
-      {
-        headers: {
-          'Authorization': authHeader,
-          'Content-Type': 'application/json; charset=utf-8',
-        },
-      }
-    );
+    // 注文番号を全ページ取得（ページネーション対応）
+    let allOrderNumbers: string[] = [];
+    let currentPage = 1;
+    let hasMorePages = true;
 
-    const orderNumbers = searchResponse.data?.orderNumberList || [];
-    console.log(`Found ${orderNumbers.length} orders`);
+    while (hasMorePages) {
+      const searchResponse = await axios.post(
+        'https://api.rms.rakuten.co.jp/es/2.0/order/searchOrder/',
+        {
+          dateType: 1,
+          startDatetime: formatDate(start),
+          endDatetime: formatDate(end),
+          orderProgressList: [100, 200, 300, 400, 500, 600, 700, 800, 900],
+          PaginationRequestModel: {
+            requestRecordsAmount: 1000,
+            requestPage: currentPage,
+          },
+        },
+        {
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json; charset=utf-8',
+          },
+        }
+      );
+
+      const pageOrderNumbers = searchResponse.data?.orderNumberList || [];
+      const paginationResponse = searchResponse.data?.PaginationResponseModel;
+
+      allOrderNumbers = allOrderNumbers.concat(pageOrderNumbers);
+      console.log(`Page ${currentPage}: ${pageOrderNumbers.length} orders (total: ${allOrderNumbers.length})`);
+
+      // 次のページがあるかチェック
+      if (paginationResponse) {
+        const totalRecords = paginationResponse.totalRecordsAmount || 0;
+        const totalPages = paginationResponse.totalPages || 1;
+        if (currentPage >= totalPages || pageOrderNumbers.length === 0) {
+          hasMorePages = false;
+        } else {
+          currentPage++;
+        }
+      } else {
+        hasMorePages = false;
+      }
+    }
+
+    const orderNumbers = allOrderNumbers;
+    console.log(`Found ${orderNumbers.length} orders total`);
 
     if (orderNumbers.length === 0) {
       return res.json({

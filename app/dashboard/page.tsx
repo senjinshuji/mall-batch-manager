@@ -958,7 +958,36 @@ export default function DashboardPage() {
               </div>
             </div>
           ) : (
-            <div className="h-72">
+            <div className="h-72 relative">
+              {/* フラグマーカー（グラフの上に重ねて表示） */}
+              {showFlags && eventFlags
+                .filter(flag => flag.date >= startDate && flag.date <= endDate)
+                .map((flag) => {
+                  const dataIndex = productSalesData.findIndex(d => d.date === flag.date);
+                  if (dataIndex === -1) return null;
+                  const graphLeftMargin = 55;
+                  const graphRightMargin = 55;
+                  const position = ((dataIndex + 0.5) / productSalesData.length) * 100;
+                  return (
+                    <div
+                      key={flag.id}
+                      className="absolute z-10 cursor-pointer"
+                      style={{
+                        top: '20px',
+                        left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${position / 100})`,
+                        transform: 'translateX(-50%)',
+                      }}
+                      onClick={() => setSelectedFlag(flag)}
+                    >
+                      <div className="flex flex-col items-center">
+                        <span className="text-purple-600 text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border border-purple-200">
+                          🚩 {flag.name}
+                        </span>
+                        <div className="w-0.5 h-44 opacity-80" style={{ background: 'repeating-linear-gradient(to bottom, #9333EA 0, #9333EA 4px, transparent 4px, transparent 8px)' }} />
+                      </div>
+                    </div>
+                  );
+                })}
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
                   data={productSalesData}
