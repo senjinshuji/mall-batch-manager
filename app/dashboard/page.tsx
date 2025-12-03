@@ -15,6 +15,7 @@ import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw } from "lucide-re
 import { db } from "@/lib/firebase";
 import { collection, query, orderBy, onSnapshot, Timestamp, getDocs } from "firebase/firestore";
 import { formatCurrency } from "@/lib/mockData";
+import { useAuth } from "@/lib/auth-context";
 
 // 登録商品の型
 interface RegisteredProduct {
@@ -66,7 +67,38 @@ interface ProductSalesData {
   quantity: number;
 }
 
+// デモ用のダミーデータ
+const generateDemoData = (): SalesData[] => {
+  const data: SalesData[] = [];
+  const today = new Date();
+  for (let i = 30; i >= 0; i--) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toISOString().split("T")[0];
+    data.push({
+      id: `demo-${i}`,
+      date: dateStr,
+      amazon: Math.floor(Math.random() * 50000) + 10000,
+      rakuten: Math.floor(Math.random() * 40000) + 8000,
+      qoo10: Math.floor(Math.random() * 30000) + 5000,
+      amazonAd: Math.floor(Math.random() * 5000) + 1000,
+      rakutenAd: Math.floor(Math.random() * 4000) + 800,
+      qoo10Ad: Math.floor(Math.random() * 3000) + 500,
+      xAd: Math.floor(Math.random() * 2000) + 300,
+      tiktokAd: Math.floor(Math.random() * 2500) + 400,
+    });
+  }
+  return data;
+};
+
+// デモ用の商品データ
+const demoProducts: RegisteredProduct[] = [
+  { id: "demo-1", productName: "デモ商品A", amazonCode: "DEMO-A", rakutenCode: "DEMO-A", qoo10Code: "" },
+  { id: "demo-2", productName: "デモ商品B", amazonCode: "DEMO-B", rakutenCode: "DEMO-B", qoo10Code: "" },
+];
+
 export default function DashboardPage() {
+  const { isRealDataUser } = useAuth();
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [registeredProducts, setRegisteredProducts] = useState<RegisteredProduct[]>([]);
   const [productSalesData, setProductSalesData] = useState<ProductSalesData[]>([]);
@@ -98,8 +130,14 @@ export default function DashboardPage() {
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Firestoreから登録商品を取得
+  // Firestoreから登録商品を取得（実データユーザーのみ）
   useEffect(() => {
+    if (!isRealDataUser) {
+      // デモユーザーはデモ商品を表示
+      setRegisteredProducts(demoProducts);
+      return;
+    }
+
     const fetchProducts = async () => {
       try {
         const q = query(collection(db, "registered_products"), orderBy("createdAt", "desc"));
@@ -117,12 +155,19 @@ export default function DashboardPage() {
       }
     };
     fetchProducts();
-  }, []);
+  }, [isRealDataUser]);
 
-  // Firestoreからリアルタイムでデータを取得
+  // Firestoreからリアルタイムでデータを取得（実データユーザーのみ）
   useEffect(() => {
     setLoading(true);
     setError(null);
+
+    if (!isRealDataUser) {
+      // デモユーザーはデモデータを表示
+      setSalesData(generateDemoData());
+      setLoading(false);
+      return;
+    }
 
     const salesRef = collection(db, "sales_data");
     const q = query(salesRef, orderBy("date", "desc"));
@@ -155,7 +200,7 @@ export default function DashboardPage() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [isRealDataUser]);
 
   // ドロップダウン外クリックで閉じる
   useEffect(() => {
@@ -168,9 +213,9 @@ export default function DashboardPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 商品選択時にQoo10 APIから売上データを取得
+  // 商品選択時にQoo10 APIから売上データを取得（実データユーザーのみ）
   const fetchProductSales = async (product: RegisteredProduct) => {
-    if (!product.qoo10Code) {
+    if (!isRealDataUser || !product.qoo10Code) {
       setProductSalesData([]);
       return;
     }
@@ -211,8 +256,10 @@ export default function DashboardPage() {
     }
   };
 
-  // 日付変更時に商品別売上を再取得
+  // 日付変更時に商品別売上を再取得（実データユーザーのみ）
   useEffect(() => {
+    if (!isRealDataUser) return;
+
     if (selectedProduct && registeredProducts.length > 0) {
       const product = registeredProducts.find(p => p.id === selectedProduct);
       if (product && product.qoo10Code) {
@@ -237,7 +284,7 @@ export default function DashboardPage() {
           });
       }
     }
-  }, [startDate, endDate, selectedProduct, registeredProducts]);
+  }, [startDate, endDate, selectedProduct, registeredProducts, isRealDataUser]);
 
   // 選択中の商品名を取得
   const selectedProductName = selectedProduct
@@ -426,9 +473,16 @@ export default function DashboardPage() {
     <div className="space-y-4">
       {/* ページタイトル */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gray-800">ダッシュボード</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-bold text-gray-800">ダッシュボード</h1>
+          {!isRealDataUser && (
+            <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-medium rounded-full">
+              デモモード
+            </span>
+          )}
+        </div>
         <div className="text-sm text-gray-500">
-          Firestoreデータ: {salesData.length}件
+          {isRealDataUser ? `Firestoreデータ: ${salesData.length}件` : "デモデータ表示中"}
         </div>
       </div>
 

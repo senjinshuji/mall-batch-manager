@@ -3,9 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { LogIn, Mail, Lock, Store } from "lucide-react";
+import { useAuth } from "@/lib/auth-context";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -14,10 +16,9 @@ export default function LoginPage() {
     e.preventDefault();
     setIsLoading(true);
 
-    // ダミーのログイン処理（少し待機してから遷移）
+    // ログイン処理
     await new Promise((resolve) => setTimeout(resolve, 500));
-
-    console.log("ログイン情報:", { email, password });
+    login(email, password);
     router.push("/dashboard");
   };
 
