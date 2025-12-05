@@ -13,7 +13,6 @@ type RakutenCredentials = {
 
 // Amazon SP-API認証情報
 type AmazonCredentials = {
-  sellerId: string;
   lwaClientId: string;
   lwaClientSecret: string;
   refreshToken: string;
@@ -55,7 +54,6 @@ const MALL_INFO = {
 
 const initialCredentials: Credentials = {
   amazon: {
-    sellerId: "",
     lwaClientId: "",
     lwaClientSecret: "",
     refreshToken: "",
@@ -254,21 +252,6 @@ export default function SettingsPage() {
           </div>
           <div className="p-6">
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {/* 出品者ID */}
-              <div>
-                <label htmlFor="amazon-seller-id" className="block text-sm font-medium text-gray-600 mb-1">
-                  出品者ID (Seller ID)
-                </label>
-                <input
-                  type="text"
-                  id="amazon-seller-id"
-                  value={credentials.amazon.sellerId}
-                  onChange={(e) => handleAmazonChange("sellerId", e.target.value)}
-                  placeholder="A1B2C3D4E5F6G7"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm"
-                />
-              </div>
-
               {/* LWA Client ID */}
               <div>
                 <label htmlFor="amazon-lwa-client-id" className="block text-sm font-medium text-gray-600 mb-1">

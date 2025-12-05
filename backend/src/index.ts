@@ -35,6 +35,41 @@ app.get("/", (req: Request, res: Response) => {
   });
 });
 
+// 設定更新用エンドポイント（POST /settings/amazon）
+app.post("/settings/amazon", async (req: Request, res: Response) => {
+  try {
+    const { lwaClientId, lwaClientSecret, refreshToken, awsAccessKey, awsSecretKey } = req.body;
+
+    const docRef = db.collection("settings").doc("mall_credentials");
+    const doc = await docRef.get();
+    const existingData = doc.exists ? doc.data() : {};
+
+    await docRef.set({
+      ...existingData,
+      amazon: {
+        lwaClientId: lwaClientId || existingData?.amazon?.lwaClientId || "",
+        lwaClientSecret: lwaClientSecret || existingData?.amazon?.lwaClientSecret || "",
+        refreshToken: refreshToken || existingData?.amazon?.refreshToken || "",
+        awsAccessKey: awsAccessKey || existingData?.amazon?.awsAccessKey || "",
+        awsSecretKey: awsSecretKey || existingData?.amazon?.awsSecretKey || "",
+      },
+      updatedAt: new Date(),
+    }, { merge: true });
+
+    res.json({
+      success: true,
+      message: "Amazon認証情報を更新しました",
+    });
+  } catch (error: any) {
+    console.error("設定更新エラー:", error);
+    res.status(500).json({
+      success: false,
+      message: "設定の更新に失敗しました",
+      error: error.message,
+    });
+  }
+});
+
 // スクレイピングエンドポイント
 app.get("/scrape", async (req: Request, res: Response) => {
   console.log("Scrape endpoint triggered at:", new Date().toISOString());
@@ -1259,6 +1294,164 @@ app.get("/qoo10/product-sales/:itemCode", async (req: Request, res: Response) =>
 
 // ==================== Amazon SP-API連携 ====================
 
+// 文字列のデバッグ情報を取得
+function getStringDebugInfo(str: string, name: string): object {
+  const trimmed = str.trim();
+  return {
+    name,
+    originalLength: str.length,
+    trimmedLength: trimmed.length,
+    byteLength: Buffer.byteLength(str, 'utf8'),
+    trimmedByteLength: Buffer.byteLength(trimmed, 'utf8'),
+    hasLeadingWhitespace: str !== str.trimStart(),
+    hasTrailingWhitespace: str !== str.trimEnd(),
+    firstCharCode: str.charCodeAt(0),
+    lastCharCode: str.charCodeAt(str.length - 1),
+    first10Chars: str.substring(0, 10),
+    last10Chars: str.substring(str.length - 10),
+    // 制御文字の検出
+    hasControlChars: /[\x00-\x1F\x7F]/.test(str),
+  };
+}
+
+// Amazon SP-APIアクセストークン取得（デバッグ情報付き）
+async function getAmazonAccessTokenDebug(credentials: {
+  lwaClientId: string;
+  lwaClientSecret: string;
+  refreshToken: string;
+}): Promise<{ accessToken?: string; debugInfo: any; error?: any }> {
+  const axios = (await import('axios')).default;
+
+  // トリミング処理
+  const clientId = credentials.lwaClientId.trim();
+  const clientSecret = credentials.lwaClientSecret.trim();
+  const refreshToken = credentials.refreshToken.trim();
+
+  // リクエストボディを構築
+  const requestBody = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: clientId,
+    client_secret: clientSecret,
+  }).toString();
+
+  // LWAエンドポイント（Production）
+  // Sandbox: https://api.amazon.com/auth/O2/token (大文字O)
+  // Production: https://api.amazon.com/auth/o2/token (小文字o)
+  const lwaEndpoint = 'https://api.amazon.com/auth/o2/token';
+
+  const debugInfo = {
+    credentials: {
+      clientId: getStringDebugInfo(credentials.lwaClientId, 'lwaClientId'),
+      clientSecret: getStringDebugInfo(credentials.lwaClientSecret, 'lwaClientSecret'),
+      refreshToken: getStringDebugInfo(credentials.refreshToken, 'refreshToken'),
+    },
+    trimmedCredentials: {
+      clientIdLength: clientId.length,
+      clientSecretLength: clientSecret.length,
+      refreshTokenLength: refreshToken.length,
+    },
+    request: {
+      endpoint: lwaEndpoint,
+      method: 'POST',
+      contentType: 'application/x-www-form-urlencoded',
+      bodyLength: requestBody.length,
+      // 機密情報をマスク
+      bodyPreview: requestBody.replace(/client_secret=[^&]+/, 'client_secret=***MASKED***')
+        .replace(/refresh_token=[^&]+/, 'refresh_token=***MASKED***'),
+    },
+    spApiEndpoints: {
+      production: 'https://sellingpartnerapi-fe.amazon.com',
+      sandbox: 'https://sandbox.sellingpartnerapi-fe.amazon.com',
+      note: 'Japan uses Far East (fe) endpoint',
+    },
+  };
+
+  try {
+    const response = await axios.post(lwaEndpoint, requestBody, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    });
+
+    return {
+      accessToken: response.data.access_token,
+      debugInfo: {
+        ...debugInfo,
+        response: {
+          status: response.status,
+          hasAccessToken: !!response.data.access_token,
+          tokenType: response.data.token_type,
+          expiresIn: response.data.expires_in,
+        },
+      },
+    };
+  } catch (error: any) {
+    return {
+      debugInfo: {
+        ...debugInfo,
+        error: {
+          message: error.message,
+          responseStatus: error.response?.status,
+          responseData: error.response?.data,
+          requestHeaders: error.config?.headers,
+        },
+      },
+      error: error.response?.data || error.message,
+    };
+  }
+}
+
+// Exponential Backoff付きリクエスト関数
+async function fetchWithRetry<T>(
+  requestFn: () => Promise<T>,
+  options: {
+    maxRetries?: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+    backoffMultiplier?: number;
+  } = {}
+): Promise<T> {
+  const {
+    maxRetries = 5,
+    initialDelayMs = 1000,
+    maxDelayMs = 60000,
+    backoffMultiplier = 2,
+  } = options;
+
+  let lastError: any;
+  let delay = initialDelayMs;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await requestFn();
+    } catch (error: any) {
+      lastError = error;
+      const status = error?.response?.status;
+      const errorMessage = error?.response?.data?.errors?.[0]?.message || error?.message || '';
+
+      // 429 (Too Many Requests) または quota exceeded の場合はリトライ
+      const isRateLimited = status === 429 ||
+        errorMessage.toLowerCase().includes('quota') ||
+        errorMessage.toLowerCase().includes('rate') ||
+        errorMessage.toLowerCase().includes('throttl');
+
+      if (!isRateLimited || attempt === maxRetries) {
+        throw error;
+      }
+
+      console.log(`Rate limited (attempt ${attempt + 1}/${maxRetries + 1}). Waiting ${delay}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // 次回の遅延時間を計算（Exponential Backoff + jitter）
+      const jitter = Math.random() * 0.3 * delay; // 0-30%のジッター
+      delay = Math.min(delay * backoffMultiplier + jitter, maxDelayMs);
+    }
+  }
+
+  throw lastError;
+}
+
 // Amazon SP-APIアクセストークン取得
 async function getAmazonAccessToken(credentials: {
   lwaClientId: string;
@@ -1267,13 +1460,18 @@ async function getAmazonAccessToken(credentials: {
 }): Promise<string> {
   const axios = (await import('axios')).default;
 
+  // トリミング処理を追加
+  const clientId = credentials.lwaClientId.trim();
+  const clientSecret = credentials.lwaClientSecret.trim();
+  const refreshToken = credentials.refreshToken.trim();
+
   const response = await axios.post(
     'https://api.amazon.com/auth/o2/token',
     new URLSearchParams({
       grant_type: 'refresh_token',
-      refresh_token: credentials.refreshToken,
-      client_id: credentials.lwaClientId,
-      client_secret: credentials.lwaClientSecret,
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
     }).toString(),
     {
       headers: {
@@ -1285,10 +1483,124 @@ async function getAmazonAccessToken(credentials: {
   return response.data.access_token;
 }
 
-// Amazon商品一覧取得エンドポイント
+// Amazon SP-API デバッグエンドポイント
+app.get("/amazon/debug", async (req: Request, res: Response) => {
+  try {
+    console.log("Amazon debug endpoint triggered");
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const amazonCreds = settings?.amazon;
+
+    if (!amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Amazon SP-APIの認証情報が不完全です。",
+        debug: {
+          hasClientId: !!amazonCreds?.lwaClientId,
+          hasClientSecret: !!amazonCreds?.lwaClientSecret,
+          hasRefreshToken: !!amazonCreds?.refreshToken,
+        },
+      });
+    }
+
+    // デバッグ情報付きでアクセストークン取得を試行
+    const result = await getAmazonAccessTokenDebug({
+      lwaClientId: amazonCreds.lwaClientId,
+      lwaClientSecret: amazonCreds.lwaClientSecret,
+      refreshToken: amazonCreds.refreshToken,
+    });
+
+    if (result.error) {
+      return res.status(400).json({
+        success: false,
+        message: "LWA認証に失敗しました",
+        debugInfo: result.debugInfo,
+        error: result.error,
+      });
+    }
+
+    // 認証成功した場合、SP-APIエンドポイントもテスト
+    const axios = (await import('axios')).default;
+    let spApiTest = null;
+
+    try {
+      const testResponse = await axios.get(
+        'https://sellingpartnerapi-fe.amazon.com/sellers/v1/marketplaceParticipations',
+        {
+          headers: {
+            'x-amz-access-token': result.accessToken,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      spApiTest = {
+        success: true,
+        status: testResponse.status,
+        participations: testResponse.data?.payload?.length || 0,
+      };
+    } catch (spError: any) {
+      spApiTest = {
+        success: false,
+        error: spError.response?.data || spError.message,
+        status: spError.response?.status,
+      };
+    }
+
+    res.json({
+      success: true,
+      message: "LWA認証成功",
+      debugInfo: result.debugInfo,
+      spApiTest,
+    });
+
+  } catch (error: any) {
+    console.error("Amazon debug error:", error);
+    res.status(500).json({
+      success: false,
+      message: "デバッグ中にエラーが発生しました",
+      error: error.message,
+    });
+  }
+});
+
+// Amazon商品一覧取得エンドポイント（キャッシュ付き）
 app.get("/amazon/products", async (req: Request, res: Response) => {
   try {
     console.log("Amazon products endpoint triggered");
+    const forceRefresh = req.query.refresh === 'true';
+
+    // まずキャッシュをチェック（refresh=trueでない場合）
+    if (!forceRefresh) {
+      const cacheDoc = await db.collection("settings").doc("amazon_products_cache").get();
+      if (cacheDoc.exists) {
+        const cacheData = cacheDoc.data();
+        const cachedAt = cacheData?.cachedAt?.toDate?.() || new Date(cacheData?.cachedAt);
+        const hoursSinceCache = (Date.now() - cachedAt.getTime()) / (1000 * 60 * 60);
+
+        // 24時間以内のキャッシュがあれば返す
+        if (hoursSinceCache < 24 && cacheData?.products) {
+          console.log(`Returning cached Amazon products (${cacheData.products.length} items, cached ${hoursSinceCache.toFixed(1)}h ago)`);
+          return res.json({
+            success: true,
+            products: cacheData.products,
+            count: cacheData.products.length,
+            cached: true,
+            cachedAt: cachedAt.toISOString(),
+          });
+        }
+      }
+    }
+
     const axios = (await import('axios')).default;
 
     // FirestoreからAPI認証情報を取得
@@ -1304,7 +1616,7 @@ app.get("/amazon/products", async (req: Request, res: Response) => {
     const settings = settingsDoc.data();
     const amazonCreds = settings?.amazon;
 
-    if (!amazonCreds?.sellerId || !amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
+    if (!amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
       return res.status(400).json({
         success: false,
         message: "Amazon SP-APIの認証情報が不完全です。",
@@ -1318,34 +1630,152 @@ app.get("/amazon/products", async (req: Request, res: Response) => {
       refreshToken: amazonCreds.refreshToken,
     });
 
-    // SP-API: Catalog Items API を使用して商品一覧取得
-    // まず出品情報を取得
-    const listingsResponse = await axios.get(
-      `https://sellingpartnerapi-fe.amazon.com/listings/2021-08-01/items/${amazonCreds.sellerId}`,
+    // SP-API: Sellers API を使って自分のSeller IDを取得
+    const sellersResponse = await axios.get(
+      'https://sellingpartnerapi-fe.amazon.com/sellers/v1/marketplaceParticipations',
       {
         headers: {
           'x-amz-access-token': accessToken,
           'Content-Type': 'application/json',
         },
-        params: {
-          marketplaceIds: 'A1VC38T7YXB528', // Amazon.co.jp
-          includedData: 'summaries',
+      }
+    );
+
+    // 最初のマーケットプレイス参加情報からSeller IDを取得
+    const participations = sellersResponse.data?.payload || [];
+    const jpParticipation = participations.find(
+      (p: any) => p.marketplace?.id === 'A1VC38T7YXB528' // Amazon.co.jp
+    ) || participations[0];
+
+    if (!jpParticipation) {
+      return res.status(400).json({
+        success: false,
+        message: "Amazon マーケットプレイス参加情報が見つかりません。",
+      });
+    }
+
+    const sellerId = jpParticipation.seller?.sellerId;
+    console.log("Amazon Seller ID:", sellerId);
+
+    // SP-API: Reports API を使用して出品レポートを取得
+    // まずレポート作成をリクエスト
+    const reportResponse = await axios.post(
+      'https://sellingpartnerapi-fe.amazon.com/reports/2021-06-30/reports',
+      {
+        reportType: 'GET_MERCHANT_LISTINGS_ALL_DATA',
+        marketplaceIds: ['A1VC38T7YXB528'], // Amazon.co.jp
+      },
+      {
+        headers: {
+          'x-amz-access-token': accessToken,
+          'Content-Type': 'application/json',
         },
       }
     );
 
-    // 商品情報を整形
-    const products = (listingsResponse.data?.items || []).map((item: any) => ({
-      code: item.sku || item.asin,
-      name: item.summaries?.[0]?.itemName || item.sku || 'Unknown',
-      asin: item.asin,
-      sku: item.sku,
-    }));
+    const reportId = reportResponse.data?.reportId;
+    console.log("Report ID:", reportId);
+
+    // レポートの生成完了を待つ（最大30秒）
+    let reportStatus = 'IN_QUEUE';
+    let reportDocumentId = null;
+    let attempts = 0;
+    const maxAttempts = 15;
+
+    while (reportStatus !== 'DONE' && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      attempts++;
+
+      const statusResponse = await axios.get(
+        `https://sellingpartnerapi-fe.amazon.com/reports/2021-06-30/reports/${reportId}`,
+        {
+          headers: {
+            'x-amz-access-token': accessToken,
+          },
+        }
+      );
+
+      reportStatus = statusResponse.data?.processingStatus;
+      reportDocumentId = statusResponse.data?.reportDocumentId;
+      console.log(`Report status (attempt ${attempts}):`, reportStatus);
+
+      if (reportStatus === 'FATAL' || reportStatus === 'CANCELLED') {
+        throw new Error(`Report generation failed: ${reportStatus}`);
+      }
+    }
+
+    if (!reportDocumentId) {
+      return res.status(500).json({
+        success: false,
+        message: "レポート生成がタイムアウトしました。しばらく待ってから再試行してください。",
+      });
+    }
+
+    // レポートドキュメントのダウンロードURL取得
+    const docResponse = await axios.get(
+      `https://sellingpartnerapi-fe.amazon.com/reports/2021-06-30/documents/${reportDocumentId}`,
+      {
+        headers: {
+          'x-amz-access-token': accessToken,
+        },
+      }
+    );
+
+    const downloadUrl = docResponse.data?.url;
+
+    // レポートをダウンロード（バイナリとして取得してShift_JISからデコード）
+    const reportDataResponse = await axios.get(downloadUrl, {
+      responseType: 'arraybuffer',
+    });
+
+    // Shift_JIS（CP932）からUTF-8にデコード
+    const iconv = await import('iconv-lite');
+    const decodedData = iconv.decode(Buffer.from(reportDataResponse.data), 'CP932');
+
+    // TSVをパース
+    const lines = decodedData.split('\n');
+    const headers = lines[0].split('\t');
+
+    // デバッグ: ヘッダーの内容をログ出力
+    console.log("Report headers:", headers);
+    console.log("First data line:", lines[1]?.split('\t'));
+
+    // 日本語ヘッダーに対応したカラム検索
+    const skuIndex = headers.findIndex((h: string) =>
+      h === '出品者SKU' || h.toLowerCase() === 'seller-sku' || h.toLowerCase() === 'sku'
+    );
+    const titleIndex = headers.findIndex((h: string) =>
+      h === '商品名' || h.toLowerCase() === 'item-name' || h.toLowerCase() === 'product-name'
+    );
+    const asinIndex = headers.findIndex((h: string) =>
+      h === '商品ID' || h === 'ASIN' || h.toLowerCase() === 'asin1' || h.toLowerCase() === 'asin'
+    );
+
+    console.log("Column indices - SKU:", skuIndex, "Title:", titleIndex, "ASIN:", asinIndex);
+
+    const products = lines.slice(1).filter((line: string) => line.trim()).map((line: string) => {
+      const cols = line.split('\t');
+      return {
+        code: cols[skuIndex] || '',
+        name: titleIndex >= 0 && cols[titleIndex] ? cols[titleIndex] : (cols[skuIndex] || 'Unknown'),
+        asin: asinIndex >= 0 ? (cols[asinIndex] || '') : '',
+        sku: cols[skuIndex] || '',
+      };
+    }).filter((p: any) => p.code);
+
+    // キャッシュに保存
+    await db.collection("settings").doc("amazon_products_cache").set({
+      products,
+      cachedAt: Timestamp.now(),
+      count: products.length,
+    });
+    console.log(`Cached ${products.length} Amazon products`);
 
     res.json({
       success: true,
       products,
       count: products.length,
+      cached: false,
     });
 
   } catch (error: any) {
@@ -1353,6 +1783,809 @@ app.get("/amazon/products", async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       message: "Amazon商品一覧の取得に失敗しました",
+      error: error?.response?.data?.errors?.[0]?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// Amazon売上データ取得エンドポイント（Orders API使用）
+app.get("/amazon/sales", async (req: Request, res: Response) => {
+  try {
+    console.log("Amazon sales endpoint triggered");
+    const axios = (await import('axios')).default;
+
+    // クエリパラメータから期間を取得（デフォルト: 過去30日）
+    const endDate = req.query.endDate as string || new Date().toISOString().split('T')[0];
+    const startDateParam = req.query.startDate as string;
+
+    let startDate: string;
+    if (startDateParam) {
+      startDate = startDateParam;
+    } else {
+      const start = new Date();
+      start.setDate(start.getDate() - 30);
+      startDate = start.toISOString().split('T')[0];
+    }
+
+    console.log(`Fetching Amazon sales from ${startDate} to ${endDate}`);
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const amazonCreds = settings?.amazon;
+
+    if (!amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Amazon SP-APIの認証情報が不完全です。",
+      });
+    }
+
+    // アクセストークン取得
+    const accessToken = await getAmazonAccessToken({
+      lwaClientId: amazonCreds.lwaClientId,
+      lwaClientSecret: amazonCreds.lwaClientSecret,
+      refreshToken: amazonCreds.refreshToken,
+    });
+
+    // SP-API: Orders API を使用して注文を取得
+    // 注文を取得（ページネーション対応）
+    let allOrders: any[] = [];
+    let nextToken: string | null = null;
+    let pageCount = 0;
+    const maxPages = 10; // 最大10ページ（1000件）
+
+    // CreatedBeforeは現在時刻の2分前以前にする必要がある
+    const now = new Date();
+    const twoMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000); // 3分前に設定（安全マージン）
+    const endDateObj = new Date(`${endDate}T23:59:59Z`);
+    const createdBefore = endDateObj > twoMinutesAgo ? twoMinutesAgo.toISOString() : `${endDate}T23:59:59Z`;
+
+    do {
+      const params: any = {
+        MarketplaceIds: 'A1VC38T7YXB528', // Amazon.co.jp
+        CreatedAfter: `${startDate}T00:00:00Z`,
+        CreatedBefore: createdBefore,
+        OrderStatuses: 'Shipped,Unshipped,PartiallyShipped',
+        MaxResultsPerPage: 100,
+      };
+
+      if (nextToken) {
+        params.NextToken = nextToken;
+      }
+
+      console.log(`Fetching orders page ${pageCount + 1}...`);
+
+      // Exponential Backoff付きでOrders APIを呼び出し
+      const ordersResponse = await fetchWithRetry(
+        () => axios.get(
+          'https://sellingpartnerapi-fe.amazon.com/orders/v0/orders',
+          {
+            params,
+            headers: {
+              'x-amz-access-token': accessToken,
+              'Content-Type': 'application/json',
+            },
+          }
+        ),
+        { maxRetries: 5, initialDelayMs: 2000, maxDelayMs: 60000 }
+      );
+
+      const orders = ordersResponse.data?.payload?.Orders || [];
+      allOrders = allOrders.concat(orders);
+      nextToken = ordersResponse.data?.payload?.NextToken || null;
+      pageCount++;
+
+      console.log(`Got ${orders.length} orders, total: ${allOrders.length}`);
+
+      // レート制限対策
+      if (nextToken && pageCount < maxPages) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+    } while (nextToken && pageCount < maxPages);
+
+    console.log(`Total orders fetched: ${allOrders.length}`);
+
+    // 日別集計とSKU別集計
+    const dailySales: { [date: string]: { sales: number; quantity: number; orderCount: number } } = {};
+    const orderDetails: any[] = [];
+
+    for (const order of allOrders) {
+      const purchaseDate = order.PurchaseDate;
+      const orderTotal = parseFloat(order.OrderTotal?.Amount || '0');
+
+      // 日付を YYYY-MM-DD 形式に変換
+      let dateKey = '';
+      if (purchaseDate) {
+        try {
+          const d = new Date(purchaseDate);
+          dateKey = d.toISOString().split('T')[0];
+        } catch (e) {
+          dateKey = purchaseDate.split('T')[0];
+        }
+      }
+
+      // 日別集計
+      if (dateKey) {
+        if (!dailySales[dateKey]) {
+          dailySales[dateKey] = { sales: 0, quantity: 0, orderCount: 0 };
+        }
+        dailySales[dateKey].sales += orderTotal;
+        dailySales[dateKey].quantity += order.NumberOfItemsShipped || order.NumberOfItemsUnshipped || 1;
+        dailySales[dateKey].orderCount += 1;
+      }
+
+      orderDetails.push({
+        orderId: order.AmazonOrderId,
+        purchaseDate: dateKey,
+        orderStatus: order.OrderStatus,
+        orderTotal,
+        currency: order.OrderTotal?.CurrencyCode || 'JPY',
+        numberOfItems: order.NumberOfItemsShipped || order.NumberOfItemsUnshipped || 0,
+      });
+    }
+
+    // 日別売上を配列に変換（日付順）
+    const dailySalesArray = Object.entries(dailySales)
+      .map(([date, data]) => ({
+        date,
+        sales: Math.round(data.sales),
+        quantity: data.quantity,
+        orderCount: data.orderCount,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // 合計計算
+    const totalSales = dailySalesArray.reduce((sum, d) => sum + d.sales, 0);
+    const totalQuantity = dailySalesArray.reduce((sum, d) => sum + d.quantity, 0);
+    const totalOrderCount = dailySalesArray.reduce((sum, d) => sum + d.orderCount, 0);
+
+    // Firestoreにキャッシュ保存
+    await db.collection("settings").doc("amazon_sales_cache").set({
+      startDate,
+      endDate,
+      dailySales: dailySalesArray,
+      totalSales,
+      totalQuantity,
+      orderCount: totalOrderCount,
+      cachedAt: Timestamp.now(),
+    });
+
+    res.json({
+      success: true,
+      period: { startDate, endDate },
+      summary: {
+        totalSales,
+        totalQuantity,
+        orderCount: totalOrderCount,
+        daysCount: dailySalesArray.length,
+      },
+      dailySales: dailySalesArray,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching Amazon sales:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "Amazon売上データの取得に失敗しました",
+      error: error?.response?.data?.errors?.[0]?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// Amazon売上をFirestoreのsales_dataに同期するエンドポイント
+app.post("/amazon/sync-sales", async (req: Request, res: Response) => {
+  try {
+    console.log("Amazon sync-sales endpoint triggered");
+    const axios = (await import('axios')).default;
+
+    // クエリパラメータまたはボディから期間を取得
+    const endDate = req.body.endDate || req.query.endDate as string || new Date().toISOString().split('T')[0];
+    const startDateParam = req.body.startDate || req.query.startDate as string;
+
+    let startDate: string;
+    if (startDateParam) {
+      startDate = startDateParam;
+    } else {
+      const start = new Date();
+      start.setDate(start.getDate() - 30);
+      startDate = start.toISOString().split('T')[0];
+    }
+
+    console.log(`Syncing Amazon sales from ${startDate} to ${endDate}`);
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+
+    if (!settingsDoc.exists) {
+      return res.status(400).json({
+        success: false,
+        message: "API認証情報が設定されていません。",
+      });
+    }
+
+    const settings = settingsDoc.data();
+    const amazonCreds = settings?.amazon;
+
+    if (!amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Amazon SP-APIの認証情報が不完全です。",
+      });
+    }
+
+    // アクセストークン取得
+    const accessToken = await getAmazonAccessToken({
+      lwaClientId: amazonCreds.lwaClientId,
+      lwaClientSecret: amazonCreds.lwaClientSecret,
+      refreshToken: amazonCreds.refreshToken,
+    });
+
+    // Orders API で注文を取得
+    let allOrders: any[] = [];
+    let nextToken: string | null = null;
+    let pageCount = 0;
+    const maxPages = 20; // より多くのデータを取得
+
+    const now = new Date();
+    const twoMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
+    const endDateObj = new Date(`${endDate}T23:59:59Z`);
+    const createdBefore = endDateObj > twoMinutesAgo ? twoMinutesAgo.toISOString() : `${endDate}T23:59:59Z`;
+
+    do {
+      const params: any = {
+        MarketplaceIds: 'A1VC38T7YXB528',
+        CreatedAfter: `${startDate}T00:00:00Z`,
+        CreatedBefore: createdBefore,
+        OrderStatuses: 'Shipped,Unshipped,PartiallyShipped',
+        MaxResultsPerPage: 100,
+      };
+
+      if (nextToken) {
+        params.NextToken = nextToken;
+      }
+
+      // Exponential Backoff付きでOrders APIを呼び出し
+      const ordersResponse = await fetchWithRetry(
+        () => axios.get(
+          'https://sellingpartnerapi-fe.amazon.com/orders/v0/orders',
+          {
+            params,
+            headers: {
+              'x-amz-access-token': accessToken,
+              'Content-Type': 'application/json',
+            },
+          }
+        ),
+        { maxRetries: 5, initialDelayMs: 2000, maxDelayMs: 60000 }
+      );
+
+      const orders = ordersResponse.data?.payload?.Orders || [];
+      allOrders = allOrders.concat(orders);
+      nextToken = ordersResponse.data?.payload?.NextToken || null;
+      pageCount++;
+
+      if (nextToken && pageCount < maxPages) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 基本待機時間を増加
+      }
+
+    } while (nextToken && pageCount < maxPages);
+
+    console.log(`Total orders fetched: ${allOrders.length}`);
+
+    // 日別に集計
+    const dailySales: { [date: string]: { sales: number; quantity: number; orderCount: number } } = {};
+
+    for (const order of allOrders) {
+      const purchaseDate = order.PurchaseDate;
+      const orderTotal = parseFloat(order.OrderTotal?.Amount || '0');
+
+      let dateKey = '';
+      if (purchaseDate) {
+        try {
+          const d = new Date(purchaseDate);
+          dateKey = d.toISOString().split('T')[0];
+        } catch (e) {
+          dateKey = purchaseDate.split('T')[0];
+        }
+      }
+
+      if (dateKey) {
+        if (!dailySales[dateKey]) {
+          dailySales[dateKey] = { sales: 0, quantity: 0, orderCount: 0 };
+        }
+        dailySales[dateKey].sales += orderTotal;
+        dailySales[dateKey].quantity += order.NumberOfItemsShipped || order.NumberOfItemsUnshipped || 1;
+        dailySales[dateKey].orderCount += 1;
+      }
+    }
+
+    // Firestoreのsales_dataに保存（日付をドキュメントIDとして使用）
+    let syncedCount = 0;
+    for (const [date, data] of Object.entries(dailySales)) {
+      const docRef = db.collection("sales_data").doc(date);
+      const existingDoc = await docRef.get();
+
+      const updateData: any = {
+        date,
+        amazon: Math.round(data.sales),
+        updatedAt: Timestamp.now(),
+      };
+
+      if (existingDoc.exists) {
+        // 既存のドキュメントがあればAmazonのデータだけ更新
+        await docRef.update(updateData);
+      } else {
+        // 新規作成（他のモールは0で初期化）
+        await docRef.set({
+          ...updateData,
+          rakuten: 0,
+          qoo10: 0,
+          amazonAd: 0,
+          rakutenAd: 0,
+          qoo10Ad: 0,
+          xAd: 0,
+          tiktokAd: 0,
+          createdAt: Timestamp.now(),
+        });
+      }
+      syncedCount++;
+    }
+
+    res.json({
+      success: true,
+      message: `Amazon売上データを${syncedCount}日分同期しました`,
+      period: { startDate, endDate },
+      syncedDays: syncedCount,
+      totalOrders: allOrders.length,
+      totalSales: Object.values(dailySales).reduce((sum, d) => sum + d.sales, 0),
+    });
+
+  } catch (error: any) {
+    console.error("Error syncing Amazon sales:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "Amazon売上データの同期に失敗しました",
+      error: error?.response?.data?.errors?.[0]?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// Amazon商品別売上データ取得エンドポイント
+app.get("/amazon/product-sales/:sku", async (req: Request, res: Response) => {
+  try {
+    const sku = req.params.sku;
+    const startDate = req.query.startDate as string || (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      return d.toISOString().split('T')[0];
+    })();
+    const endDate = req.query.endDate as string || new Date().toISOString().split('T')[0];
+    const forceRefresh = req.query.forceRefresh === 'true';
+
+    console.log(`Amazon product sales for SKU: ${sku}, period: ${startDate} to ${endDate}, forceRefresh: ${forceRefresh}`);
+
+    // まずFirestoreのproduct_salesからキャッシュを確認（forceRefreshがfalseの場合のみ）
+    if (!forceRefresh) {
+      const cacheDoc = await db.collection("settings").doc(`product_sales_cache_${sku}`).get();
+
+      if (cacheDoc.exists) {
+        const cacheData = cacheDoc.data();
+        const cachedAt = cacheData?.cachedAt?.toDate?.() || new Date(cacheData?.cachedAt);
+        const hoursSinceCache = (Date.now() - cachedAt.getTime()) / (1000 * 60 * 60);
+
+        if (hoursSinceCache < 6 && cacheData?.dailySales) {
+          console.log(`Returning cached Amazon product sales for ${sku}`);
+          return res.json({
+            success: true,
+            sku,
+            dailySales: cacheData.dailySales,
+            cached: true,
+          });
+        }
+      }
+    } else {
+      console.log(`Force refresh requested for ${sku}, skipping cache`);
+    }
+
+    const axios = (await import('axios')).default;
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+    if (!settingsDoc.exists) {
+      return res.status(400).json({ success: false, message: "API認証情報が設定されていません" });
+    }
+
+    const settings = settingsDoc.data();
+    const amazonCreds = settings?.amazon;
+    if (!amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
+      return res.status(400).json({ success: false, message: "Amazon SP-APIの認証情報が不完全です" });
+    }
+
+    // アクセストークン取得
+    const accessToken = await getAmazonAccessToken({
+      lwaClientId: amazonCreds.lwaClientId,
+      lwaClientSecret: amazonCreds.lwaClientSecret,
+      refreshToken: amazonCreds.refreshToken,
+    });
+
+    // Orders API で注文を取得
+    let allOrders: any[] = [];
+    let nextToken: string | null = null;
+    let pageCount = 0;
+    const maxPages = 10;
+
+    const now = new Date();
+    const twoMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
+    const endDateObj = new Date(`${endDate}T23:59:59Z`);
+    const createdBefore = endDateObj > twoMinutesAgo ? twoMinutesAgo.toISOString() : `${endDate}T23:59:59Z`;
+
+    do {
+      const params: any = {
+        MarketplaceIds: 'A1VC38T7YXB528',
+        CreatedAfter: `${startDate}T00:00:00Z`,
+        CreatedBefore: createdBefore,
+        OrderStatuses: 'Shipped,Unshipped,PartiallyShipped',
+        MaxResultsPerPage: 100,
+      };
+
+      if (nextToken) {
+        params.NextToken = nextToken;
+      }
+
+      // Exponential Backoff付きでOrders APIを呼び出し
+      const ordersResponse = await fetchWithRetry(
+        () => axios.get(
+          'https://sellingpartnerapi-fe.amazon.com/orders/v0/orders',
+          {
+            params,
+            headers: {
+              'x-amz-access-token': accessToken,
+              'Content-Type': 'application/json',
+            },
+          }
+        ),
+        { maxRetries: 5, initialDelayMs: 2000, maxDelayMs: 60000 }
+      );
+
+      const orders = ordersResponse.data?.payload?.Orders || [];
+      allOrders = allOrders.concat(orders);
+      nextToken = ordersResponse.data?.payload?.NextToken || null;
+      pageCount++;
+
+      if (nextToken && pageCount < maxPages) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 基本待機時間を増加
+      }
+    } while (nextToken && pageCount < maxPages);
+
+    // 各注文のアイテムを取得してSKUでフィルタリング
+    const dailySales: { [date: string]: { sales: number; quantity: number } } = {};
+    let processedOrders = 0;
+
+    for (const order of allOrders) {
+      try {
+        // Exponential Backoff付きで注文アイテムを取得
+        const itemsResponse = await fetchWithRetry(
+          () => axios.get(
+            `https://sellingpartnerapi-fe.amazon.com/orders/v0/orders/${order.AmazonOrderId}/orderItems`,
+            {
+              headers: {
+                'x-amz-access-token': accessToken,
+                'Content-Type': 'application/json',
+              },
+            }
+          ),
+          { maxRetries: 5, initialDelayMs: 1000, maxDelayMs: 30000 }
+        );
+
+        const items = itemsResponse.data?.payload?.OrderItems || [];
+
+        for (const item of items) {
+          if (item.SellerSKU === sku) {
+            const purchaseDate = order.PurchaseDate;
+            let dateKey = '';
+            if (purchaseDate) {
+              try {
+                dateKey = new Date(purchaseDate).toISOString().split('T')[0];
+              } catch (e) {
+                dateKey = purchaseDate.split('T')[0];
+              }
+            }
+
+            if (dateKey) {
+              if (!dailySales[dateKey]) {
+                dailySales[dateKey] = { sales: 0, quantity: 0 };
+              }
+              const itemPrice = parseFloat(item.ItemPrice?.Amount || '0');
+              const quantity = item.QuantityOrdered || 1;
+              dailySales[dateKey].sales += itemPrice;
+              dailySales[dateKey].quantity += quantity;
+            }
+          }
+        }
+
+        processedOrders++;
+        // レート制限対策
+        if (processedOrders % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      } catch (itemError: any) {
+        console.error(`Error fetching items for order ${order.AmazonOrderId}:`, itemError.message);
+      }
+    }
+
+    // 日別売上を配列に変換
+    const dailySalesArray = Object.entries(dailySales)
+      .map(([date, data]) => ({
+        date,
+        sales: Math.round(data.sales),
+        quantity: data.quantity,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // product_salesコレクションに永続的に保存（日付ごとにドキュメント）
+    for (const daySales of dailySalesArray) {
+      const docId = `amazon_${sku}_${daySales.date}`;
+      await db.collection("product_sales").doc(docId).set({
+        productCode: sku,
+        mall: 'amazon',
+        date: daySales.date,
+        sales: daySales.sales,
+        quantity: daySales.quantity,
+        updatedAt: Timestamp.now(),
+      }, { merge: true });
+    }
+
+    // キャッシュにも保存（API呼び出し削減用）
+    await db.collection("settings").doc(`product_sales_cache_${sku}`).set({
+      sku,
+      dailySales: dailySalesArray,
+      startDate,
+      endDate,
+      cachedAt: Timestamp.now(),
+    });
+
+    res.json({
+      success: true,
+      sku,
+      dailySales: dailySalesArray,
+      totalSales: dailySalesArray.reduce((sum, d) => sum + d.sales, 0),
+      totalQuantity: dailySalesArray.reduce((sum, d) => sum + d.quantity, 0),
+      cached: false,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching Amazon product sales:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "Amazon商品別売上の取得に失敗しました",
+      error: error?.response?.data?.errors?.[0]?.message || error?.message || "Unknown error",
+    });
+  }
+});
+
+// Amazon全SKU売上一括取得エンドポイント（効率化版）
+// 1回のAPI呼び出しで全注文を取得し、全SKUの売上を一括でFirestoreに保存
+app.post("/amazon/sync-all-product-sales", async (req: Request, res: Response) => {
+  try {
+    const startDate = req.body.startDate || (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      return d.toISOString().split('T')[0];
+    })();
+    const endDate = req.body.endDate || new Date().toISOString().split('T')[0];
+
+    console.log(`Amazon sync all product sales: ${startDate} to ${endDate}`);
+
+    const axios = (await import('axios')).default;
+
+    // FirestoreからAPI認証情報を取得
+    const settingsDoc = await db.collection("settings").doc("mall_credentials").get();
+    if (!settingsDoc.exists) {
+      return res.status(400).json({ success: false, message: "API認証情報が設定されていません" });
+    }
+
+    const settings = settingsDoc.data();
+    const amazonCreds = settings?.amazon;
+    if (!amazonCreds?.lwaClientId || !amazonCreds?.lwaClientSecret || !amazonCreds?.refreshToken) {
+      return res.status(400).json({ success: false, message: "Amazon SP-APIの認証情報が不完全です" });
+    }
+
+    // アクセストークン取得
+    const accessToken = await getAmazonAccessToken({
+      lwaClientId: amazonCreds.lwaClientId,
+      lwaClientSecret: amazonCreds.lwaClientSecret,
+      refreshToken: amazonCreds.refreshToken,
+    });
+
+    // 1. GetOrders APIで全注文を取得（ページネーションあり）
+    let allOrders: any[] = [];
+    let nextToken: string | null = null;
+    let pageCount = 0;
+    const maxPages = 20; // 最大2000件の注文
+
+    const now = new Date();
+    const twoMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
+    const endDateObj = new Date(`${endDate}T23:59:59Z`);
+    const createdBefore = endDateObj > twoMinutesAgo ? twoMinutesAgo.toISOString() : `${endDate}T23:59:59Z`;
+
+    console.log("Fetching all orders...");
+
+    do {
+      const params: any = {
+        MarketplaceIds: 'A1VC38T7YXB528',
+        CreatedAfter: `${startDate}T00:00:00Z`,
+        CreatedBefore: createdBefore,
+        OrderStatuses: 'Shipped,Unshipped,PartiallyShipped',
+        MaxResultsPerPage: 100,
+      };
+
+      if (nextToken) {
+        params.NextToken = nextToken;
+      }
+
+      const ordersResponse = await fetchWithRetry(
+        () => axios.get(
+          'https://sellingpartnerapi-fe.amazon.com/orders/v0/orders',
+          {
+            params,
+            headers: {
+              'x-amz-access-token': accessToken,
+              'Content-Type': 'application/json',
+            },
+          }
+        ),
+        { maxRetries: 5, initialDelayMs: 2000, maxDelayMs: 60000 }
+      );
+
+      const orders = ordersResponse.data?.payload?.Orders || [];
+      allOrders = allOrders.concat(orders);
+      nextToken = ordersResponse.data?.payload?.NextToken || null;
+      pageCount++;
+
+      console.log(`Fetched page ${pageCount}: ${orders.length} orders (total: ${allOrders.length})`);
+
+      if (nextToken && pageCount < maxPages) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } while (nextToken && pageCount < maxPages);
+
+    console.log(`Total orders fetched: ${allOrders.length}`);
+
+    // 2. 各注文のOrderItemsを取得（これが最もAPIを消費する）
+    // SKU → 日付 → {sales, quantity} のマップ
+    const skuSalesMap: { [sku: string]: { [date: string]: { sales: number; quantity: number } } } = {};
+    let processedOrders = 0;
+    let apiCallCount = 0;
+
+    for (const order of allOrders) {
+      try {
+        apiCallCount++;
+        const itemsResponse = await fetchWithRetry(
+          () => axios.get(
+            `https://sellingpartnerapi-fe.amazon.com/orders/v0/orders/${order.AmazonOrderId}/orderItems`,
+            {
+              headers: {
+                'x-amz-access-token': accessToken,
+                'Content-Type': 'application/json',
+              },
+            }
+          ),
+          { maxRetries: 5, initialDelayMs: 1000, maxDelayMs: 30000 }
+        );
+
+        const items = itemsResponse.data?.payload?.OrderItems || [];
+
+        for (const item of items) {
+          const sku = item.SellerSKU;
+          if (!sku) continue;
+
+          const purchaseDate = order.PurchaseDate;
+          let dateKey = '';
+          if (purchaseDate) {
+            try {
+              dateKey = new Date(purchaseDate).toISOString().split('T')[0];
+            } catch (e) {
+              dateKey = purchaseDate.split('T')[0];
+            }
+          }
+
+          if (dateKey) {
+            if (!skuSalesMap[sku]) {
+              skuSalesMap[sku] = {};
+            }
+            if (!skuSalesMap[sku][dateKey]) {
+              skuSalesMap[sku][dateKey] = { sales: 0, quantity: 0 };
+            }
+            const itemPrice = parseFloat(item.ItemPrice?.Amount || '0');
+            const quantity = item.QuantityOrdered || 1;
+            skuSalesMap[sku][dateKey].sales += itemPrice;
+            skuSalesMap[sku][dateKey].quantity += quantity;
+          }
+        }
+
+        processedOrders++;
+
+        // レート制限対策：10件ごとに200ms待機
+        if (processedOrders % 10 === 0) {
+          console.log(`Processed ${processedOrders}/${allOrders.length} orders...`);
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      } catch (itemError: any) {
+        console.error(`Error fetching items for order ${order.AmazonOrderId}:`, itemError.message);
+      }
+    }
+
+    console.log(`Finished processing. API calls: ${apiCallCount}, SKUs found: ${Object.keys(skuSalesMap).length}`);
+
+    // 3. Firestoreに一括保存（バッチ書き込み）
+    const batch = db.batch();
+    let batchCount = 0;
+    const maxBatchSize = 500; // Firestoreバッチの最大サイズ
+
+    for (const [sku, dateMap] of Object.entries(skuSalesMap)) {
+      for (const [date, data] of Object.entries(dateMap)) {
+        const docId = `amazon_${sku}_${date}`;
+        const docRef = db.collection("product_sales").doc(docId);
+        batch.set(docRef, {
+          productCode: sku,
+          mall: 'amazon',
+          date,
+          sales: Math.round(data.sales),
+          quantity: data.quantity,
+          updatedAt: Timestamp.now(),
+        }, { merge: true });
+
+        batchCount++;
+
+        // バッチサイズ制限に達したらコミット
+        if (batchCount >= maxBatchSize) {
+          await batch.commit();
+          console.log(`Committed batch of ${batchCount} documents`);
+          batchCount = 0;
+        }
+      }
+    }
+
+    // 残りをコミット
+    if (batchCount > 0) {
+      await batch.commit();
+      console.log(`Committed final batch of ${batchCount} documents`);
+    }
+
+    // 同期完了時刻を記録
+    await db.collection("settings").doc("amazon_sync_status").set({
+      lastSyncAt: Timestamp.now(),
+      startDate,
+      endDate,
+      ordersProcessed: allOrders.length,
+      skusFound: Object.keys(skuSalesMap).length,
+      apiCallCount,
+    });
+
+    res.json({
+      success: true,
+      message: "Amazon全商品売上を同期しました",
+      ordersProcessed: allOrders.length,
+      skusFound: Object.keys(skuSalesMap).length,
+      apiCallCount,
+      skuList: Object.keys(skuSalesMap),
+    });
+
+  } catch (error: any) {
+    console.error("Error syncing Amazon all product sales:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "Amazon全商品売上の同期に失敗しました",
       error: error?.response?.data?.errors?.[0]?.message || error?.message || "Unknown error",
     });
   }
@@ -2225,7 +3458,73 @@ app.get("/product-sales/:productCode", async (req: Request, res: Response) => {
   }
 });
 
-// 商品売上をFirestoreに同期（初回/履歴用）
+// 特定商品の売上データをFirestoreに保存（フロントエンドから呼び出し用）
+app.post("/sync/save-product-sales", async (req: Request, res: Response) => {
+  try {
+    const { productCode, productName, mall, dailySales } = req.body;
+
+    if (!productCode || !mall || !dailySales) {
+      return res.status(400).json({
+        success: false,
+        message: "productCode, mall, dailySalesが必要です。",
+      });
+    }
+
+    console.log(`Saving ${dailySales.length} sales records for ${productCode} (${mall})`);
+
+    const batch = db.batch();
+    let batchCount = 0;
+
+    for (const sale of dailySales) {
+      const docId = `${productCode}_${mall}_${sale.date}`;
+      const docRef = db.collection("product_sales").doc(docId);
+      batch.set(docRef, {
+        productCode,
+        productName: productName || '',
+        mall,
+        date: sale.date,
+        sales: sale.sales || 0,
+        quantity: sale.quantity || 0,
+        updatedAt: Timestamp.now(),
+      }, { merge: true });
+      batchCount++;
+    }
+
+    if (batchCount > 0) {
+      await batch.commit();
+    }
+
+    res.json({
+      success: true,
+      synced: batchCount,
+      message: `${batchCount}件の売上データを保存しました。`,
+    });
+
+  } catch (error: any) {
+    console.error("Error saving product sales:", error);
+    res.status(500).json({
+      success: false,
+      message: "売上データの保存に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 登録商品一覧を取得するエンドポイント
+app.get("/registered-products", async (req: Request, res: Response) => {
+  try {
+    const productsSnapshot = await db.collection("registered_products").get();
+    const products = productsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    res.json({ success: true, products, count: products.length });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message });
+  }
+});
+
+// 商品売上をFirestoreに同期（初回/履歴用）- 管理者用
 app.post("/sync/product-sales", async (req: Request, res: Response) => {
   try {
     const { days = 365 } = req.body;
@@ -2252,113 +3551,156 @@ app.post("/sync/product-sales", async (req: Request, res: Response) => {
     const rakutenCreds = settings?.rakuten;
     const qoo10Creds = settings?.qoo10;
 
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-
     const formatDateStr = (d: Date) => d.toISOString().split('T')[0];
-    const startDateStr = formatDateStr(startDate);
-    const endDateStr = formatDateStr(endDate);
 
     let totalSynced = 0;
     const results: any[] = [];
+
+    // Cloud Run環境ではK_SERVICE環境変数が設定されている
+    const baseUrl = process.env.K_SERVICE
+      ? `https://mall-batch-manager-983678294034.asia-northeast1.run.app`
+      : `http://localhost:${process.env.PORT || 8080}`;
+
+    // 月単位で期間を分割（APIの期間制限を回避）
+    const generateMonthlyRanges = (days: number): Array<{start: string, end: string}> => {
+      const ranges: Array<{start: string, end: string}> = [];
+      const endDate = new Date();
+      let currentEnd = new Date(endDate);
+
+      for (let d = 0; d < days; d += 30) {
+        const currentStart = new Date(currentEnd);
+        currentStart.setDate(currentStart.getDate() - 30);
+
+        if (d + 30 >= days) {
+          // 最後の期間
+          currentStart.setTime(endDate.getTime() - days * 24 * 60 * 60 * 1000);
+        }
+
+        ranges.push({
+          start: formatDateStr(currentStart),
+          end: formatDateStr(currentEnd)
+        });
+
+        currentEnd = new Date(currentStart);
+        currentEnd.setDate(currentEnd.getDate() - 1);
+      }
+
+      return ranges;
+    };
+
+    const monthlyRanges = generateMonthlyRanges(days);
+    console.log(`Generated ${monthlyRanges.length} monthly ranges for ${days} days`);
 
     for (const product of products) {
       const productCode = (product as any).rakutenCode || (product as any).qoo10Code;
       const productName = (product as any).productName;
 
-      // 楽天売上を同期
+      // 楽天売上を同期（月単位で分割）
       if ((product as any).rakutenCode && rakutenCreds?.serviceSecret && rakutenCreds?.licenseKey) {
-        try {
-          const rakutenResponse = await axios.get(
-            `http://localhost:${process.env.PORT || 8080}/rakuten/product-sales/${encodeURIComponent((product as any).rakutenCode)}?startDate=${startDateStr}&endDate=${endDateStr}`
-          );
+        let rakutenBatchCount = 0;
+        const rakutenErrors: string[] = [];
 
-          if (rakutenResponse.data.success && rakutenResponse.data.dailySales) {
-            const batch = db.batch();
-            let batchCount = 0;
+        for (const range of monthlyRanges) {
+          try {
+            console.log(`Fetching Rakuten ${(product as any).rakutenCode}: ${range.start} to ${range.end}`);
+            const rakutenResponse = await axios.get(
+              `${baseUrl}/rakuten/product-sales/${encodeURIComponent((product as any).rakutenCode)}?startDate=${range.start}&endDate=${range.end}`,
+              { timeout: 180000 }
+            );
 
-            for (const sale of rakutenResponse.data.dailySales) {
-              const docId = `${(product as any).rakutenCode}_rakuten_${sale.date}`;
-              const docRef = db.collection("product_sales").doc(docId);
-              batch.set(docRef, {
-                productCode: (product as any).rakutenCode,
-                productName,
-                mall: 'rakuten',
-                date: sale.date,
-                sales: sale.sales,
-                quantity: sale.quantity,
-                updatedAt: Timestamp.now(),
-              }, { merge: true });
-              batchCount++;
+            if (rakutenResponse.data.success && rakutenResponse.data.dailySales) {
+              const dailySales = rakutenResponse.data.dailySales;
+
+              // Firestoreバッチは500件が上限なので400件ずつ分割
+              for (let i = 0; i < dailySales.length; i += 400) {
+                const batch = db.batch();
+                const chunk = dailySales.slice(i, i + 400);
+
+                for (const sale of chunk) {
+                  const docId = `${(product as any).rakutenCode}_rakuten_${sale.date}`;
+                  const docRef = db.collection("product_sales").doc(docId);
+                  batch.set(docRef, {
+                    productCode: (product as any).rakutenCode,
+                    productName,
+                    mall: 'rakuten',
+                    date: sale.date,
+                    sales: sale.sales,
+                    quantity: sale.quantity,
+                    updatedAt: Timestamp.now(),
+                  }, { merge: true });
+                  rakutenBatchCount++;
+                }
+
+                await batch.commit();
+              }
             }
-
-            if (batchCount > 0) {
-              await batch.commit();
-              totalSynced += batchCount;
-            }
-
-            results.push({
-              product: productName,
-              mall: 'rakuten',
-              synced: batchCount,
-            });
+          } catch (err: any) {
+            console.error(`Error syncing Rakuten for ${productName} (${range.start}-${range.end}):`, err.message);
+            rakutenErrors.push(`${range.start}-${range.end}: ${err.message}`);
           }
-        } catch (err: any) {
-          console.error(`Error syncing Rakuten for ${productName}:`, err.message);
-          results.push({
-            product: productName,
-            mall: 'rakuten',
-            error: err.message,
-          });
         }
+
+        totalSynced += rakutenBatchCount;
+        results.push({
+          product: productName,
+          mall: 'rakuten',
+          synced: rakutenBatchCount,
+          errors: rakutenErrors.length > 0 ? rakutenErrors : undefined,
+        });
       }
 
-      // Qoo10売上を同期
+      // Qoo10売上を同期（月単位で分割）
       if ((product as any).qoo10Code && qoo10Creds?.apiKey) {
-        try {
-          const qoo10Response = await axios.get(
-            `http://localhost:${process.env.PORT || 8080}/qoo10/product-sales/${encodeURIComponent((product as any).qoo10Code)}?startDate=${startDateStr}&endDate=${endDateStr}`
-          );
+        let qoo10BatchCount = 0;
+        const qoo10Errors: string[] = [];
 
-          if (qoo10Response.data.success && qoo10Response.data.dailySales) {
-            const batch = db.batch();
-            let batchCount = 0;
+        for (const range of monthlyRanges) {
+          try {
+            console.log(`Fetching Qoo10 ${(product as any).qoo10Code}: ${range.start} to ${range.end}`);
+            const qoo10Response = await axios.get(
+              `${baseUrl}/qoo10/product-sales/${encodeURIComponent((product as any).qoo10Code)}?startDate=${range.start}&endDate=${range.end}`,
+              { timeout: 180000 }
+            );
 
-            for (const sale of qoo10Response.data.dailySales) {
-              const docId = `${(product as any).qoo10Code}_qoo10_${sale.date}`;
-              const docRef = db.collection("product_sales").doc(docId);
-              batch.set(docRef, {
-                productCode: (product as any).qoo10Code,
-                productName,
-                mall: 'qoo10',
-                date: sale.date,
-                sales: sale.sales,
-                quantity: sale.quantity,
-                updatedAt: Timestamp.now(),
-              }, { merge: true });
-              batchCount++;
+            if (qoo10Response.data.success && qoo10Response.data.dailySales) {
+              const dailySales = qoo10Response.data.dailySales;
+
+              // Firestoreバッチは500件が上限なので400件ずつ分割
+              for (let i = 0; i < dailySales.length; i += 400) {
+                const batch = db.batch();
+                const chunk = dailySales.slice(i, i + 400);
+
+                for (const sale of chunk) {
+                  const docId = `${(product as any).qoo10Code}_qoo10_${sale.date}`;
+                  const docRef = db.collection("product_sales").doc(docId);
+                  batch.set(docRef, {
+                    productCode: (product as any).qoo10Code,
+                    productName,
+                    mall: 'qoo10',
+                    date: sale.date,
+                    sales: sale.sales,
+                    quantity: sale.quantity,
+                    updatedAt: Timestamp.now(),
+                  }, { merge: true });
+                  qoo10BatchCount++;
+                }
+
+                await batch.commit();
+              }
             }
-
-            if (batchCount > 0) {
-              await batch.commit();
-              totalSynced += batchCount;
-            }
-
-            results.push({
-              product: productName,
-              mall: 'qoo10',
-              synced: batchCount,
-            });
+          } catch (err: any) {
+            console.error(`Error syncing Qoo10 for ${productName} (${range.start}-${range.end}):`, err.message);
+            qoo10Errors.push(`${range.start}-${range.end}: ${err.message}`);
           }
-        } catch (err: any) {
-          console.error(`Error syncing Qoo10 for ${productName}:`, err.message);
-          results.push({
-            product: productName,
-            mall: 'qoo10',
-            error: err.message,
-          });
         }
+
+        totalSynced += qoo10BatchCount;
+        results.push({
+          product: productName,
+          mall: 'qoo10',
+          synced: qoo10BatchCount,
+          errors: qoo10Errors.length > 0 ? qoo10Errors : undefined,
+        });
       }
     }
 
@@ -2417,6 +3759,11 @@ app.post("/sync/daily", async (req: Request, res: Response) => {
     let totalSynced = 0;
     const results: any[] = [];
 
+    // Cloud Run環境ではK_SERVICE環境変数が設定されている
+    const baseUrl = process.env.K_SERVICE
+      ? `https://mall-batch-manager-983678294034.asia-northeast1.run.app`
+      : `http://localhost:${process.env.PORT || 8080}`;
+
     for (const product of products) {
       const productName = (product as any).productName;
 
@@ -2424,7 +3771,7 @@ app.post("/sync/daily", async (req: Request, res: Response) => {
       if ((product as any).rakutenCode && rakutenCreds?.serviceSecret && rakutenCreds?.licenseKey) {
         try {
           const rakutenResponse = await axios.get(
-            `http://localhost:${process.env.PORT || 8080}/rakuten/product-sales/${encodeURIComponent((product as any).rakutenCode)}?startDate=${yesterdayStr}&endDate=${todayStr}`
+            `${baseUrl}/rakuten/product-sales/${encodeURIComponent((product as any).rakutenCode)}?startDate=${yesterdayStr}&endDate=${todayStr}`
           );
 
           if (rakutenResponse.data.success && rakutenResponse.data.dailySales) {
@@ -2466,7 +3813,7 @@ app.post("/sync/daily", async (req: Request, res: Response) => {
       if ((product as any).qoo10Code && qoo10Creds?.apiKey) {
         try {
           const qoo10Response = await axios.get(
-            `http://localhost:${process.env.PORT || 8080}/qoo10/product-sales/${encodeURIComponent((product as any).qoo10Code)}?startDate=${yesterdayStr}&endDate=${todayStr}`
+            `${baseUrl}/qoo10/product-sales/${encodeURIComponent((product as any).qoo10Code)}?startDate=${yesterdayStr}&endDate=${todayStr}`
           );
 
           if (qoo10Response.data.success && qoo10Response.data.dailySales) {
@@ -2561,6 +3908,314 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
     });
   }
 });
+
+// ==================== TikTok OAuth連携 ====================
+
+// TikTok OAuth設定（Firestoreから取得）
+async function getTikTokOAuthConfig() {
+  const settingsDoc = await db.collection("settings").doc("tiktok_oauth").get();
+  if (!settingsDoc.exists) {
+    return null;
+  }
+  return settingsDoc.data();
+}
+
+// TikTok認証開始エンドポイント
+// productIdをstateに埋め込んでTikTokにリダイレクト
+app.get("/auth/tiktok/login", async (req: Request, res: Response) => {
+  try {
+    const productId = req.query.productId as string;
+    if (!productId) {
+      return res.status(400).json({
+        success: false,
+        message: "productIdが必要です",
+      });
+    }
+
+    const config = await getTikTokOAuthConfig();
+    if (!config?.clientKey || !config?.redirectUri) {
+      return res.status(400).json({
+        success: false,
+        message: "TikTok OAuth設定が登録されていません。設定画面で登録してください。",
+      });
+    }
+
+    // stateにproductIdとCSRF対策用のランダム文字列を埋め込む
+    const csrfToken = Math.random().toString(36).substring(2, 15);
+    const stateData = {
+      productId,
+      csrfToken,
+      timestamp: Date.now(),
+    };
+    const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
+
+    // Firestoreに一時保存（コールバック時の検証用）
+    await db.collection("tiktok_oauth_states").doc(csrfToken).set({
+      productId,
+      createdAt: Timestamp.now(),
+      expiresAt: Timestamp.fromMillis(Date.now() + 10 * 60 * 1000), // 10分後に期限切れ
+    });
+
+    // TikTok認証URLを生成
+    // https://developers.tiktok.com/doc/login-kit-web/
+    const scope = 'user.info.basic,video.list';
+    const authUrl = `https://www.tiktok.com/v2/auth/authorize/?` +
+      `client_key=${encodeURIComponent(config.clientKey)}` +
+      `&scope=${encodeURIComponent(scope)}` +
+      `&response_type=code` +
+      `&redirect_uri=${encodeURIComponent(config.redirectUri)}` +
+      `&state=${encodeURIComponent(state)}`;
+
+    console.log(`TikTok OAuth: Redirecting to TikTok for productId=${productId}`);
+    res.redirect(authUrl);
+
+  } catch (error: any) {
+    console.error("TikTok OAuth login error:", error);
+    res.status(500).json({
+      success: false,
+      message: "認証開始に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTok認証コールバックエンドポイント
+app.get("/auth/tiktok/callback", async (req: Request, res: Response) => {
+  try {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    const error = req.query.error as string;
+
+    // エラーチェック
+    if (error) {
+      console.error("TikTok OAuth error:", error, req.query.error_description);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?error=auth_denied`);
+    }
+
+    if (!code || !state) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?error=missing_params`);
+    }
+
+    // stateをデコードしてproductIdを取り出す
+    let stateData: { productId: string; csrfToken: string; timestamp: number };
+    try {
+      stateData = JSON.parse(Buffer.from(state, 'base64').toString('utf-8'));
+    } catch (e) {
+      console.error("Invalid state parameter");
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?error=invalid_state`);
+    }
+
+    // CSRF検証
+    const storedState = await db.collection("tiktok_oauth_states").doc(stateData.csrfToken).get();
+    if (!storedState.exists) {
+      console.error("CSRF token not found");
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?error=invalid_csrf`);
+    }
+
+    // 使用済みトークンを削除
+    await db.collection("tiktok_oauth_states").doc(stateData.csrfToken).delete();
+
+    const config = await getTikTokOAuthConfig();
+    if (!config?.clientKey || !config?.clientSecret || !config?.redirectUri) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?error=missing_config`);
+    }
+
+    const axios = (await import('axios')).default;
+
+    // アクセストークンを取得
+    const tokenResponse = await axios.post(
+      'https://open.tiktokapis.com/v2/oauth/token/',
+      new URLSearchParams({
+        client_key: config.clientKey,
+        client_secret: config.clientSecret,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: config.redirectUri,
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      }
+    );
+
+    const tokenData = tokenResponse.data;
+    if (tokenData.error) {
+      console.error("TikTok token error:", tokenData);
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?error=token_error`);
+    }
+
+    const accessToken = tokenData.access_token;
+    const refreshToken = tokenData.refresh_token;
+    const openId = tokenData.open_id;
+    const expiresIn = tokenData.expires_in;
+
+    // ユーザー情報を取得
+    let userInfo = { display_name: 'Unknown', avatar_url: '' };
+    try {
+      const userResponse = await axios.get(
+        'https://open.tiktokapis.com/v2/user/info/',
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+          },
+          params: {
+            fields: 'open_id,display_name,avatar_url',
+          },
+        }
+      );
+      if (userResponse.data?.data?.user) {
+        userInfo = userResponse.data.data.user;
+      }
+    } catch (userError) {
+      console.error("Failed to fetch TikTok user info:", userError);
+    }
+
+    // Firestoreにアカウント情報を保存
+    const accountDoc = await db.collection("tiktok_accounts").add({
+      productId: stateData.productId,
+      tiktokUserId: openId,
+      tiktokUserName: userInfo.display_name,
+      tiktokAvatarUrl: userInfo.avatar_url || '',
+      accessToken: accessToken, // 本番環境では暗号化推奨
+      refreshToken: refreshToken || '',
+      expiresAt: Timestamp.fromMillis(Date.now() + (expiresIn || 86400) * 1000),
+      connectedAt: Timestamp.now(),
+    });
+
+    console.log(`TikTok account connected: ${userInfo.display_name} for product ${stateData.productId}`);
+
+    // フロントエンドにリダイレクト
+    res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?success=true&productId=${stateData.productId}`);
+
+  } catch (error: any) {
+    console.error("TikTok OAuth callback error:", error?.response?.data || error);
+    res.redirect(`${process.env.FRONTEND_URL || 'https://mall-batch-manager.vercel.app'}/external-data?error=callback_error`);
+  }
+});
+
+// 商品に紐付くTikTokアカウント一覧取得
+app.get("/tiktok/accounts/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+
+    const snapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .orderBy("connectedAt", "desc")
+      .get();
+
+    const accounts = snapshot.docs.map(doc => ({
+      id: doc.id,
+      tiktokUserId: doc.data().tiktokUserId,
+      tiktokUserName: doc.data().tiktokUserName,
+      tiktokAvatarUrl: doc.data().tiktokAvatarUrl,
+      connectedAt: doc.data().connectedAt?.toDate?.() || null,
+    }));
+
+    res.json({
+      success: true,
+      productId,
+      accounts,
+      count: accounts.length,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching TikTok accounts:", error);
+    res.status(500).json({
+      success: false,
+      message: "TikTokアカウントの取得に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTokアカウント削除
+app.delete("/tiktok/accounts/:accountId", async (req: Request, res: Response) => {
+  try {
+    const accountId = req.params.accountId;
+
+    await db.collection("tiktok_accounts").doc(accountId).delete();
+
+    res.json({
+      success: true,
+      message: "TikTokアカウントを削除しました",
+    });
+
+  } catch (error: any) {
+    console.error("Error deleting TikTok account:", error);
+    res.status(500).json({
+      success: false,
+      message: "TikTokアカウントの削除に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTok OAuth設定保存
+app.post("/settings/tiktok-oauth", async (req: Request, res: Response) => {
+  try {
+    const { clientKey, clientSecret, redirectUri } = req.body;
+
+    await db.collection("settings").doc("tiktok_oauth").set({
+      clientKey: clientKey || '',
+      clientSecret: clientSecret || '',
+      redirectUri: redirectUri || '',
+      updatedAt: Timestamp.now(),
+    });
+
+    res.json({
+      success: true,
+      message: "TikTok OAuth設定を保存しました",
+    });
+
+  } catch (error: any) {
+    console.error("Error saving TikTok OAuth settings:", error);
+    res.status(500).json({
+      success: false,
+      message: "設定の保存に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTok OAuth設定取得
+app.get("/settings/tiktok-oauth", async (req: Request, res: Response) => {
+  try {
+    const doc = await db.collection("settings").doc("tiktok_oauth").get();
+
+    if (!doc.exists) {
+      return res.json({
+        success: true,
+        settings: {
+          clientKey: '',
+          clientSecret: '',
+          redirectUri: '',
+        },
+      });
+    }
+
+    const data = doc.data();
+    res.json({
+      success: true,
+      settings: {
+        clientKey: data?.clientKey || '',
+        clientSecret: data?.clientSecret ? '********' : '', // マスク表示
+        redirectUri: data?.redirectUri || '',
+        hasSecret: !!data?.clientSecret,
+      },
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching TikTok OAuth settings:", error);
+    res.status(500).json({
+      success: false,
+      message: "設定の取得に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// ==================== End TikTok OAuth連携 ====================
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);

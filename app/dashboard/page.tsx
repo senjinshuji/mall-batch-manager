@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X } from "lucide-react";
 import { db } from "@/lib/firebase";
-import { collection, query, orderBy, onSnapshot, Timestamp, getDocs } from "firebase/firestore";
+import { collection, query, orderBy, onSnapshot, Timestamp, getDocs, where } from "firebase/firestore";
 import { formatCurrency } from "@/lib/mockData";
 import { useAuth } from "@/lib/auth-context";
 
@@ -21,6 +21,7 @@ import { useAuth } from "@/lib/auth-context";
 interface RegisteredProduct {
   id: string;
   productName: string;
+  skuName?: string;
   amazonCode: string;
   rakutenCode: string;
   qoo10Code: string;
@@ -58,11 +59,13 @@ const EXTERNAL_AD_COLORS = {
   tiktok: "#FF0050",  // TikTok（ピンク）
 };
 
-const BACKEND_URL = "https://mall-batch-manager-983678294034.asia-northeast1.run.app";
+const BACKEND_URL = "https://mall-batch-manager-api-983678294034.asia-northeast1.run.app";
 
 // 商品別売上データの型（媒体別）
 interface ProductSalesData {
   date: string;
+  amazonSales: number;
+  amazonQuantity: number;
   qoo10Sales: number;
   qoo10Quantity: number;
   rakutenSales: number;
@@ -109,8 +112,9 @@ const generateDemoData = (): SalesData[] => {
 
 // デモ用の商品データ
 const demoProducts: RegisteredProduct[] = [
-  { id: "demo-1", productName: "デモ商品A", amazonCode: "DEMO-A", rakutenCode: "DEMO-A", qoo10Code: "" },
-  { id: "demo-2", productName: "デモ商品B", amazonCode: "DEMO-B", rakutenCode: "DEMO-B", qoo10Code: "" },
+  { id: "demo-1", productName: "デモ商品A", skuName: "1本", amazonCode: "DEMO-A", rakutenCode: "DEMO-A", qoo10Code: "" },
+  { id: "demo-2", productName: "デモ商品A", skuName: "3本セット", amazonCode: "DEMO-A2", rakutenCode: "DEMO-A2", qoo10Code: "" },
+  { id: "demo-3", productName: "デモ商品B", amazonCode: "DEMO-B", rakutenCode: "DEMO-B", qoo10Code: "" },
 ];
 
 export default function DashboardPage() {
@@ -123,7 +127,8 @@ export default function DashboardPage() {
   const [selectedFlag, setSelectedFlag] = useState<EventFlag | null>(null);
   const [loading, setLoading] = useState(true);
   const [productLoading, setProductLoading] = useState(false);
-  const [rakutenSalesLoading, setRakutenSalesLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [amazonSyncLoading, setAmazonSyncLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const today = new Date();
@@ -147,8 +152,11 @@ export default function DashboardPage() {
     tiktok: true,
   });
   const [selectedProduct, setSelectedProduct] = useState("");
+  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
+  const [isSkuDropdownOpen, setIsSkuDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const skuDropdownRef = useRef<HTMLDivElement>(null);
 
   // Firestoreからイベントフラグを取得
   useEffect(() => {
@@ -196,6 +204,7 @@ export default function DashboardPage() {
         const products = snapshot.docs.map((doc) => ({
           id: doc.id,
           productName: doc.data().productName || "",
+          skuName: doc.data().skuName || "",
           amazonCode: doc.data().amazonCode || "",
           rakutenCode: doc.data().rakutenCode || "",
           qoo10Code: doc.data().qoo10Code || "",
@@ -261,118 +270,246 @@ export default function DashboardPage() {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsProductDropdownOpen(false);
       }
+      if (skuDropdownRef.current && !skuDropdownRef.current.contains(event.target as Node)) {
+        setIsSkuDropdownOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 楽天売上データを更新
-  const refreshRakutenSales = async () => {
-    if (!isRealDataUser) return;
+  // 選択中の商品の売上データをAPIから取得してFirestoreに同期
+  const syncProductSalesData = async () => {
+    if (!isRealDataUser || !selectedProduct) return;
 
-    setRakutenSalesLoading(true);
+    const product = registeredProducts.find(p => p.id === selectedProduct);
+    if (!product) return;
+
+    setSyncLoading(true);
     try {
-      const response = await fetch(`${BACKEND_URL}/rakuten/daily-sales?days=30`);
-      const data = await response.json();
-      if (data.success) {
-        alert(`楽天売上を更新しました\n${data.totalOrders}件の注文、合計 ${formatCurrency(data.totalSales)}`);
+      let totalSynced = 0;
+      const results: string[] = [];
+
+      // Qoo10のデータを取得してFirestoreに保存
+      if (product.qoo10Code) {
+        const qoo10Response = await fetch(
+          `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
+        );
+        const qoo10Data = await qoo10Response.json();
+        if (qoo10Data.success && qoo10Data.dailySales) {
+          // Firestoreに保存するAPIを呼び出す
+          const syncResponse = await fetch(`${BACKEND_URL}/sync/save-product-sales`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              productCode: product.qoo10Code,
+              productName: product.productName,
+              mall: 'qoo10',
+              dailySales: qoo10Data.dailySales,
+            }),
+          });
+          const syncResult = await syncResponse.json();
+          if (syncResult.success) {
+            totalSynced += syncResult.synced || 0;
+            results.push(`Qoo10: ${syncResult.synced}件`);
+          }
+        }
+      }
+
+      // 楽天のデータを取得してFirestoreに保存
+      if (product.rakutenCode) {
+        const rakutenResponse = await fetch(
+          `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
+        );
+        const rakutenData = await rakutenResponse.json();
+        if (rakutenData.success && rakutenData.dailySales) {
+          // Firestoreに保存するAPIを呼び出す
+          const syncResponse = await fetch(`${BACKEND_URL}/sync/save-product-sales`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              productCode: product.rakutenCode,
+              productName: product.productName,
+              mall: 'rakuten',
+              dailySales: rakutenData.dailySales,
+            }),
+          });
+          const syncResult = await syncResponse.json();
+          if (syncResult.success) {
+            totalSynced += syncResult.synced || 0;
+            results.push(`楽天: ${syncResult.synced}件`);
+          }
+        }
+      }
+
+      if (totalSynced > 0) {
+        alert(`売上データを同期しました\n${results.join('\n')}`);
+        // データを再取得
+        fetchProductSales(product);
       } else {
-        alert(`エラー: ${data.message || "楽天売上の取得に失敗しました"}`);
+        alert("同期するデータがありませんでした");
       }
     } catch (err) {
-      console.error("楽天売上更新エラー:", err);
-      alert("楽天売上の取得に失敗しました");
+      console.error("売上データ同期エラー:", err);
+      alert("売上データの同期に失敗しました");
     } finally {
-      setRakutenSalesLoading(false);
+      setSyncLoading(false);
     }
   };
 
-  // 商品選択時にFirestoreキャッシュから売上データを取得（実データユーザーのみ）
+  // Amazon売上データを同期
+  const syncAmazonSales = async () => {
+    if (!isRealDataUser) return;
+
+    setAmazonSyncLoading(true);
+    try {
+      const response = await fetch(`${BACKEND_URL}/amazon/sync-sales`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate, endDate }),
+      });
+      const result = await response.json();
+
+      if (result.success) {
+        alert(`Amazon売上を同期しました！\n${result.syncedDays}日分、合計 ¥${result.totalSales.toLocaleString()}`);
+      } else {
+        alert(`同期エラー: ${result.message || result.error}`);
+      }
+    } catch (err) {
+      console.error("Amazon売上同期エラー:", err);
+      alert("Amazon売上の同期に失敗しました");
+    } finally {
+      setAmazonSyncLoading(false);
+    }
+  };
+
+  // 単一商品または複数商品の売上データを取得（実データユーザーのみ）
   const fetchProductSales = async (product: RegisteredProduct) => {
+    await fetchMultipleProductSales([product]);
+  };
+
+  // 複数商品の売上データを取得して合算
+  const fetchMultipleProductSales = async (products: RegisteredProduct[]) => {
     if (!isRealDataUser) {
       setProductSalesData([]);
       return;
     }
 
-    // Qoo10か楽天のどちらかのコードが必要
-    if (!product.qoo10Code && !product.rakutenCode) {
+    // 有効な商品をフィルタリング（Amazon、Qoo10、楽天のいずれかがあればOK）
+    const validProducts = products.filter(p => p.amazonCode || p.qoo10Code || p.rakutenCode);
+    if (validProducts.length === 0) {
       setProductSalesData([]);
       return;
     }
 
     setProductLoading(true);
     try {
-      const allSalesData: { [date: string]: { qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number } } = {};
+      const allSalesData: { [date: string]: { amazonSales: number; amazonQuantity: number; qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number } } = {};
 
-      // まずFirestoreキャッシュから取得を試みる（Qoo10）
-      if (product.qoo10Code) {
-        try {
-          const cacheResponse = await fetch(
-            `${BACKEND_URL}/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
-          );
-          const cacheData = await cacheResponse.json();
-          if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
-            for (const item of cacheData.dailySales) {
-              if (!allSalesData[item.date]) {
-                allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
-              }
-              allSalesData[item.date].qoo10Sales += item.qoo10Sales || 0;
-              allSalesData[item.date].qoo10Quantity += item.qoo10Quantity || 0;
-            }
-          } else {
-            // キャッシュがなければAPIから直接取得
-            const qoo10Response = await fetch(
-              `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
+      // すべての商品の売上を取得して合算
+      for (const product of validProducts) {
+        // Amazonのデータを取得（Firestoreのproduct_salesから直接取得のみ - APIは呼ばない）
+        // データがない場合は、管理画面から「Amazon同期」を実行してもらう
+        if (product.amazonCode) {
+          try {
+            // Firestoreのproduct_salesから直接取得
+            const amazonSalesQuery = query(
+              collection(db, "product_sales"),
+              where("productCode", "==", product.amazonCode),
+              where("mall", "==", "amazon"),
+              where("date", ">=", startDate),
+              where("date", "<=", endDate)
             );
-            const qoo10Data = await qoo10Response.json();
-            if (qoo10Data.success && qoo10Data.dailySales) {
-              for (const item of qoo10Data.dailySales) {
-                if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+            const amazonSnapshot = await getDocs(amazonSalesQuery);
+
+            if (!amazonSnapshot.empty) {
+              // Firestoreにデータがある場合
+              amazonSnapshot.docs.forEach((doc) => {
+                const data = doc.data();
+                if (!allSalesData[data.date]) {
+                  allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
                 }
-                allSalesData[item.date].qoo10Sales += item.sales;
-                allSalesData[item.date].qoo10Quantity += item.quantity;
-              }
+                allSalesData[data.date].amazonSales += data.sales || 0;
+                allSalesData[data.date].amazonQuantity += data.quantity || 0;
+              });
             }
+            // Firestoreにデータがない場合はAPIを呼ばない（クォータ節約）
+            // バックエンドの「Amazon同期」機能で一括取得してもらう
+          } catch (err) {
+            console.error("Amazon売上取得エラー:", err);
           }
-        } catch (err) {
-          console.error("Qoo10売上取得エラー:", err);
         }
-      }
 
-      // Firestoreキャッシュから取得を試みる（楽天）
-      if (product.rakutenCode) {
-        try {
-          const cacheResponse = await fetch(
-            `${BACKEND_URL}/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
-          );
-          const cacheData = await cacheResponse.json();
-          if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
-            for (const item of cacheData.dailySales) {
-              if (!allSalesData[item.date]) {
-                allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
-              }
-              allSalesData[item.date].rakutenSales += item.rakutenSales || 0;
-              allSalesData[item.date].rakutenQuantity += item.rakutenQuantity || 0;
-            }
-          } else {
-            // キャッシュがなければAPIから直接取得
-            const rakutenResponse = await fetch(
-              `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
+        // Qoo10のデータを取得
+        if (product.qoo10Code) {
+          try {
+            const cacheResponse = await fetch(
+              `${BACKEND_URL}/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
             );
-            const rakutenData = await rakutenResponse.json();
-            if (rakutenData.success && rakutenData.dailySales) {
-              for (const item of rakutenData.dailySales) {
+            const cacheData = await cacheResponse.json();
+            if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
+              for (const item of cacheData.dailySales) {
                 if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
                 }
-                allSalesData[item.date].rakutenSales += item.sales;
-                allSalesData[item.date].rakutenQuantity += item.quantity;
+                allSalesData[item.date].qoo10Sales += item.qoo10Sales || 0;
+                allSalesData[item.date].qoo10Quantity += item.qoo10Quantity || 0;
+              }
+            } else {
+              // キャッシュがなければAPIから直接取得
+              const qoo10Response = await fetch(
+                `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
+              );
+              const qoo10Data = await qoo10Response.json();
+              if (qoo10Data.success && qoo10Data.dailySales) {
+                for (const item of qoo10Data.dailySales) {
+                  if (!allSalesData[item.date]) {
+                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                  }
+                  allSalesData[item.date].qoo10Sales += item.sales;
+                  allSalesData[item.date].qoo10Quantity += item.quantity;
+                }
               }
             }
+          } catch (err) {
+            console.error("Qoo10売上取得エラー:", err);
           }
-        } catch (err) {
-          console.error("楽天売上取得エラー:", err);
+        }
+
+        // 楽天のデータを取得
+        if (product.rakutenCode) {
+          try {
+            const cacheResponse = await fetch(
+              `${BACKEND_URL}/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
+            );
+            const cacheData = await cacheResponse.json();
+            if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
+              for (const item of cacheData.dailySales) {
+                if (!allSalesData[item.date]) {
+                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                }
+                allSalesData[item.date].rakutenSales += item.rakutenSales || 0;
+                allSalesData[item.date].rakutenQuantity += item.rakutenQuantity || 0;
+              }
+            } else {
+              // キャッシュがなければAPIから直接取得
+              const rakutenResponse = await fetch(
+                `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
+              );
+              const rakutenData = await rakutenResponse.json();
+              if (rakutenData.success && rakutenData.dailySales) {
+                for (const item of rakutenData.dailySales) {
+                  if (!allSalesData[item.date]) {
+                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                  }
+                  allSalesData[item.date].rakutenSales += item.sales;
+                  allSalesData[item.date].rakutenQuantity += item.quantity;
+                }
+              }
+            }
+          } catch (err) {
+            console.error("楽天売上取得エラー:", err);
+          }
         }
       }
 
@@ -380,6 +517,8 @@ export default function DashboardPage() {
       const salesArray = Object.entries(allSalesData)
         .map(([date, data]) => ({
           date,
+          amazonSales: data.amazonSales,
+          amazonQuantity: data.amazonQuantity,
           qoo10Sales: data.qoo10Sales,
           qoo10Quantity: data.qoo10Quantity,
           rakutenSales: data.rakutenSales,
@@ -396,15 +535,48 @@ export default function DashboardPage() {
     }
   };
 
-  // 商品選択時の処理
-  const handleProductSelect = (productId: string) => {
-    setSelectedProduct(productId);
+  // ユニークな商品名リストを取得
+  const uniqueProductNames = useMemo(() => {
+    const names = new Set<string>();
+    registeredProducts.forEach(p => names.add(p.productName));
+    return Array.from(names);
+  }, [registeredProducts]);
+
+  // 現在表示対象のSKU商品リスト（商品選択時はその商品名のみ、未選択時は全商品）
+  const availableSkuProducts = useMemo(() => {
+    if (selectedProduct) {
+      return registeredProducts.filter(p => p.productName === selectedProduct);
+    }
+    return registeredProducts;
+  }, [registeredProducts, selectedProduct]);
+
+  // 選択されたSKUに該当する商品リスト
+  const selectedSkuProducts = useMemo(() => {
+    if (selectedSkus.size === 0) {
+      // 何も選択されていなければ全SKUを対象
+      return availableSkuProducts;
+    }
+    // 選択されているSKUの商品を返す
+    return availableSkuProducts.filter(p => selectedSkus.has(p.skuName || p.id));
+  }, [availableSkuProducts, selectedSkus]);
+
+  // 全選択状態かどうか
+  const isAllSkusSelected = useMemo(() => {
+    if (availableSkuProducts.length === 0) return false;
+    return availableSkuProducts.every(p => selectedSkus.has(p.skuName || p.id));
+  }, [availableSkuProducts, selectedSkus]);
+
+  // 商品選択時の処理（商品名で選択）
+  const handleProductSelect = (productName: string) => {
+    setSelectedProduct(productName);
+    setSelectedSkus(new Set()); // SKU選択をリセット
     setIsProductDropdownOpen(false);
 
-    if (productId) {
-      const product = registeredProducts.find(p => p.id === productId);
-      if (product) {
-        fetchProductSales(product);
+    if (productName) {
+      // 選択された商品名のすべてのSKUを取得
+      const products = registeredProducts.filter(p => p.productName === productName);
+      if (products.length > 0) {
+        fetchMultipleProductSales(products);
       }
     } else {
       // ダミー商品選択時はクリア
@@ -412,24 +584,61 @@ export default function DashboardPage() {
     }
   };
 
-  // 日付変更時に商品別売上を再取得（実データユーザーのみ）
+  // SKUチェックボックス変更時の処理
+  const handleSkuToggle = (skuIdentifier: string) => {
+    const newSelectedSkus = new Set(selectedSkus);
+    if (newSelectedSkus.has(skuIdentifier)) {
+      newSelectedSkus.delete(skuIdentifier);
+    } else {
+      newSelectedSkus.add(skuIdentifier);
+    }
+    setSelectedSkus(newSelectedSkus);
+  };
+
+  // 全選択チェックボックス変更時の処理
+  const handleSelectAllSkus = () => {
+    if (isAllSkusSelected) {
+      // 全選択解除
+      setSelectedSkus(new Set());
+    } else {
+      // 全選択
+      const allSkuIds = new Set(availableSkuProducts.map(p => p.skuName || p.id));
+      setSelectedSkus(allSkuIds);
+    }
+  };
+
+  // 日付変更時・SKU選択変更時に商品別売上を再取得（実データユーザーのみ）
   useEffect(() => {
     if (!isRealDataUser) return;
+    if (registeredProducts.length === 0) return;
 
-    if (selectedProduct && registeredProducts.length > 0) {
-      const product = registeredProducts.find(p => p.id === selectedProduct);
-      if (product && (product.qoo10Code || product.rakutenCode)) {
-        // fetchProductSalesを使って両プラットフォームからデータを取得
-        fetchProductSales(product);
-      }
+    // 対象商品を決定（Amazon、Qoo10、楽天のいずれかがあればOK）
+    const targetProducts = selectedSkuProducts.filter(p => p.amazonCode || p.qoo10Code || p.rakutenCode);
+    if (targetProducts.length > 0) {
+      fetchMultipleProductSales(targetProducts);
+    } else if (!selectedProduct) {
+      // ダミー商品選択時
+      setProductSalesData([]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startDate, endDate, selectedProduct, registeredProducts, isRealDataUser]);
+  }, [startDate, endDate, selectedProduct, selectedSkus, registeredProducts, isRealDataUser]);
 
   // 選択中の商品名を取得
-  const selectedProductName = selectedProduct
-    ? registeredProducts.find((p) => p.id === selectedProduct)?.productName || ""
-    : "ダミー商品";
+  const selectedProductDisplayName = useMemo(() => {
+    if (!selectedProduct && selectedSkus.size === 0) return "ダミー商品";
+    if (!selectedProduct && selectedSkus.size > 0) {
+      // ダミー商品時にSKU選択している場合
+      return `選択SKU (${selectedSkus.size}件)`;
+    }
+    if (selectedSkus.size === 0 || isAllSkusSelected) {
+      return `${selectedProduct}（全SKU合計）`;
+    }
+    if (selectedSkus.size === 1) {
+      const skuName = Array.from(selectedSkus)[0];
+      return `${selectedProduct} - ${skuName}`;
+    }
+    return `${selectedProduct}（${selectedSkus.size}件のSKU）`;
+  }, [selectedProduct, selectedSkus, isAllSkusSelected]);
 
   // 期間フィルタ済みデータ
   const filteredData = useMemo(() => {
@@ -472,10 +681,14 @@ export default function DashboardPage() {
       if (showAdCost.qoo10) totalAd += day.qoo10Ad;
       return {
         ...day,
+        // 選択されていないモールの売上は0にする（積み上げ順序を固定するため）
+        amazon: selectedMalls.amazon ? day.amazon : 0,
+        rakuten: selectedMalls.rakuten ? day.rakuten : 0,
+        qoo10: selectedMalls.qoo10 ? day.qoo10 : 0,
         totalAd,
       };
     });
-  }, [filteredData, showAdCost, eventFlags, startDate, endDate]);
+  }, [filteredData, showAdCost, eventFlags, startDate, endDate, selectedMalls]);
 
   // 合計売上を計算（商品選択時はproductSalesDataを使用、チェックボックスで媒体選択）
   const totalSales = useMemo(() => {
@@ -483,6 +696,7 @@ export default function DashboardPage() {
       // 商品選択時：productSalesDataから合計（チェックボックスで媒体選択）
       return productSalesData.reduce((sum, day) => {
         let dayTotal = 0;
+        if (selectedMalls.amazon) dayTotal += day.amazonSales;
         if (selectedMalls.rakuten) dayTotal += day.rakutenSales;
         if (selectedMalls.qoo10) dayTotal += day.qoo10Sales;
         return sum + dayTotal;
@@ -697,7 +911,7 @@ export default function DashboardPage() {
                 onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
                 className="flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-[180px] text-sm"
               >
-                <span className="truncate">{selectedProductName}</span>
+                <span className="truncate">{selectedProduct || "ダミー商品"}</span>
                 <ChevronDown className={`w-4 h-4 ml-2 transition-transform ${isProductDropdownOpen ? "rotate-180" : ""}`} />
               </button>
               {isProductDropdownOpen && (
@@ -709,27 +923,75 @@ export default function DashboardPage() {
                   >
                     ダミー商品
                   </button>
-                  {registeredProducts.map((product) => (
-                    <button
-                      key={product.id}
-                      type="button"
-                      onClick={() => handleProductSelect(product.id)}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${selectedProduct === product.id ? "bg-blue-100 font-medium" : ""}`}
-                    >
-                      <span>{product.productName}</span>
-                      <span className="ml-2">
-                        {product.amazonCode && (
-                          <span className="text-xs text-orange-500 mr-1">Amazon</span>
+                  {uniqueProductNames.map((productName) => {
+                    const hasMultipleSku = registeredProducts.filter(p => p.productName === productName && p.skuName).length > 1;
+                    return (
+                      <button
+                        key={productName}
+                        type="button"
+                        onClick={() => handleProductSelect(productName)}
+                        className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${selectedProduct === productName ? "bg-blue-100 font-medium" : ""}`}
+                      >
+                        <span>{productName}</span>
+                        {hasMultipleSku && (
+                          <span className="ml-2 text-xs text-gray-400">(複数SKU)</span>
                         )}
-                        {product.rakutenCode && (
-                          <span className="text-xs text-red-500 mr-1">楽天</span>
-                        )}
-                        {product.qoo10Code && (
-                          <span className="text-xs text-blue-500">Qoo10</span>
-                        )}
-                      </span>
-                    </button>
-                  ))}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {/* SKUチェックボックス式ドロップダウン（常に表示） */}
+            <div ref={skuDropdownRef} className="relative">
+              <label className="block text-sm font-medium text-gray-600 mb-1">
+                SKU
+              </label>
+              <button
+                type="button"
+                onClick={() => setIsSkuDropdownOpen(!isSkuDropdownOpen)}
+                className="flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-[160px] text-sm"
+              >
+                <span className="truncate">
+                  {selectedSkus.size === 0 || isAllSkusSelected
+                    ? "すべて"
+                    : selectedSkus.size === 1
+                    ? Array.from(selectedSkus)[0]
+                    : `${selectedSkus.size}件選択中`}
+                </span>
+                <ChevronDown className={`w-4 h-4 ml-2 transition-transform ${isSkuDropdownOpen ? "rotate-180" : ""}`} />
+              </button>
+              {isSkuDropdownOpen && (
+                <div className="absolute top-full left-0 mt-1 w-full bg-white border border-gray-300 rounded-lg shadow-lg z-50 max-h-60 overflow-auto min-w-[200px]">
+                  {/* 全て選択チェックボックス */}
+                  <label className="flex items-center gap-2 px-3 py-2 hover:bg-blue-50 cursor-pointer border-b border-gray-200">
+                    <input
+                      type="checkbox"
+                      checked={isAllSkusSelected}
+                      onChange={handleSelectAllSkus}
+                      className="w-4 h-4 rounded accent-purple-600"
+                    />
+                    <span className="text-sm font-medium text-purple-600">全て選択</span>
+                  </label>
+                  {/* 個別SKUチェックボックス */}
+                  {availableSkuProducts.map((product) => {
+                    const skuId = product.skuName || product.id;
+                    const isChecked = selectedSkus.has(skuId);
+                    return (
+                      <label
+                        key={product.id}
+                        className="flex items-center gap-2 px-3 py-2 hover:bg-blue-50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => handleSkuToggle(skuId)}
+                          className="w-4 h-4 rounded accent-blue-600"
+                        />
+                        <span className="text-sm">{product.skuName || `SKU ${product.id.slice(-4)}`}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -905,23 +1167,45 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* データ更新ボタン */}
+      {/* Amazon売上同期ボタン */}
       {isRealDataUser && (
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <button
-            onClick={refreshRakutenSales}
-            disabled={rakutenSalesLoading}
-            className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+            onClick={syncAmazonSales}
+            disabled={amazonSyncLoading}
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+            style={{ backgroundColor: amazonSyncLoading ? '#999' : '#FF9900' }}
           >
-            {rakutenSalesLoading ? (
+            {amazonSyncLoading ? (
               <RefreshCw className="w-4 h-4 animate-spin" />
             ) : (
               <RefreshCw className="w-4 h-4" />
             )}
-            楽天売上を更新
+            Amazon売上を同期
           </button>
           <span className="text-xs text-gray-500">
-            ※ 過去30日分の受注データから売上を取得します
+            {startDate} 〜 {endDate} の売上をAmazonから取得
+          </span>
+        </div>
+      )}
+
+      {/* 売上データ同期ボタン（商品選択時のみ表示） */}
+      {isRealDataUser && selectedProduct && (
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={syncProductSalesData}
+            disabled={syncLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+          >
+            {syncLoading ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4" />
+            )}
+            売上データを更新
+          </button>
+          <span className="text-xs text-gray-500">
+            ※ {startDate} 〜 {endDate} の売上をAPIから取得してDBに保存します
           </span>
         </div>
       )}
@@ -966,7 +1250,7 @@ export default function DashboardPage() {
       {/* グラフエリア */}
       <div className="bg-white rounded-xl shadow-sm p-4">
         <h2 className="text-base font-semibold text-gray-700 mb-2">
-          {selectedProduct ? `${selectedProductName} - 日次売上推移` : "日次売上・広告費推移"}
+          {selectedProduct ? `${selectedProductDisplayName} - 日次売上推移` : "日次売上・広告費推移"}
           {productLoading && (
             <RefreshCw className="inline-block ml-2 w-4 h-4 animate-spin text-blue-500" />
           )}
@@ -982,7 +1266,7 @@ export default function DashboardPage() {
                 ) : (
                   <>
                     <p>この商品の売上データがありません</p>
-                    <p className="text-sm mt-2">Qoo10コードまたは楽天コードが設定されていないか、指定期間に注文がありません</p>
+                    <p className="text-sm mt-2">Amazonコード、Qoo10コード、または楽天コードが設定されていないか、指定期間に注文がありません</p>
                   </>
                 )}
               </div>
@@ -1049,11 +1333,17 @@ export default function DashboardPage() {
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (active && payload && payload.length) {
+                        const amazonVal = payload.find((p: any) => p.dataKey === 'amazonSales')?.value as number || 0;
                         const rakutenVal = payload.find((p: any) => p.dataKey === 'rakutenSales')?.value as number || 0;
                         const qoo10Val = payload.find((p: any) => p.dataKey === 'qoo10Sales')?.value as number || 0;
                         return (
                           <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
                             <p className="font-semibold text-gray-700 mb-2">{label}</p>
+                            {selectedMalls.amazon && amazonVal > 0 && (
+                              <p style={{ color: MALL_COLORS.amazon }} className="text-sm">
+                                Amazon: {formatCurrency(amazonVal)}
+                              </p>
+                            )}
                             {selectedMalls.rakuten && rakutenVal > 0 && (
                               <p style={{ color: MALL_COLORS.rakuten }} className="text-sm">
                                 楽天: {formatCurrency(rakutenVal)}
@@ -1070,6 +1360,15 @@ export default function DashboardPage() {
                       return null;
                     }}
                   />
+                  {/* Amazon売上（積み上げ） */}
+                  {selectedMalls.amazon && (
+                    <Bar
+                      dataKey="amazonSales"
+                      stackId="productSales"
+                      fill={MALL_COLORS.amazon}
+                      barSize={30}
+                    />
+                  )}
                   {/* 楽天売上（積み上げ） */}
                   {selectedMalls.rakuten && (
                     <Bar
@@ -1094,6 +1393,12 @@ export default function DashboardPage() {
 
               {/* カスタム凡例 */}
               <div className="flex flex-wrap justify-center gap-4 mt-2 text-sm">
+                {selectedMalls.amazon && (
+                  <div className="flex items-center gap-1">
+                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.amazon }} />
+                    <span>Amazon</span>
+                  </div>
+                )}
                 {selectedMalls.rakuten && (
                   <div className="flex items-center gap-1">
                     <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.rakuten }} />
@@ -1185,35 +1490,32 @@ export default function DashboardPage() {
                 />
                 <Tooltip content={<CustomTooltip />} />
 
-                {/* 売上棒グラフ（積み上げ式）- 凡例の順: Amazon, 楽天, Qoo10 */}
-                {selectedMalls.amazon && (
-                  <Bar
-                    yAxisId="sales"
-                    dataKey="amazon"
-                    stackId="sales"
-                    fill={MALL_COLORS.amazon}
-                    barSize={30}
-                  />
-                )}
-                {selectedMalls.rakuten && (
-                  <Bar
-                    yAxisId="sales"
-                    dataKey="rakuten"
-                    stackId="sales"
-                    fill={MALL_COLORS.rakuten}
-                    barSize={30}
-                  />
-                )}
-                {selectedMalls.qoo10 && (
-                  <Bar
-                    yAxisId="sales"
-                    dataKey="qoo10"
-                    stackId="sales"
-                    fill={MALL_COLORS.qoo10}
-                    barSize={30}
-                    radius={[4, 4, 0, 0]}
-                  />
-                )}
+                {/* 売上棒グラフ（積み上げ式）- 常に下からAmazon→楽天→Qoo10の順 */}
+                <Bar
+                  yAxisId="sales"
+                  dataKey="amazon"
+                  stackId="sales"
+                  fill={MALL_COLORS.amazon}
+                  barSize={30}
+                  hide={!selectedMalls.amazon}
+                />
+                <Bar
+                  yAxisId="sales"
+                  dataKey="rakuten"
+                  stackId="sales"
+                  fill={MALL_COLORS.rakuten}
+                  barSize={30}
+                  hide={!selectedMalls.rakuten}
+                />
+                <Bar
+                  yAxisId="sales"
+                  dataKey="qoo10"
+                  stackId="sales"
+                  fill={MALL_COLORS.qoo10}
+                  barSize={30}
+                  radius={[4, 4, 0, 0]}
+                  hide={!selectedMalls.qoo10}
+                />
 
                 {/* モール内広告費合計の折れ線グラフ（1本） */}
                 {isAnyAdSelected && (

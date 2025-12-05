@@ -10,7 +10,7 @@ import { db } from "@/lib/firebase";
 import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from "firebase/firestore";
 import { useAuth } from "@/lib/auth-context";
 
-const BACKEND_URL = "https://mall-batch-manager-983678294034.asia-northeast1.run.app";
+const BACKEND_URL = "https://mall-batch-manager-api-983678294034.asia-northeast1.run.app";
 
 // デモ用のモール商品データ
 const demoAmazonProducts: MallProduct[] = [
@@ -39,6 +39,7 @@ const demoRegisteredProducts: RegisteredProduct[] = [
 
 type NewProduct = {
   productName: string;
+  skuName: string;
   amazonCode: string;
   rakutenCode: string;
   qoo10Code: string;
@@ -62,12 +63,14 @@ export default function ProductsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newProduct, setNewProduct] = useState<NewProduct>({
     productName: "",
+    skuName: "",
     amazonCode: "",
     rakutenCode: "",
     qoo10Code: "",
   });
   const [editProduct, setEditProduct] = useState<NewProduct>({
     productName: "",
+    skuName: "",
     amazonCode: "",
     rakutenCode: "",
     qoo10Code: "",
@@ -323,6 +326,7 @@ export default function ProductsPage() {
 
       setNewProduct({
         productName: "",
+        skuName: "",
         amazonCode: "",
         rakutenCode: "",
         qoo10Code: "",
@@ -357,6 +361,7 @@ export default function ProductsPage() {
     setEditingId(product.id);
     setEditProduct({
       productName: product.productName,
+      skuName: product.skuName || "",
       amazonCode: product.amazonCode,
       rakutenCode: product.rakutenCode,
       qoo10Code: product.qoo10Code,
@@ -738,19 +743,35 @@ export default function ProductsPage() {
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <h2 className="text-lg font-semibold mb-4">新規商品登録</h2>
           <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                商品名 <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={newProduct.productName}
-                onChange={(e) =>
-                  setNewProduct({ ...newProduct, productName: e.target.value })
-                }
-                placeholder="例: オーガニックシャンプー"
-                className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  商品名 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newProduct.productName}
+                  onChange={(e) =>
+                    setNewProduct({ ...newProduct, productName: e.target.value })
+                  }
+                  placeholder="例: オーガニックシャンプー"
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  SKU名
+                </label>
+                <input
+                  type="text"
+                  value={newProduct.skuName}
+                  onChange={(e) =>
+                    setNewProduct({ ...newProduct, skuName: e.target.value })
+                  }
+                  placeholder="例: 500ml / 詰替用（複数SKUをまとめる場合に入力）"
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -916,6 +937,7 @@ export default function ProductsPage() {
                   setIsAdding(false);
                   setNewProduct({
                     productName: "",
+                    skuName: "",
                     amazonCode: "",
                     rakutenCode: "",
                     qoo10Code: "",
@@ -940,6 +962,9 @@ export default function ProductsPage() {
                   商品名
                 </th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                  SKU名
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
                   <span className="text-orange-600">Amazon</span>
                 </th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
@@ -956,7 +981,7 @@ export default function ProductsPage() {
             <tbody className="divide-y divide-gray-200">
               {products.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
                     登録されている商品はありません
                   </td>
                 </tr>
@@ -976,6 +1001,20 @@ export default function ProductsPage() {
                               })
                             }
                             className="w-full px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            type="text"
+                            value={editProduct.skuName}
+                            onChange={(e) =>
+                              setEditProduct({
+                                ...editProduct,
+                                skuName: e.target.value,
+                              })
+                            }
+                            className="w-full px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500"
+                            placeholder="SKU名"
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -1037,6 +1076,9 @@ export default function ProductsPage() {
                       <>
                         <td className="px-4 py-3 font-medium text-gray-900">
                           {product.productName}
+                        </td>
+                        <td className="px-4 py-3 text-gray-600 text-sm">
+                          {product.skuName || "-"}
                         </td>
                         <td className="px-4 py-3">
                           {product.amazonCode ? (

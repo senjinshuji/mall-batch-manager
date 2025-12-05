@@ -1,7 +1,12 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { Upload, FileText, CheckCircle, AlertCircle, X } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Upload, FileText, CheckCircle, AlertCircle, X, Plus, Trash2, User, Link2, RefreshCw, ChevronDown } from "lucide-react";
+import { db } from "@/lib/firebase";
+import { collection, getDocs, query, orderBy } from "firebase/firestore";
+import { useSearchParams } from "next/navigation";
+
+const BACKEND_URL = "https://mall-batch-manager-api-983678294034.asia-northeast1.run.app";
 
 type UploadStatus = {
   type: "idle" | "uploading" | "success" | "error";
@@ -14,7 +19,28 @@ type UploadedFile = {
   uploadedAt: Date;
 };
 
+// 登録商品の型
+interface RegisteredProduct {
+  id: string;
+  productName: string;
+  skuName?: string;
+  amazonCode: string;
+  rakutenCode: string;
+  qoo10Code: string;
+}
+
+// TikTokアカウントの型
+interface TikTokAccount {
+  id: string;
+  tiktokUserId: string;
+  tiktokUserName: string;
+  tiktokAvatarUrl: string;
+  connectedAt: string | null;
+}
+
 export default function ExternalDataPage() {
+  const searchParams = useSearchParams();
+
   // X広告データ
   const [xAdFile, setXAdFile] = useState<File | null>(null);
   const [xAdStatus, setXAdStatus] = useState<UploadStatus>({ type: "idle", message: "" });
@@ -26,6 +52,131 @@ export default function ExternalDataPage() {
   const [tiktokAdStatus, setTiktokAdStatus] = useState<UploadStatus>({ type: "idle", message: "" });
   const [tiktokAdHistory, setTiktokAdHistory] = useState<UploadedFile[]>([]);
   const tiktokAdInputRef = useRef<HTMLInputElement>(null!);
+
+  // 商品一覧
+  const [products, setProducts] = useState<RegisteredProduct[]>([]);
+  const [selectedProductId, setSelectedProductId] = useState<string>("");
+  const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
+
+  // TikTokアカウント
+  const [tiktokAccounts, setTiktokAccounts] = useState<TikTokAccount[]>([]);
+  const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
+
+  // 通知メッセージ
+  const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  // URLパラメータから結果を取得
+  useEffect(() => {
+    const success = searchParams.get("success");
+    const error = searchParams.get("error");
+    const productId = searchParams.get("productId");
+
+    if (success === "true") {
+      setNotification({ type: "success", message: "TikTokアカウントを連携しました" });
+      if (productId) {
+        setSelectedProductId(productId);
+      }
+      // URLパラメータをクリア
+      window.history.replaceState({}, "", "/external-data");
+    } else if (error) {
+      const errorMessages: { [key: string]: string } = {
+        auth_denied: "認証がキャンセルされました",
+        missing_params: "認証パラメータが不足しています",
+        invalid_state: "無効な認証状態です",
+        invalid_csrf: "セキュリティ検証に失敗しました",
+        missing_config: "TikTok OAuth設定が不完全です",
+        token_error: "アクセストークンの取得に失敗しました",
+        callback_error: "認証コールバックでエラーが発生しました",
+      };
+      setNotification({ type: "error", message: errorMessages[error] || "認証に失敗しました" });
+      window.history.replaceState({}, "", "/external-data");
+    }
+
+    // 通知を5秒後に消す
+    if (success || error) {
+      setTimeout(() => setNotification(null), 5000);
+    }
+  }, [searchParams]);
+
+  // 商品一覧を取得
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const q = query(collection(db, "registered_products"), orderBy("productName"));
+        const snapshot = await getDocs(q);
+        const productList = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as RegisteredProduct[];
+        setProducts(productList);
+
+        // URLパラメータでproductIdが指定されていたら選択
+        const productIdFromUrl = searchParams.get("productId");
+        if (productIdFromUrl && productList.some(p => p.id === productIdFromUrl)) {
+          setSelectedProductId(productIdFromUrl);
+        }
+      } catch (error) {
+        console.error("商品一覧取得エラー:", error);
+      }
+    };
+    fetchProducts();
+  }, [searchParams]);
+
+  // 選択された商品のTikTokアカウントを取得
+  useEffect(() => {
+    const fetchTikTokAccounts = async () => {
+      if (!selectedProductId) {
+        setTiktokAccounts([]);
+        return;
+      }
+
+      setIsLoadingAccounts(true);
+      try {
+        const response = await fetch(`${BACKEND_URL}/tiktok/accounts/${selectedProductId}`);
+        const data = await response.json();
+        if (data.success) {
+          setTiktokAccounts(data.accounts);
+        }
+      } catch (error) {
+        console.error("TikTokアカウント取得エラー:", error);
+      } finally {
+        setIsLoadingAccounts(false);
+      }
+    };
+    fetchTikTokAccounts();
+  }, [selectedProductId]);
+
+  // TikTok連携開始
+  const handleTikTokConnect = () => {
+    if (!selectedProductId) {
+      setNotification({ type: "error", message: "商品を選択してください" });
+      setTimeout(() => setNotification(null), 3000);
+      return;
+    }
+    // バックエンドの認証エンドポイントにリダイレクト
+    window.location.href = `${BACKEND_URL}/auth/tiktok/login?productId=${selectedProductId}`;
+  };
+
+  // TikTokアカウント削除
+  const handleDeleteTikTokAccount = async (accountId: string) => {
+    if (!confirm("このTikTokアカウントの連携を解除しますか？")) return;
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/tiktok/accounts/${accountId}`, {
+        method: "DELETE",
+      });
+      const data = await response.json();
+      if (data.success) {
+        setTiktokAccounts(prev => prev.filter(a => a.id !== accountId));
+        setNotification({ type: "success", message: "アカウントを削除しました" });
+        setTimeout(() => setNotification(null), 3000);
+      }
+    } catch (error) {
+      console.error("TikTokアカウント削除エラー:", error);
+      setNotification({ type: "error", message: "削除に失敗しました" });
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
 
   const handleFileSelect = (
     event: React.ChangeEvent<HTMLInputElement>,
@@ -78,15 +229,18 @@ export default function ExternalDataPage() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const formatDate = (date: Date) => {
+  const formatDate = (date: Date | string) => {
+    const d = typeof date === "string" ? new Date(date) : date;
     return new Intl.DateTimeFormat("ja-JP", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-    }).format(date);
+    }).format(d);
   };
+
+  const selectedProduct = products.find(p => p.id === selectedProductId);
 
   // アップロードセクションのコンポーネント
   const UploadSection = ({
@@ -223,12 +377,187 @@ export default function ExternalDataPage() {
 
   return (
     <div className="space-y-6">
+      {/* 通知メッセージ */}
+      {notification && (
+        <div className={`fixed top-4 right-4 z-50 px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 ${
+          notification.type === "success" ? "bg-green-500 text-white" : "bg-red-500 text-white"
+        }`}>
+          {notification.type === "success" ? <CheckCircle size={20} /> : <AlertCircle size={20} />}
+          {notification.message}
+        </div>
+      )}
+
       {/* ページタイトル */}
       <div>
         <h1 className="text-2xl font-bold text-gray-800">外部データ入稿</h1>
         <p className="text-gray-600 mt-1">
-          外部広告プラットフォームのデータをCSVでアップロードします
+          外部広告プラットフォームのデータをCSVでアップロード、またはアカウント連携で自動取得します
         </p>
+      </div>
+
+      {/* TikTokアカウント連携セクション */}
+      <div className="bg-white rounded-xl shadow-sm border-2 border-pink-200 overflow-hidden">
+        <div className="bg-pink-50 px-6 py-4 border-b border-pink-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-bold text-pink-600">TikTokアカウント連携</h3>
+            <span className="px-2 py-0.5 bg-pink-600 text-white text-xs rounded-full">OAuth</span>
+          </div>
+        </div>
+        <div className="p-6">
+          {/* 商品選択 */}
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              対象商品を選択
+            </label>
+            <div className="relative">
+              <button
+                onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
+                className="w-full md:w-96 px-4 py-3 border border-gray-300 rounded-lg text-left flex items-center justify-between hover:border-gray-400 transition-colors"
+              >
+                <span className={selectedProduct ? "text-gray-800" : "text-gray-400"}>
+                  {selectedProduct ? selectedProduct.productName : "商品を選択してください"}
+                </span>
+                <ChevronDown size={20} className={`text-gray-400 transition-transform ${isProductDropdownOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {isProductDropdownOpen && (
+                <div className="absolute z-10 w-full md:w-96 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                  {products.length === 0 ? (
+                    <div className="px-4 py-3 text-gray-500 text-sm">
+                      商品が登録されていません
+                    </div>
+                  ) : (
+                    products.map(product => (
+                      <button
+                        key={product.id}
+                        onClick={() => {
+                          setSelectedProductId(product.id);
+                          setIsProductDropdownOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 text-left hover:bg-gray-50 border-b border-gray-100 last:border-0 ${
+                          selectedProductId === product.id ? "bg-pink-50" : ""
+                        }`}
+                      >
+                        <span className="font-medium text-gray-800">{product.productName}</span>
+                        {product.skuName && (
+                          <span className="text-sm text-gray-500 ml-2">({product.skuName})</span>
+                        )}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 連携済みアカウント一覧 */}
+          {selectedProductId && (
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-medium text-gray-700">
+                  連携済みアカウント
+                  {tiktokAccounts.length > 0 && (
+                    <span className="ml-2 px-2 py-0.5 bg-pink-100 text-pink-600 text-xs rounded-full">
+                      {tiktokAccounts.length}件
+                    </span>
+                  )}
+                </h4>
+                <button
+                  onClick={() => {
+                    setIsLoadingAccounts(true);
+                    fetch(`${BACKEND_URL}/tiktok/accounts/${selectedProductId}`)
+                      .then(res => res.json())
+                      .then(data => {
+                        if (data.success) setTiktokAccounts(data.accounts);
+                      })
+                      .finally(() => setIsLoadingAccounts(false));
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                  title="更新"
+                >
+                  <RefreshCw size={16} className={isLoadingAccounts ? "animate-spin" : ""} />
+                </button>
+              </div>
+
+              {isLoadingAccounts ? (
+                <div className="flex items-center justify-center py-8 text-gray-400">
+                  <RefreshCw size={24} className="animate-spin mr-2" />
+                  読み込み中...
+                </div>
+              ) : tiktokAccounts.length === 0 ? (
+                <div className="bg-gray-50 rounded-lg p-6 text-center text-gray-500">
+                  <User size={32} className="mx-auto mb-2 text-gray-300" />
+                  <p>連携済みのアカウントはありません</p>
+                  <p className="text-sm mt-1">下のボタンからTikTokアカウントを追加してください</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {tiktokAccounts.map(account => (
+                    <div
+                      key={account.id}
+                      className="flex items-center justify-between p-4 bg-gray-50 rounded-lg"
+                    >
+                      <div className="flex items-center gap-3">
+                        {account.tiktokAvatarUrl ? (
+                          <img
+                            src={account.tiktokAvatarUrl}
+                            alt={account.tiktokUserName}
+                            className="w-10 h-10 rounded-full"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-full bg-pink-200 flex items-center justify-center">
+                            <User size={20} className="text-pink-600" />
+                          </div>
+                        )}
+                        <div>
+                          <p className="font-medium text-gray-800">{account.tiktokUserName}</p>
+                          {account.connectedAt && (
+                            <p className="text-xs text-gray-500">
+                              連携日: {formatDate(account.connectedAt)}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteTikTokAccount(account.id)}
+                        className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        title="連携解除"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* アカウント追加ボタン */}
+          <button
+            onClick={handleTikTokConnect}
+            disabled={!selectedProductId}
+            className="flex items-center gap-2 px-6 py-3 bg-pink-500 text-white rounded-lg hover:bg-pink-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Plus size={20} />
+            TikTokアカウントを追加
+          </button>
+
+          {!selectedProductId && (
+            <p className="text-sm text-gray-500 mt-2">
+              ※ アカウントを追加するには、まず対象商品を選択してください
+            </p>
+          )}
+
+          {/* 説明 */}
+          <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 mt-6">
+            <p className="font-medium mb-1">TikTokアカウント連携について:</p>
+            <ul className="list-disc list-inside space-y-1 text-gray-500">
+              <li>1つの商品に対して、複数のTikTokアカウントを紐付けることができます</li>
+              <li>連携すると、TikTokの動画再生数やいいね数を自動で取得できます</li>
+              <li>アカウント情報はいつでも連携解除できます</li>
+            </ul>
+          </div>
+        </div>
       </div>
 
       {/* アップロードセクション */}
@@ -249,9 +578,9 @@ export default function ExternalDataPage() {
           type="x"
         />
 
-        {/* TikTok広告データ */}
+        {/* TikTok広告データ（CSV） */}
         <UploadSection
-          title="TikTok広告データ"
+          title="TikTok広告データ（CSV手動アップロード）"
           color="#000000"
           bgColor="bg-pink-50"
           borderColor="border-pink-200"
