@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, Suspense } from "react";
-import { Upload, FileText, CheckCircle, AlertCircle, X, Plus, Trash2, User, RefreshCw, ChevronDown } from "lucide-react";
+import { Upload, FileText, CheckCircle, AlertCircle, X, Plus, Trash2, User, RefreshCw, ChevronDown, Settings, Eye, EyeOff, Save, Key } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, getDocs, query, orderBy } from "firebase/firestore";
 import { useSearchParams } from "next/navigation";
@@ -38,6 +38,13 @@ interface TikTokAccount {
   connectedAt: string | null;
 }
 
+// TikTok OAuth設定の型
+interface TikTokOAuthConfig {
+  clientKey: string;
+  clientSecret: string;
+  isConfigured: boolean;
+}
+
 function ExternalDataContent() {
   const searchParams = useSearchParams();
 
@@ -64,6 +71,17 @@ function ExternalDataContent() {
 
   // 通知メッセージ
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  // TikTok OAuth設定
+  const [tiktokOAuthConfig, setTiktokOAuthConfig] = useState<TikTokOAuthConfig>({
+    clientKey: "",
+    clientSecret: "",
+    isConfigured: false,
+  });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [showClientKey, setShowClientKey] = useState(false);
+  const [showClientSecret, setShowClientSecret] = useState(false);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   // URLパラメータから結果を取得
   useEffect(() => {
@@ -98,7 +116,7 @@ function ExternalDataContent() {
     }
   }, [searchParams]);
 
-  // 商品一覧を取得
+  // 商品一覧とTikTok OAuth設定を取得
   useEffect(() => {
     const fetchProducts = async () => {
       try {
@@ -120,6 +138,24 @@ function ExternalDataContent() {
       }
     };
     fetchProducts();
+
+    // TikTok OAuth設定を取得
+    const fetchTikTokConfig = async () => {
+      try {
+        const response = await fetch(`${BACKEND_URL}/settings/tiktok-oauth`);
+        const data = await response.json();
+        if (data.success && data.config) {
+          setTiktokOAuthConfig({
+            clientKey: data.config.clientKey || "",
+            clientSecret: data.config.clientSecret || "",
+            isConfigured: !!(data.config.clientKey && data.config.clientSecret),
+          });
+        }
+      } catch (error) {
+        console.error("TikTok設定取得エラー:", error);
+      }
+    };
+    fetchTikTokConfig();
   }, [searchParams]);
 
   // 選択された商品のTikTokアカウントを取得
@@ -153,8 +189,54 @@ function ExternalDataContent() {
       setTimeout(() => setNotification(null), 3000);
       return;
     }
+    // OAuth設定が未登録の場合はエラーを表示
+    if (!tiktokOAuthConfig.isConfigured) {
+      setNotification({ type: "error", message: "まずは下の設定画面でTikTok Client Keyを登録してください" });
+      setIsSettingsOpen(true);
+      setTimeout(() => setNotification(null), 5000);
+      return;
+    }
     // バックエンドの認証エンドポイントにリダイレクト
     window.location.href = `${BACKEND_URL}/auth/tiktok/login?productId=${selectedProductId}`;
+  };
+
+  // TikTok OAuth設定を保存
+  const handleSaveTikTokConfig = async () => {
+    if (!tiktokOAuthConfig.clientKey || !tiktokOAuthConfig.clientSecret) {
+      setNotification({ type: "error", message: "Client KeyとClient Secretを入力してください" });
+      setTimeout(() => setNotification(null), 3000);
+      return;
+    }
+
+    setIsSavingConfig(true);
+    try {
+      const response = await fetch(`${BACKEND_URL}/settings/tiktok-oauth`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          clientKey: tiktokOAuthConfig.clientKey,
+          clientSecret: tiktokOAuthConfig.clientSecret,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setTiktokOAuthConfig(prev => ({ ...prev, isConfigured: true }));
+        setNotification({ type: "success", message: "TikTok API設定を保存しました" });
+        setTimeout(() => setNotification(null), 3000);
+      } else {
+        setNotification({ type: "error", message: data.error || "保存に失敗しました" });
+        setTimeout(() => setNotification(null), 3000);
+      }
+    } catch (error) {
+      console.error("TikTok設定保存エラー:", error);
+      setNotification({ type: "error", message: "保存に失敗しました" });
+      setTimeout(() => setNotification(null), 3000);
+    } finally {
+      setIsSavingConfig(false);
+    }
   };
 
   // TikTokアカウント削除
@@ -556,6 +638,111 @@ function ExternalDataContent() {
               <li>連携すると、TikTokの動画再生数やいいね数を自動で取得できます</li>
               <li>アカウント情報はいつでも連携解除できます</li>
             </ul>
+          </div>
+
+          {/* TikTok API設定セクション */}
+          <div className="mt-6 border-t border-gray-200 pt-6">
+            <button
+              onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+              className="flex items-center gap-2 text-gray-600 hover:text-gray-800 transition-colors"
+            >
+              <Settings size={18} />
+              <span className="font-medium">TikTok API設定</span>
+              {tiktokOAuthConfig.isConfigured ? (
+                <span className="px-2 py-0.5 bg-green-100 text-green-600 text-xs rounded-full">設定済み</span>
+              ) : (
+                <span className="px-2 py-0.5 bg-yellow-100 text-yellow-600 text-xs rounded-full">未設定</span>
+              )}
+              <ChevronDown size={16} className={`transition-transform ${isSettingsOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {isSettingsOpen && (
+              <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <p className="text-sm text-gray-600 mb-4">
+                  TikTokアカウント連携を行うには、TikTok Developer Portalで取得したClient KeyとClient Secretを登録してください。
+                </p>
+
+                <div className="space-y-4 max-w-md">
+                  {/* Client Key */}
+                  <div>
+                    <label htmlFor="tiktok-client-key" className="block text-sm font-medium text-gray-700 mb-1">
+                      <span className="flex items-center gap-1">
+                        <Key size={14} />
+                        TikTok Client Key
+                      </span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showClientKey ? "text" : "password"}
+                        id="tiktok-client-key"
+                        value={tiktokOAuthConfig.clientKey}
+                        onChange={(e) => setTiktokOAuthConfig(prev => ({ ...prev, clientKey: e.target.value }))}
+                        placeholder="Client Keyを入力"
+                        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-pink-500 outline-none font-mono text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientKey(!showClientKey)}
+                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        {showClientKey ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Client Secret */}
+                  <div>
+                    <label htmlFor="tiktok-client-secret" className="block text-sm font-medium text-gray-700 mb-1">
+                      <span className="flex items-center gap-1">
+                        <Key size={14} />
+                        TikTok Client Secret
+                      </span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showClientSecret ? "text" : "password"}
+                        id="tiktok-client-secret"
+                        value={tiktokOAuthConfig.clientSecret}
+                        onChange={(e) => setTiktokOAuthConfig(prev => ({ ...prev, clientSecret: e.target.value }))}
+                        placeholder="Client Secretを入力"
+                        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-pink-500 outline-none font-mono text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowClientSecret(!showClientSecret)}
+                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        {showClientSecret ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 保存ボタン */}
+                  <button
+                    onClick={handleSaveTikTokConfig}
+                    disabled={isSavingConfig}
+                    className="flex items-center gap-2 px-4 py-2 bg-pink-500 text-white rounded-lg hover:bg-pink-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSavingConfig ? (
+                      <RefreshCw size={18} className="animate-spin" />
+                    ) : (
+                      <Save size={18} />
+                    )}
+                    {isSavingConfig ? "保存中..." : "設定を保存"}
+                  </button>
+                </div>
+
+                <div className="bg-white rounded-lg p-3 text-xs text-gray-600 mt-4 border border-gray-200">
+                  <p className="font-medium mb-1">TikTok API認証情報の取得方法:</p>
+                  <ol className="list-decimal list-inside space-y-1 text-gray-500">
+                    <li>TikTok Developer Portal (developers.tiktok.com) にログイン</li>
+                    <li>「My Apps」からアプリを作成</li>
+                    <li>「Login Kit」を有効化</li>
+                    <li>Client KeyとClient Secretをコピーして上記に入力</li>
+                  </ol>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
