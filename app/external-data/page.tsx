@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Upload, FileText, CheckCircle, AlertCircle, X, Plus, Trash2, User, Link2, RefreshCw, ChevronDown } from "lucide-react";
+import { useState, useRef, useEffect, Suspense } from "react";
+import { Upload, FileText, CheckCircle, AlertCircle, X, Plus, Trash2, User, RefreshCw, ChevronDown } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, getDocs, query, orderBy } from "firebase/firestore";
 import { useSearchParams } from "next/navigation";
@@ -38,7 +38,7 @@ interface TikTokAccount {
   connectedAt: string | null;
 }
 
-export default function ExternalDataPage() {
+function ExternalDataContent() {
   const searchParams = useSearchParams();
 
   // X広告データ
@@ -595,5 +595,13 @@ export default function ExternalDataPage() {
         />
       </div>
     </div>
+  );
+}
+
+export default function ExternalDataPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-64"><RefreshCw className="w-8 h-8 animate-spin text-blue-500" /></div>}>
+      <ExternalDataContent />
+    </Suspense>
   );
 }
