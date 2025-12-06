@@ -73,6 +73,8 @@ interface VideoData {
   likeCount: number;
   commentCount: number;
   shareCount: number;
+  retention1s: number | null;
+  retention2s: number | null;
   accountId?: string;
   accountName?: string;
 }
@@ -200,6 +202,32 @@ export default function VideoAnalyticsPage() {
     }
   }, [selectedProductId, selectedPeriod]);
 
+  // エンゲージメント同期中フラグ
+  const [isSyncingEngagements, setIsSyncingEngagements] = useState(false);
+
+  // エンゲージメント同期
+  const handleSyncEngagements = async () => {
+    if (!selectedProductId || isSyncingEngagements) return;
+    setIsSyncingEngagements(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/tiktok/sync-all-engagements/${selectedProductId}`, {
+        method: "POST",
+      });
+      const json = await res.json();
+      if (json.success) {
+        alert(`${json.totalUpdated}件のエンゲージメントを同期しました`);
+        fetchAnalyticsData(); // データ再取得
+      } else {
+        alert(`同期エラー: ${json.message}`);
+      }
+    } catch (error) {
+      console.error("Sync error:", error);
+      alert("同期に失敗しました");
+    } finally {
+      setIsSyncingEngagements(false);
+    }
+  };
+
   // 統計計算
   const stats = useMemo(() => {
     const totalViews = allVideos.reduce((sum, v) => sum + v.viewCount, 0);
@@ -207,12 +235,24 @@ export default function VideoAnalyticsPage() {
     const videos30k = allVideos.filter((v) => v.viewCount >= 30000);
     const views10k = videos10k.reduce((sum, v) => sum + v.viewCount, 0);
 
+    // 平均維持率計算（データがあるものだけ）
+    const videosWithRetention1s = allVideos.filter((v) => v.retention1s !== null);
+    const videosWithRetention2s = allVideos.filter((v) => v.retention2s !== null);
+    const avgRetention1s = videosWithRetention1s.length > 0
+      ? videosWithRetention1s.reduce((sum, v) => sum + (v.retention1s || 0), 0) / videosWithRetention1s.length
+      : null;
+    const avgRetention2s = videosWithRetention2s.length > 0
+      ? videosWithRetention2s.reduce((sum, v) => sum + (v.retention2s || 0), 0) / videosWithRetention2s.length
+      : null;
+
     return {
       totalViews,
       videoCount: allVideos.length,
       views10k,
       videos10kCount: videos10k.length,
       videos30kCount: videos30k.length,
+      avgRetention1s,
+      avgRetention2s,
     };
   }, [allVideos]);
 
@@ -385,15 +425,35 @@ export default function VideoAnalyticsPage() {
               </div>
             </div>
             <div className="bg-white rounded-xl shadow-sm p-4">
-              <div className="text-sm text-gray-500 mb-1">冒頭視聴維持率 1秒</div>
-              <div className="text-2xl font-bold text-gray-400">-</div>
-              <div className="text-xs text-gray-400 mt-1">（API未対応）</div>
+              <div className="text-sm text-gray-500 mb-1">平均視聴維持率 1秒</div>
+              <div className="text-2xl font-bold text-gray-800">
+                {stats.avgRetention1s !== null ? `${stats.avgRetention1s.toFixed(1)}%` : "-"}
+              </div>
+              <div className="text-xs text-gray-400 mt-1">
+                {stats.avgRetention1s !== null ? "全動画平均" : "同期が必要"}
+              </div>
             </div>
             <div className="bg-white rounded-xl shadow-sm p-4">
-              <div className="text-sm text-gray-500 mb-1">冒頭視聴維持率 2秒</div>
-              <div className="text-2xl font-bold text-gray-400">-</div>
-              <div className="text-xs text-gray-400 mt-1">（API未対応）</div>
+              <div className="text-sm text-gray-500 mb-1">平均視聴維持率 2秒</div>
+              <div className="text-2xl font-bold text-gray-800">
+                {stats.avgRetention2s !== null ? `${stats.avgRetention2s.toFixed(1)}%` : "-"}
+              </div>
+              <div className="text-xs text-gray-400 mt-1">
+                {stats.avgRetention2s !== null ? "全動画平均" : "同期が必要"}
+              </div>
             </div>
+          </div>
+
+          {/* エンゲージメント同期ボタン */}
+          <div className="flex justify-end">
+            <button
+              onClick={handleSyncEngagements}
+              disabled={!selectedProductId || isSyncingEngagements}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+            >
+              <RefreshCw size={16} className={isSyncingEngagements ? "animate-spin" : ""} />
+              {isSyncingEngagements ? "同期中..." : "維持率データを同期"}
+            </button>
           </div>
 
           {/* 日次再生数推移グラフ */}
@@ -656,8 +716,12 @@ export default function VideoAnalyticsPage() {
                         <td className="text-right py-2 px-2 text-sm text-gray-700">
                           {formatNumber(video.shareCount)}
                         </td>
-                        <td className="text-center py-2 px-2 text-sm text-gray-400">-</td>
-                        <td className="text-center py-2 px-2 text-sm text-gray-400">-</td>
+                        <td className="text-center py-2 px-2 text-sm text-gray-700">
+                          {video.retention1s !== null ? `${video.retention1s.toFixed(1)}%` : "-"}
+                        </td>
+                        <td className="text-center py-2 px-2 text-sm text-gray-700">
+                          {video.retention2s !== null ? `${video.retention2s.toFixed(1)}%` : "-"}
+                        </td>
                         <td className="text-right py-2 px-2 text-xs text-gray-500">
                           {video.createTime
                             ? new Date(video.createTime).toLocaleDateString("ja-JP")

@@ -5409,6 +5409,9 @@ app.get("/tiktok/analytics/all-videos/:productId", async (req: Request, res: Res
           likeCount: videoData.likeCount || 0,
           commentCount: videoData.commentCount || 0,
           shareCount: videoData.shareCount || 0,
+          // 視聴維持率
+          retention1s: videoData.retention1s ?? null,
+          retention2s: videoData.retention2s ?? null,
           accountId,
           accountName: accountInfo.name,
           accountAvatar: accountInfo.avatar,
@@ -5436,7 +5439,289 @@ app.get("/tiktok/analytics/all-videos/:productId", async (req: Request, res: Res
   }
 });
 
-// ==================== End TikTok動画分析API ====================
+// ==================== TikTok Business API エンゲージメント取得 ====================
+
+// TikTok Business APIのエンゲージメントフィールド
+const ENGAGEMENT_FIELDS = [
+  "item_id",
+  "likes",
+  "comments",
+  "shares",
+  "favorites",
+  "video_duration",
+  "reach",
+  "video_views",
+  "total_time_watched",
+  "average_time_watched",
+  "full_video_watched_rate",
+  "new_followers",
+  "profile_views",
+  "video_view_retention",
+];
+
+// Business APIでエンゲージメントデータを取得する関数
+async function fetchBusinessApiEngagements(
+  accessToken: string,
+  businessId: string,
+  videoIds: string[]
+): Promise<any[]> {
+  const axios = (await import('axios')).default;
+
+  // クエリパラメータを構築
+  const params = new URLSearchParams();
+  params.append('business_id', businessId);
+  params.append('fields', JSON.stringify(ENGAGEMENT_FIELDS));
+  params.append('filters', JSON.stringify({ video_ids: videoIds }));
+
+  const url = `https://business-api.tiktok.com/open_api/v1.3/business/video/list/?${params.toString()}`;
+
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Token': accessToken,
+      },
+    });
+
+    if (response.data?.code !== 0 || !response.data?.data) {
+      console.error('Business API error:', response.data);
+      return [];
+    }
+
+    return response.data.data.videos || [];
+  } catch (error: any) {
+    console.error('Error fetching Business API engagements:', error?.response?.data || error?.message);
+    return [];
+  }
+}
+
+// エンゲージメントデータを同期するエンドポイント
+app.post("/tiktok/sync-engagements/:accountId", async (req: Request, res: Response) => {
+  try {
+    const accountId = req.params.accountId;
+
+    // アカウント情報を取得
+    const accountDoc = await db.collection("tiktok_accounts").doc(accountId).get();
+    if (!accountDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "アカウントが見つかりません",
+      });
+    }
+
+    const account = accountDoc.data();
+    if (!account?.accessToken || !account?.openId) {
+      return res.status(400).json({
+        success: false,
+        message: "認証情報が不足しています",
+      });
+    }
+
+    // このアカウントの動画一覧を取得
+    const videosSnapshot = await db.collection("tiktok_videos")
+      .where("accountId", "==", accountId)
+      .get();
+
+    if (videosSnapshot.empty) {
+      return res.json({
+        success: true,
+        message: "同期対象の動画がありません",
+        updated: 0,
+      });
+    }
+
+    const videoIds = videosSnapshot.docs.map(doc => doc.data().videoId);
+
+    // 10件ずつチャンクに分割して処理
+    const chunkSize = 10;
+    let totalUpdated = 0;
+
+    for (let i = 0; i < videoIds.length; i += chunkSize) {
+      const chunk = videoIds.slice(i, i + chunkSize);
+
+      // Business APIからエンゲージメントデータを取得
+      const engagements = await fetchBusinessApiEngagements(
+        account.accessToken,
+        account.openId, // business_id = open_id
+        chunk
+      );
+
+      // 結果をFirestoreに保存
+      for (const engagement of engagements) {
+        const videoId = engagement.item_id;
+        if (!videoId) continue;
+
+        // retention率を抽出
+        const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1")?.percentage || null;
+        const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2")?.percentage || null;
+
+        const updateData: any = {
+          // Business APIからの追加データ
+          reach: engagement.reach || 0,
+          favorites: engagement.favorites || 0,
+          totalTimeWatched: engagement.total_time_watched || 0,
+          averageTimeWatched: engagement.average_time_watched || 0,
+          fullVideoWatchedRate: engagement.full_video_watched_rate || 0,
+          newFollowers: engagement.new_followers || 0,
+          profileViews: engagement.profile_views || 0,
+          // 視聴維持率
+          retention1s: retention1s,
+          retention2s: retention2s,
+          // 既存データも更新
+          viewCount: engagement.video_views || 0,
+          likeCount: engagement.likes || 0,
+          commentCount: engagement.comments || 0,
+          shareCount: engagement.shares || 0,
+          duration: engagement.video_duration || 0,
+          // メタデータ
+          lastEngagementSyncAt: Timestamp.now(),
+        };
+
+        await db.collection("tiktok_videos").doc(videoId).update(updateData);
+        totalUpdated++;
+      }
+
+      // レート制限対策
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    res.json({
+      success: true,
+      message: `${totalUpdated}件のエンゲージメントデータを同期しました`,
+      updated: totalUpdated,
+    });
+
+  } catch (error: any) {
+    console.error("Error syncing engagements:", error);
+    res.status(500).json({
+      success: false,
+      message: "エンゲージメント同期に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 商品配下の全アカウントのエンゲージメントを同期
+app.post("/tiktok/sync-all-engagements/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+
+    // 商品に紐づくアカウント一覧を取得
+    const accountsSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .get();
+
+    if (accountsSnapshot.empty) {
+      return res.json({
+        success: true,
+        message: "同期対象のアカウントがありません",
+        results: [],
+      });
+    }
+
+    const results: any[] = [];
+
+    for (const accountDoc of accountsSnapshot.docs) {
+      const account = accountDoc.data();
+      const accountId = accountDoc.id;
+
+      if (!account.accessToken || !account.openId) {
+        results.push({
+          accountId,
+          accountName: account.tiktokUserName || 'Unknown',
+          success: false,
+          message: "認証情報なし",
+        });
+        continue;
+      }
+
+      // このアカウントの動画一覧を取得
+      const videosSnapshot = await db.collection("tiktok_videos")
+        .where("accountId", "==", accountId)
+        .get();
+
+      if (videosSnapshot.empty) {
+        results.push({
+          accountId,
+          accountName: account.tiktokUserName || 'Unknown',
+          success: true,
+          updated: 0,
+        });
+        continue;
+      }
+
+      const videoIds = videosSnapshot.docs.map(doc => doc.data().videoId);
+      let accountUpdated = 0;
+
+      // 10件ずつチャンクに分割
+      const chunkSize = 10;
+      for (let i = 0; i < videoIds.length; i += chunkSize) {
+        const chunk = videoIds.slice(i, i + chunkSize);
+
+        const engagements = await fetchBusinessApiEngagements(
+          account.accessToken,
+          account.openId,
+          chunk
+        );
+
+        for (const engagement of engagements) {
+          const videoId = engagement.item_id;
+          if (!videoId) continue;
+
+          const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1")?.percentage || null;
+          const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2")?.percentage || null;
+
+          await db.collection("tiktok_videos").doc(videoId).update({
+            reach: engagement.reach || 0,
+            favorites: engagement.favorites || 0,
+            totalTimeWatched: engagement.total_time_watched || 0,
+            averageTimeWatched: engagement.average_time_watched || 0,
+            fullVideoWatchedRate: engagement.full_video_watched_rate || 0,
+            newFollowers: engagement.new_followers || 0,
+            profileViews: engagement.profile_views || 0,
+            retention1s: retention1s,
+            retention2s: retention2s,
+            viewCount: engagement.video_views || 0,
+            likeCount: engagement.likes || 0,
+            commentCount: engagement.comments || 0,
+            shareCount: engagement.shares || 0,
+            duration: engagement.video_duration || 0,
+            lastEngagementSyncAt: Timestamp.now(),
+          });
+          accountUpdated++;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      results.push({
+        accountId,
+        accountName: account.tiktokUserName || 'Unknown',
+        success: true,
+        updated: accountUpdated,
+      });
+    }
+
+    const totalUpdated = results.reduce((sum, r) => sum + (r.updated || 0), 0);
+
+    res.json({
+      success: true,
+      message: `${totalUpdated}件のエンゲージメントデータを同期しました`,
+      totalUpdated,
+      results,
+    });
+
+  } catch (error: any) {
+    console.error("Error syncing all engagements:", error);
+    res.status(500).json({
+      success: false,
+      message: "エンゲージメント同期に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// ==================== End TikTok Business API ====================
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
