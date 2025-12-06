@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Upload, Flag } from "lucide-react";
+import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Upload, Flag, BarChart3 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +16,11 @@ const menuItems = [
     name: "商品登録",
     href: "/products",
     icon: Package,
+  },
+  {
+    name: "動画分析",
+    href: "/video-analytics",
+    icon: BarChart3,
   },
   {
     name: "外部データ入稿",
