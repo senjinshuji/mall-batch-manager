@@ -75,6 +75,7 @@ interface VideoData {
   shareCount: number;
   retention1s: number | null;
   retention2s: number | null;
+  fullVideoWatchedRate: number | null;
   accountId?: string;
   accountName?: string;
 }
@@ -235,15 +236,19 @@ export default function VideoAnalyticsPage() {
     const videos30k = allVideos.filter((v) => v.viewCount >= 30000);
     const views10k = videos10k.reduce((sum, v) => sum + v.viewCount, 0);
 
-    // 平均維持率計算（データがあるものだけ）
-    const videosWithRetention1s = allVideos.filter((v) => v.retention1s !== null);
-    const videosWithRetention2s = allVideos.filter((v) => v.retention2s !== null);
-    const avgRetention1s = videosWithRetention1s.length > 0
-      ? videosWithRetention1s.reduce((sum, v) => sum + (v.retention1s || 0), 0) / videosWithRetention1s.length
+    // 視聴完了率計算（データがあるものだけ）
+    const videosWithFullWatchedRate = allVideos.filter((v) => v.fullVideoWatchedRate !== null);
+    const avgFullVideoWatchedRate = videosWithFullWatchedRate.length > 0
+      ? videosWithFullWatchedRate.reduce((sum, v) => sum + (v.fullVideoWatchedRate || 0), 0) / videosWithFullWatchedRate.length
       : null;
-    const avgRetention2s = videosWithRetention2s.length > 0
-      ? videosWithRetention2s.reduce((sum, v) => sum + (v.retention2s || 0), 0) / videosWithRetention2s.length
-      : null;
+
+    // エンゲージメント率計算: (likes + comments + shares) / views
+    const totalLikes = allVideos.reduce((sum, v) => sum + v.likeCount, 0);
+    const totalComments = allVideos.reduce((sum, v) => sum + v.commentCount, 0);
+    const totalShares = allVideos.reduce((sum, v) => sum + v.shareCount, 0);
+    const avgEngagementRate = totalViews > 0
+      ? ((totalLikes + totalComments + totalShares) / totalViews) * 100
+      : 0;
 
     return {
       totalViews,
@@ -251,8 +256,8 @@ export default function VideoAnalyticsPage() {
       views10k,
       videos10kCount: videos10k.length,
       videos30kCount: videos30k.length,
-      avgRetention1s,
-      avgRetention2s,
+      avgFullVideoWatchedRate,
+      avgEngagementRate,
     };
   }, [allVideos]);
 
@@ -425,21 +430,21 @@ export default function VideoAnalyticsPage() {
               </div>
             </div>
             <div className="bg-white rounded-xl shadow-sm p-4">
-              <div className="text-sm text-gray-500 mb-1">平均視聴維持率 1秒</div>
+              <div className="text-sm text-gray-500 mb-1">視聴完了率</div>
               <div className="text-2xl font-bold text-gray-800">
-                {stats.avgRetention1s !== null ? `${stats.avgRetention1s.toFixed(1)}%` : "-"}
+                {stats.avgFullVideoWatchedRate !== null ? `${stats.avgFullVideoWatchedRate.toFixed(1)}%` : "-"}
               </div>
               <div className="text-xs text-gray-400 mt-1">
-                {stats.avgRetention1s !== null ? "全動画平均" : "同期が必要"}
+                {stats.avgFullVideoWatchedRate !== null ? "全動画平均" : "同期が必要"}
               </div>
             </div>
             <div className="bg-white rounded-xl shadow-sm p-4">
-              <div className="text-sm text-gray-500 mb-1">平均視聴維持率 2秒</div>
+              <div className="text-sm text-gray-500 mb-1">エンゲージメント率</div>
               <div className="text-2xl font-bold text-gray-800">
-                {stats.avgRetention2s !== null ? `${stats.avgRetention2s.toFixed(1)}%` : "-"}
+                {stats.avgEngagementRate.toFixed(2)}%
               </div>
               <div className="text-xs text-gray-400 mt-1">
-                {stats.avgRetention2s !== null ? "全動画平均" : "同期が必要"}
+                (いいね+コメント+シェア)÷再生数
               </div>
             </div>
           </div>

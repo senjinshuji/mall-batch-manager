@@ -5412,6 +5412,7 @@ app.get("/tiktok/analytics/all-videos/:productId", async (req: Request, res: Res
           // 視聴維持率
           retention1s: videoData.retention1s ?? null,
           retention2s: videoData.retention2s ?? null,
+          fullVideoWatchedRate: videoData.fullVideoWatchedRate ?? null,
           accountId,
           accountName: accountInfo.name,
           accountAvatar: accountInfo.avatar,
@@ -5488,7 +5489,12 @@ async function fetchBusinessApiEngagements(
       return [];
     }
 
-    return response.data.data.videos || [];
+    const videos = response.data.data.videos || [];
+    // デバッグ: video_view_retentionの内容を確認
+    if (videos.length > 0 && videos[0].video_view_retention) {
+      console.log('Sample video_view_retention:', JSON.stringify(videos[0].video_view_retention));
+    }
+    return videos;
   } catch (error: any) {
     console.error('Error fetching Business API engagements:', error?.response?.data || error?.message);
     return [];
@@ -5551,9 +5557,9 @@ app.post("/tiktok/sync-engagements/:accountId", async (req: Request, res: Respon
         const videoId = engagement.item_id;
         if (!videoId) continue;
 
-        // retention率を抽出
-        const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1")?.percentage || null;
-        const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2")?.percentage || null;
+        // retention率を抽出（TikTok APIでは second が数値の場合と文字列の場合がある）
+        const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1" || r.second === 1)?.percentage ?? null;
+        const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2" || r.second === 2)?.percentage ?? null;
 
         const updateData: any = {
           // Business APIからの追加データ
@@ -5668,8 +5674,9 @@ app.post("/tiktok/sync-all-engagements/:productId", async (req: Request, res: Re
           const videoId = engagement.item_id;
           if (!videoId) continue;
 
-          const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1")?.percentage || null;
-          const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2")?.percentage || null;
+          // TikTok APIでは second が数値の場合と文字列の場合がある
+          const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1" || r.second === 1)?.percentage ?? null;
+          const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2" || r.second === 2)?.percentage ?? null;
 
           await db.collection("tiktok_videos").doc(videoId).update({
             reach: engagement.reach || 0,
