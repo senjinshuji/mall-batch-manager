@@ -236,10 +236,10 @@ export default function VideoAnalyticsPage() {
     const videos30k = allVideos.filter((v) => v.viewCount >= 30000);
     const views10k = videos10k.reduce((sum, v) => sum + v.viewCount, 0);
 
-    // 視聴完了率計算（データがあるものだけ）
-    const videosWithFullWatchedRate = allVideos.filter((v) => v.fullVideoWatchedRate !== null);
+    // 視聴完了率計算（データがあるものだけ - 0も有効な値として扱う）
+    const videosWithFullWatchedRate = allVideos.filter((v) => v.fullVideoWatchedRate !== null && v.fullVideoWatchedRate !== undefined);
     const avgFullVideoWatchedRate = videosWithFullWatchedRate.length > 0
-      ? videosWithFullWatchedRate.reduce((sum, v) => sum + (v.fullVideoWatchedRate || 0), 0) / videosWithFullWatchedRate.length
+      ? videosWithFullWatchedRate.reduce((sum, v) => sum + (v.fullVideoWatchedRate ?? 0), 0) / videosWithFullWatchedRate.length
       : null;
 
     // エンゲージメント率計算: (likes + comments + shares) / views
@@ -662,6 +662,12 @@ export default function VideoAnalyticsPage() {
                       <th className="text-center py-3 px-2 text-sm font-medium text-gray-600">
                         2秒維持
                       </th>
+                      <th className="text-center py-3 px-2 text-sm font-medium text-gray-600">
+                        完了率
+                      </th>
+                      <th className="text-center py-3 px-2 text-sm font-medium text-gray-600">
+                        ER%
+                      </th>
                       <th
                         className="text-right py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
                         onClick={() => handleSort("createTime")}
@@ -726,6 +732,16 @@ export default function VideoAnalyticsPage() {
                         </td>
                         <td className="text-center py-2 px-2 text-sm text-gray-700">
                           {video.retention2s !== null ? `${video.retention2s.toFixed(1)}%` : "-"}
+                        </td>
+                        <td className="text-center py-2 px-2 text-sm text-gray-700">
+                          {video.fullVideoWatchedRate !== null && video.fullVideoWatchedRate !== undefined
+                            ? `${video.fullVideoWatchedRate.toFixed(1)}%`
+                            : "-"}
+                        </td>
+                        <td className="text-center py-2 px-2 text-sm text-gray-700">
+                          {video.viewCount > 0
+                            ? `${(((video.likeCount + video.commentCount + video.shareCount) / video.viewCount) * 100).toFixed(2)}%`
+                            : "-"}
                         </td>
                         <td className="text-right py-2 px-2 text-xs text-gray-500">
                           {video.createTime
