@@ -5558,8 +5558,14 @@ app.post("/tiktok/sync-engagements/:accountId", async (req: Request, res: Respon
         if (!videoId) continue;
 
         // retention率を抽出（TikTok APIでは second が数値の場合と文字列の場合がある）
-        const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1" || r.second === 1)?.percentage ?? null;
-        const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2" || r.second === 2)?.percentage ?? null;
+        // percentageは0〜1の小数値なので100倍してパーセント表示にする
+        const retention1sRaw = engagement.video_view_retention?.find((r: any) => r.second === "1" || r.second === 1)?.percentage ?? null;
+        const retention2sRaw = engagement.video_view_retention?.find((r: any) => r.second === "2" || r.second === 2)?.percentage ?? null;
+        const retention1s = retention1sRaw !== null ? retention1sRaw * 100 : null;
+        const retention2s = retention2sRaw !== null ? retention2sRaw * 100 : null;
+        // fullVideoWatchedRateも0〜1の小数なので100倍
+        const fullVideoWatchedRateRaw = engagement.full_video_watched_rate ?? null;
+        const fullVideoWatchedRate = fullVideoWatchedRateRaw !== null ? fullVideoWatchedRateRaw * 100 : 0;
 
         const updateData: any = {
           // Business APIからの追加データ
@@ -5567,7 +5573,7 @@ app.post("/tiktok/sync-engagements/:accountId", async (req: Request, res: Respon
           favorites: engagement.favorites || 0,
           totalTimeWatched: engagement.total_time_watched || 0,
           averageTimeWatched: engagement.average_time_watched || 0,
-          fullVideoWatchedRate: engagement.full_video_watched_rate || 0,
+          fullVideoWatchedRate: fullVideoWatchedRate,
           newFollowers: engagement.new_followers || 0,
           profileViews: engagement.profile_views || 0,
           // 視聴維持率
@@ -5631,7 +5637,9 @@ app.post("/tiktok/sync-all-engagements/:productId", async (req: Request, res: Re
       const account = accountDoc.data();
       const accountId = accountDoc.id;
 
-      if (!account.accessToken || !account.openId) {
+      // tiktokUserIdがopenIdとして保存されている（Firestore上のフィールド名はtiktokUserId）
+      const businessId = account.tiktokUserId || account.openId;
+      if (!account.accessToken || !businessId) {
         results.push({
           accountId,
           accountName: account.tiktokUserName || 'Unknown',
@@ -5666,7 +5674,7 @@ app.post("/tiktok/sync-all-engagements/:productId", async (req: Request, res: Re
 
         const engagements = await fetchBusinessApiEngagements(
           account.accessToken,
-          account.openId,
+          businessId,
           chunk
         );
 
@@ -5675,15 +5683,21 @@ app.post("/tiktok/sync-all-engagements/:productId", async (req: Request, res: Re
           if (!videoId) continue;
 
           // TikTok APIでは second が数値の場合と文字列の場合がある
-          const retention1s = engagement.video_view_retention?.find((r: any) => r.second === "1" || r.second === 1)?.percentage ?? null;
-          const retention2s = engagement.video_view_retention?.find((r: any) => r.second === "2" || r.second === 2)?.percentage ?? null;
+          // percentageは0〜1の小数値なので100倍してパーセント表示にする
+          const retention1sRaw = engagement.video_view_retention?.find((r: any) => r.second === "1" || r.second === 1)?.percentage ?? null;
+          const retention2sRaw = engagement.video_view_retention?.find((r: any) => r.second === "2" || r.second === 2)?.percentage ?? null;
+          const retention1s = retention1sRaw !== null ? retention1sRaw * 100 : null;
+          const retention2s = retention2sRaw !== null ? retention2sRaw * 100 : null;
+          // fullVideoWatchedRateも0〜1の小数なので100倍
+          const fullVideoWatchedRateRaw = engagement.full_video_watched_rate ?? null;
+          const fullVideoWatchedRate = fullVideoWatchedRateRaw !== null ? fullVideoWatchedRateRaw * 100 : 0;
 
           await db.collection("tiktok_videos").doc(videoId).update({
             reach: engagement.reach || 0,
             favorites: engagement.favorites || 0,
             totalTimeWatched: engagement.total_time_watched || 0,
             averageTimeWatched: engagement.average_time_watched || 0,
-            fullVideoWatchedRate: engagement.full_video_watched_rate || 0,
+            fullVideoWatchedRate: fullVideoWatchedRate,
             newFollowers: engagement.new_followers || 0,
             profileViews: engagement.profile_views || 0,
             retention1s: retention1s,
