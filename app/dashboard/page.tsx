@@ -59,7 +59,7 @@ const EXTERNAL_AD_COLORS = {
   tiktok: "#FF0050",  // TikTok（ピンク）
 };
 
-const BACKEND_URL = "https://mall-batch-manager-api-983678294034.asia-northeast1.run.app";
+const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
 // 商品別売上データの型（媒体別）
 interface ProductSalesData {
@@ -395,8 +395,8 @@ export default function DashboardPage() {
       return;
     }
 
-    // 有効な商品をフィルタリング（Amazon、Qoo10、楽天のいずれかがあればOK）
-    const validProducts = products.filter(p => p.amazonCode || p.qoo10Code || p.rakutenCode);
+    // 有効な商品をフィルタリング（登録されていればOK - amazonCodeが空でもCSV入稿データがある可能性）
+    const validProducts = products.filter(p => p.id);
     if (validProducts.length === 0) {
       setProductSalesData([]);
       return;
@@ -406,38 +406,65 @@ export default function DashboardPage() {
     try {
       const allSalesData: { [date: string]: { amazonSales: number; amazonQuantity: number; qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number } } = {};
 
+      console.log("fetchMultipleProductSales対象商品:", validProducts.map(p => ({ id: p.id, name: p.productName, amazon: p.amazonCode, qoo10: p.qoo10Code, rakuten: p.rakutenCode })));
+
       // すべての商品の売上を取得して合算
       for (const product of validProducts) {
-        // Amazonのデータを取得（Firestoreのproduct_salesから直接取得のみ - APIは呼ばない）
-        // データがない場合は、管理画面から「Amazon同期」を実行してもらう
-        if (product.amazonCode) {
-          try {
-            // Firestoreのproduct_salesから直接取得
-            const amazonSalesQuery = query(
-              collection(db, "product_sales"),
-              where("productCode", "==", product.amazonCode),
-              where("mall", "==", "amazon"),
-              where("date", ">=", startDate),
-              where("date", "<=", endDate)
-            );
-            const amazonSnapshot = await getDocs(amazonSalesQuery);
+        // Amazonのデータを取得
+        // productIdベースで取得（amazonCodeが空でもCSV入稿データを表示可能に）
+        try {
+          console.log(`[Amazon売上取得] productId: ${product.id}, 日付範囲: ${startDate} 〜 ${endDate}`);
+          let amazonDataFound = false;
 
-            if (!amazonSnapshot.empty) {
-              // Firestoreにデータがある場合
-              amazonSnapshot.docs.forEach((doc) => {
-                const data = doc.data();
+          // 1. まずamazon_daily_salesコレクションからproductIdで取得（CSV入稿データ）
+          const amazonDailySalesQuery = query(
+            collection(db, "amazon_daily_sales"),
+            where("productId", "==", product.id)
+          );
+          const amazonDailySalesSnapshot = await getDocs(amazonDailySalesQuery);
+          console.log(`[Amazon売上取得] amazon_daily_salesクエリ結果: ${amazonDailySalesSnapshot.size}件`);
+
+          if (!amazonDailySalesSnapshot.empty) {
+            amazonDailySalesSnapshot.docs.forEach((doc) => {
+              const data = doc.data();
+              // 日付範囲内をフィルタ
+              if (data.date >= startDate && data.date <= endDate) {
+                amazonDataFound = true;
                 if (!allSalesData[data.date]) {
                   allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
                 }
-                allSalesData[data.date].amazonSales += data.sales || 0;
-                allSalesData[data.date].amazonQuantity += data.quantity || 0;
+                allSalesData[data.date].amazonSales += data.salesAmount || 0;
+                allSalesData[data.date].amazonQuantity += data.orderedUnits || 0;
+              }
+            });
+            console.log(`[Amazon売上取得] amazon_daily_salesからデータ取得完了`);
+          }
+
+          // 2. amazon_daily_salesになければproduct_salesコレクションも確認
+          if (!amazonDataFound) {
+            const productSalesQuery = query(
+              collection(db, "product_sales"),
+              where("productId", "==", product.id)
+            );
+            const productSalesSnapshot = await getDocs(productSalesQuery);
+            console.log(`[Amazon売上取得] product_salesクエリ結果: ${productSalesSnapshot.size}件`);
+
+            if (!productSalesSnapshot.empty) {
+              productSalesSnapshot.docs.forEach((doc) => {
+                const data = doc.data();
+                // mall === "amazon" かつ 日付範囲内をフィルタ
+                if (data.mall === "amazon" && data.date >= startDate && data.date <= endDate) {
+                  if (!allSalesData[data.date]) {
+                    allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                  }
+                  allSalesData[data.date].amazonSales += data.sales || 0;
+                  allSalesData[data.date].amazonQuantity += data.quantity || 0;
+                }
               });
             }
-            // Firestoreにデータがない場合はAPIを呼ばない（クォータ節約）
-            // バックエンドの「Amazon同期」機能で一括取得してもらう
-          } catch (err) {
-            console.error("Amazon売上取得エラー:", err);
           }
+        } catch (err) {
+          console.error("Amazon売上取得エラー:", err);
         }
 
         // Qoo10のデータを取得
@@ -612,8 +639,8 @@ export default function DashboardPage() {
     if (!isRealDataUser) return;
     if (registeredProducts.length === 0) return;
 
-    // 対象商品を決定（Amazon、Qoo10、楽天のいずれかがあればOK）
-    const targetProducts = selectedSkuProducts.filter(p => p.amazonCode || p.qoo10Code || p.rakutenCode);
+    // 対象商品を決定（登録されていればOK - amazonCodeが空でもCSV入稿データがある可能性）
+    const targetProducts = selectedSkuProducts.filter(p => p.id);
     if (targetProducts.length > 0) {
       fetchMultipleProductSales(targetProducts);
     } else if (!selectedProduct) {

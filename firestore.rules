@@ -29,5 +29,25 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+    match /amazon_daily_sales/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /tiktok_accounts/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /tiktok_videos/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /tiktok_video_daily_snapshots/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /rakuten_daily_sales/{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }

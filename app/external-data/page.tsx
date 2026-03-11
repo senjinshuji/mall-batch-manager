@@ -6,7 +6,7 @@ import { db } from "@/lib/firebase";
 import { collection, getDocs, query, orderBy } from "firebase/firestore";
 import { useSearchParams } from "next/navigation";
 
-const BACKEND_URL = "https://mall-batch-manager-api-983678294034.asia-northeast1.run.app";
+const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
 type UploadStatus = {
   type: "idle" | "uploading" | "success" | "error";
@@ -216,9 +216,9 @@ function ExternalDataContent() {
 
   // CSVテンプレートダウンロード
   const handleDownloadTemplate = () => {
-    const header = "商品名,open_id,access_token";
-    const sampleRows = products.slice(0, 3).map(p => `${p.productName},,`).join('\n');
-    const csvContent = header + '\n' + (sampleRows || "サンプル商品名,,");
+    const header = "商品名,open_id,access_token,refresh_token";
+    const sampleRows = products.slice(0, 3).map(p => `${p.productName},,,`).join('\n');
+    const csvContent = header + '\n' + (sampleRows || "サンプル商品名,,,");
 
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -241,8 +241,8 @@ function ExternalDataContent() {
       const text = await csvFile.text();
       const lines = text.split('\n').filter(line => line.trim());
 
-      // ヘッダー行をスキップ（商品名というヘッダーがある場合）
-      const startIndex = lines[0]?.includes('商品名') ? 1 : 0;
+      // ヘッダー行をスキップ（商品名/商材名というヘッダーがある場合）
+      const startIndex = (lines[0]?.includes('商品名') || lines[0]?.includes('商材名')) ? 1 : 0;
 
       // 商品名からproductIdへのマップを作成
       const productNameToId: { [name: string]: string } = {};
@@ -250,7 +250,7 @@ function ExternalDataContent() {
         productNameToId[p.productName] = p.id;
       });
 
-      const accounts: { productId: string; openId: string; accessToken: string }[] = [];
+      const accounts: { productId: string; openId: string; accessToken: string; refreshToken: string }[] = [];
       const errors: string[] = [];
 
       for (let i = startIndex; i < lines.length; i++) {
@@ -258,14 +258,14 @@ function ExternalDataContent() {
         const parts = lines[i].split(',').map(s => s.trim());
 
         if (parts.length < 3) {
-          errors.push(`${lineNum}行目: 列が不足しています（商品名,open_id,access_token が必要）`);
+          errors.push(`${lineNum}行目: 列が不足しています（商品名,open_id,access_token,refresh_token が必要）`);
           continue;
         }
 
-        const [productName, openId, accessToken] = parts;
+        const [productName, openId, accessToken, refreshToken] = parts;
 
         if (!productName || !openId || !accessToken) {
-          errors.push(`${lineNum}行目: 空のフィールドがあります`);
+          errors.push(`${lineNum}行目: 空のフィールドがあります（商品名,open_id,access_tokenは必須）`);
           continue;
         }
 
@@ -275,13 +275,15 @@ function ExternalDataContent() {
           continue;
         }
 
-        accounts.push({ productId, openId, accessToken });
+        accounts.push({ productId, openId, accessToken, refreshToken: refreshToken || '' });
       }
 
       if (accounts.length === 0) {
-        setCsvErrors(errors.length > 0 ? errors : ["有効なアカウントデータがありません"]);
+        setCsvErrors(errors.length > 0 ? errors : ["有効なアカウントデータがありません。商品名がFirestoreに登録されているか確認してください。"]);
         return;
       }
+
+      console.log("送信するアカウント数:", accounts.length, accounts);
 
       const response = await fetch(`${BACKEND_URL}/tiktok/accounts/bulk-register-v2`, {
         method: "POST",
@@ -313,9 +315,10 @@ function ExternalDataContent() {
       } else {
         setCsvErrors([data.message || "一括登録に失敗しました"]);
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("CSV一括登録エラー:", error);
-      setCsvErrors(["一括登録に失敗しました"]);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setCsvErrors([`一括登録に失敗しました: ${errorMessage}`]);
     } finally {
       setIsCsvUploading(false);
     }
@@ -797,8 +800,9 @@ function ExternalDataContent() {
               </div>
               <div className="bg-white rounded p-2 text-xs text-gray-500">
                 <p className="font-medium">CSVフォーマット:</p>
-                <code className="block mt-1 bg-gray-100 p-2 rounded">商品名,open_id,access_token</code>
+                <code className="block mt-1 bg-gray-100 p-2 rounded">商品名,open_id,access_token,refresh_token</code>
                 <p className="mt-1 text-gray-400">※ 商品名は登録済みの商品と完全一致する必要があります</p>
+                <p className="mt-1 text-gray-400">※ refresh_tokenは任意です</p>
               </div>
               <button
                 onClick={handleCsvUpload}

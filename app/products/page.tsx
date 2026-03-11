@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Package, Plus, Trash2, Edit2, Save, X, Upload, Download, ChevronDown, RefreshCw } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Package, Plus, Trash2, Edit2, Save, X, Upload, Download, ChevronDown, RefreshCw, FileSpreadsheet } from "lucide-react";
 import {
   RegisteredProduct,
   MallProduct,
@@ -10,7 +10,7 @@ import { db } from "@/lib/firebase";
 import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from "firebase/firestore";
 import { useAuth } from "@/lib/auth-context";
 
-const BACKEND_URL = "https://mall-batch-manager-api-983678294034.asia-northeast1.run.app";
+const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
 // デモ用のモール商品データ
 const demoAmazonProducts: MallProduct[] = [
@@ -96,6 +96,27 @@ export default function ProductsPage() {
   const [showRakutenAddForm, setShowRakutenAddForm] = useState(false);
   const [newRakutenProduct, setNewRakutenProduct] = useState({ code: "", name: "" });
   const [rakutenAddLoading, setRakutenAddLoading] = useState(false);
+
+  // Amazon売上入稿用ステート
+  const [selectedProductForSales, setSelectedProductForSales] = useState<string | null>(null);
+  const [amazonSalesUploading, setAmazonSalesUploading] = useState(false);
+  const [amazonSalesError, setAmazonSalesError] = useState<string | null>(null);
+  const [amazonSalesSuccess, setAmazonSalesSuccess] = useState<string | null>(null);
+  const amazonSalesFileRef = useRef<HTMLInputElement>(null);
+
+  // 楽天売上入稿用ステート
+  const [selectedProductForRakutenSales, setSelectedProductForRakutenSales] = useState<string | null>(null);
+  const [rakutenSalesUploading, setRakutenSalesUploading] = useState(false);
+  const [rakutenSalesError, setRakutenSalesError] = useState<string | null>(null);
+  const [rakutenSalesSuccess, setRakutenSalesSuccess] = useState<string | null>(null);
+  const rakutenSalesFileRef = useRef<HTMLInputElement>(null);
+
+  // Qoo10売上入稿用ステート
+  const [selectedProductForQoo10Sales, setSelectedProductForQoo10Sales] = useState<string | null>(null);
+  const [qoo10SalesUploading, setQoo10SalesUploading] = useState(false);
+  const [qoo10SalesError, setQoo10SalesError] = useState<string | null>(null);
+  const [qoo10SalesSuccess, setQoo10SalesSuccess] = useState<string | null>(null);
+  const qoo10SalesFileRef = useRef<HTMLInputElement>(null);
 
   // Firestoreから商品一覧を取得（実データユーザーのみ）
   useEffect(() => {
@@ -439,64 +460,64 @@ export default function ProductsPage() {
   };
 
   // CSVファイル読み込み
-  const handleCsvImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCsvImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setCsvError(null);
     setCsvSuccess(null);
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const text = e.target?.result as string;
-        const lines = text.split(/\r?\n/).filter(line => line.trim());
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(line => line.trim());
 
-        if (lines.length < 2) {
-          setCsvError("CSVファイルにデータがありません（ヘッダー行のみ）");
-          return;
-        }
-
-        // ヘッダー行をスキップしてデータを解析
-        const newProducts: RegisteredProduct[] = [];
-        const errors: string[] = [];
-
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i];
-          const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
-
-          if (values.length < 1 || !values[0]) {
-            errors.push(`${i + 1}行目: 商品名が空です`);
-            continue;
-          }
-
-          newProducts.push({
-            id: `prod-csv-${Date.now()}-${i}`,
-            productName: values[0],
-            amazonCode: values[1] || "",
-            rakutenCode: values[2] || "",
-            qoo10Code: values[3] || "",
-          });
-        }
-
-        if (errors.length > 0) {
-          setCsvError(errors.join("\n"));
-        }
-
-        if (newProducts.length > 0) {
-          setProducts([...products, ...newProducts]);
-          setCsvSuccess(`${newProducts.length}件の商品を追加しました`);
-        }
-      } catch {
-        setCsvError("CSVファイルの解析に失敗しました");
+      if (lines.length < 2) {
+        setCsvError("CSVファイルにデータがありません（ヘッダー行のみ）");
+        return;
       }
-    };
 
-    reader.onerror = () => {
-      setCsvError("ファイルの読み込みに失敗しました");
-    };
+      // ヘッダー行をスキップしてデータを解析
+      const errors: string[] = [];
+      const savedProducts: RegisteredProduct[] = [];
 
-    reader.readAsText(file, "UTF-8");
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
+
+        if (values.length < 1 || !values[0]) {
+          errors.push(`${i + 1}行目: 商品名が空です`);
+          continue;
+        }
+
+        const productData = {
+          productName: values[0],
+          amazonCode: values[1] || "",
+          rakutenCode: values[2] || "",
+          qoo10Code: values[3] || "",
+          createdAt: new Date(),
+        };
+
+        // Firestoreに保存
+        const docRef = await addDoc(collection(db, "registered_products"), productData);
+
+        savedProducts.push({
+          id: docRef.id,
+          ...productData,
+        });
+      }
+
+      if (errors.length > 0) {
+        setCsvError(errors.join("\n"));
+      }
+
+      if (savedProducts.length > 0) {
+        setProducts([...savedProducts, ...products]);
+        setCsvSuccess(`${savedProducts.length}件の商品をFirestoreに保存しました`);
+      }
+    } catch (error) {
+      console.error("CSV import error:", error);
+      setCsvError("CSVファイルの処理に失敗しました");
+    }
 
     // ファイル入力をリセット
     if (fileInputRef.current) {
@@ -511,6 +532,660 @@ export default function ProductsPage() {
     const product = mallProducts.find((p) => p.code === code);
     return product ? product.name : "";
   };
+
+  // Amazon売上CSVテンプレートダウンロード
+  const handleDownloadAmazonSalesTemplate = useCallback(() => {
+    const headers = [
+      "日付",
+      "注文商品の売上額",
+      "注文商品の売上額 - B2B",
+      "注文された商品点数",
+      "注文点数 - B2B",
+      "注文品目総数",
+      "注文品目総数 - B2B",
+      "ページビュー - 合計",
+      "ページビュー - 合計 - B2B",
+      "セッション数 - 合計",
+      "セッション数 - 合計 - B2B",
+      "おすすめ出品（おすすめ商品）の獲得率",
+      "おすすめ出品（おすすめ商品）の獲得率 - B2B",
+      "ユニットセッション率",
+      "ユニットセッション率 - B2B",
+      "平均出品数",
+      "親商品の平均数",
+    ];
+
+    const sampleData = [
+      ["2025-12-01", "10000", "500", "5", "1", "5", "1", "100", "10", "80", "8", "0.95", "0.90", "0.05", "0.04", "1", "1"],
+      ["2025-12-02", "15000", "750", "8", "2", "8", "2", "150", "15", "120", "12", "0.97", "0.92", "0.06", "0.05", "1", "1"],
+    ];
+
+    const csvContent = [
+      headers.join(","),
+      ...sampleData.map(row => row.join(","))
+    ].join("\n");
+
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "Amazon売上データテンプレート.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // Amazon売上CSVインポート（ヘッダー自動認識対応）
+  const handleAmazonSalesCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selectedProductForSales) return;
+
+    setAmazonSalesError(null);
+    setAmazonSalesSuccess(null);
+    setAmazonSalesUploading(true);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const lines = text.split(/\r?\n/).filter(line => line.trim());
+
+        if (lines.length < 2) {
+          setAmazonSalesError("CSVファイルにデータがありません（ヘッダー行のみ）");
+          setAmazonSalesUploading(false);
+          return;
+        }
+
+        // 空行をスキップして実際のヘッダー行を見つける
+        let headerLineIndex = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // カンマだけの行（空行）をスキップ
+          const nonEmptyValues = line.split(",").filter(v => v.trim().replace(/^["']|["']$/g, "").length > 0);
+          if (nonEmptyValues.length > 0) {
+            // 日付形式かヘッダー名かを判定
+            const firstValue = nonEmptyValues[0].trim().replace(/^["']|["']$/g, "");
+            if (!/^\d{4}[/-]\d{2}[/-]\d{2}$/.test(firstValue)) {
+              // 日付形式でなければヘッダー行
+              headerLineIndex = i;
+              console.log("[CSVパース] ヘッダー行発見: 行", i, "内容:", line.substring(0, 100));
+              break;
+            }
+          }
+        }
+
+        // ヘッダー行を解析してカラムマッピングを作成
+        const headerLine = lines[headerLineIndex];
+        // ヘッダー正規化：全角スペース・全角ハイフン・複数スペースを正規化
+        const normalizeHeader = (h: string) => {
+          return h
+            .trim()
+            .replace(/^["']|["']$/g, "")
+            .replace(/[\s\u3000]+/g, " ")  // 全角スペース・複数スペースを単一半角スペースに
+            .replace(/[－―ー−]/g, "-")     // 全角ハイフン類を半角に
+            .replace(/（/g, "(")           // 全角括弧を半角に
+            .replace(/）/g, ")")
+            .trim();
+        };
+
+        // 金額文字列をパース（"¥3,516,100" → "3516100"）
+        const parseAmount = (val: string | undefined): string => {
+          if (!val) return "0";
+          // ¥記号、カンマ、スペースを除去して数値だけ取り出す
+          const cleaned = val.replace(/[¥￥,\s]/g, "");
+          // 数値以外の文字が含まれていたら0
+          if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return "0";
+          return cleaned || "0";
+        };
+
+        // ダブルクォートで囲まれたCSVを正しく分割
+        const parseCSVLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+              result.push(current.trim().replace(/^["']|["']$/g, ""));
+              current = "";
+            } else {
+              current += char;
+            }
+          }
+          result.push(current.trim().replace(/^["']|["']$/g, ""));
+          return result;
+        };
+
+        const headers = parseCSVLine(headerLine).map(normalizeHeader);
+        console.log("[CSVパース] 正規化後ヘッダー:", headers);
+
+        // ヘッダー名とフィールド名のマッピング（バリエーション対応）
+        const headerMap: { [key: string]: string } = {
+          // 日付
+          "日付": "date",
+          // 売上（複数バリエーション）
+          "売上": "salesAmount",
+          "売上額": "salesAmount",
+          "注文商品の売上額": "salesAmount",
+          "注文商品の売上": "salesAmount",
+          // B2B売上
+          "注文商品の売上額 - B2B": "salesAmountB2B",
+          "注文商品の売上 - B2B": "salesAmountB2B",
+          // 注文数
+          "注文された商品点数": "orderedUnits",
+          "注文商品点数": "orderedUnits",
+          "注文点数 - B2B": "orderedUnitsB2B",
+          // 注文品目
+          "注文品目総数": "totalOrderItems",
+          "注文品目総数 - B2B": "totalOrderItemsB2B",
+          // ページビュー
+          "ページビュー - 合計": "pageViews",
+          "ページビュー": "pageViews",
+          "ページビュー - 合計 - B2B": "pageViewsB2B",
+          // セッション
+          "セッション数 - 合計": "sessions",
+          "セッション数": "sessions",
+          "セッション数 - 合計 - B2B": "sessionsB2B",
+          // カート獲得率
+          "おすすめ出品(おすすめ商品)の獲得率": "buyBoxPercentage",
+          "おすすめ出品（おすすめ商品）の獲得率": "buyBoxPercentage",
+          "おすすめ出品の獲得率": "buyBoxPercentage",
+          "おすすめ出品(おすすめ商品)の獲得率 - B2B": "buyBoxPercentageB2B",
+          "おすすめ出品（おすすめ商品）の獲得率 - B2B": "buyBoxPercentageB2B",
+          "おすすめ出品の獲得率 - B2B": "buyBoxPercentageB2B",
+          // CVR
+          "ユニットセッション率": "unitSessionPercentage",
+          "ユニットセッション率 - B2B": "unitSessionPercentageB2B",
+          // その他
+          "平均出品数": "averageOfferCount",
+          "親商品の平均数": "averageParentItems",
+        };
+
+        // カラムインデックスを特定
+        const columnIndexes: { [field: string]: number } = {};
+        headers.forEach((header, index) => {
+          const fieldName = headerMap[header];
+          if (fieldName) {
+            columnIndexes[fieldName] = index;
+          }
+        });
+        console.log("[CSVパース] マッピング結果:", columnIndexes);
+        console.log("[CSVパース] salesAmountインデックス:", columnIndexes["salesAmount"]);
+
+        // ヘッダー行の次の行からデータ開始
+        const dataStartIndex = headerLineIndex + 1;
+
+        // シンプルな2カラム形式かどうか判定（ヘッダーなしで日付,売上のみ）
+        const isSimpleFormat = headers.length <= 3 && !columnIndexes["date"];
+
+        const parsedData = [];
+
+        for (let i = dataStartIndex; i < lines.length; i++) {
+          const line = lines[i];
+          // ダブルクォートを考慮してCSVを正しく分割
+          const values = parseCSVLine(line);
+
+          if (values.length < 1 || !values[0]) {
+            continue;
+          }
+
+          // 日付を正規化（YYYY/MM/DD → YYYY-MM-DD）
+          const normalizeDate = (d: string): string => {
+            return d.replace(/\//g, "-");
+          };
+
+          if (isSimpleFormat) {
+            // シンプル形式: A列=日付, B列=売上
+            parsedData.push({
+              date: normalizeDate(values[0]),
+              salesAmount: parseAmount(values[1]),
+              salesAmountB2B: "0",
+              orderedUnits: "0",
+              orderedUnitsB2B: "0",
+              totalOrderItems: "0",
+              totalOrderItemsB2B: "0",
+              pageViews: "0",
+              pageViewsB2B: "0",
+              sessions: "0",
+              sessionsB2B: "0",
+              buyBoxPercentage: "0",
+              buyBoxPercentageB2B: "0",
+              unitSessionPercentage: "0",
+              unitSessionPercentageB2B: "0",
+              averageOfferCount: "0",
+              averageParentItems: "0",
+            });
+          } else if (columnIndexes["date"] !== undefined) {
+            // ヘッダーベースのマッピング
+            parsedData.push({
+              date: normalizeDate(values[columnIndexes["date"]] || ""),
+              salesAmount: parseAmount(values[columnIndexes["salesAmount"]]),
+              salesAmountB2B: parseAmount(values[columnIndexes["salesAmountB2B"]]),
+              orderedUnits: parseAmount(values[columnIndexes["orderedUnits"]]),
+              orderedUnitsB2B: parseAmount(values[columnIndexes["orderedUnitsB2B"]]),
+              totalOrderItems: parseAmount(values[columnIndexes["totalOrderItems"]]),
+              totalOrderItemsB2B: parseAmount(values[columnIndexes["totalOrderItemsB2B"]]),
+              pageViews: parseAmount(values[columnIndexes["pageViews"]]),
+              pageViewsB2B: parseAmount(values[columnIndexes["pageViewsB2B"]]),
+              sessions: parseAmount(values[columnIndexes["sessions"]]),
+              sessionsB2B: parseAmount(values[columnIndexes["sessionsB2B"]]),
+              buyBoxPercentage: values[columnIndexes["buyBoxPercentage"]] || "0",
+              buyBoxPercentageB2B: values[columnIndexes["buyBoxPercentageB2B"]] || "0",
+              unitSessionPercentage: values[columnIndexes["unitSessionPercentage"]] || "0",
+              unitSessionPercentageB2B: values[columnIndexes["unitSessionPercentageB2B"]] || "0",
+              averageOfferCount: parseAmount(values[columnIndexes["averageOfferCount"]]),
+              averageParentItems: parseAmount(values[columnIndexes["averageParentItems"]]),
+            });
+          } else {
+            // 位置ベースのマッピング（Amazon詳細フォーマット）
+            parsedData.push({
+              date: normalizeDate(values[0]),
+              salesAmount: parseAmount(values[1]),
+              salesAmountB2B: parseAmount(values[2]),
+              orderedUnits: parseAmount(values[3]),
+              orderedUnitsB2B: parseAmount(values[4]),
+              totalOrderItems: parseAmount(values[5]),
+              totalOrderItemsB2B: parseAmount(values[6]),
+              pageViews: parseAmount(values[7]),
+              pageViewsB2B: parseAmount(values[8]),
+              sessions: parseAmount(values[9]),
+              sessionsB2B: parseAmount(values[10]),
+              buyBoxPercentage: values[11] || "0",
+              buyBoxPercentageB2B: values[12] || "0",
+              unitSessionPercentage: values[13] || "0",
+              unitSessionPercentageB2B: values[14] || "0",
+              averageOfferCount: parseAmount(values[15]),
+              averageParentItems: parseAmount(values[16]),
+            });
+          }
+        }
+
+        if (parsedData.length === 0) {
+          setAmazonSalesError("有効なデータがありません");
+          setAmazonSalesUploading(false);
+          return;
+        }
+
+        // デバッグ：パースしたデータの最初の数行を出力
+        console.log("[CSVパース] パースデータ件数:", parsedData.length);
+        console.log("[CSVパース] 最初の3件:", parsedData.slice(0, 3));
+        console.log("[CSVパース] isSimpleFormat:", isSimpleFormat, "columnIndexes['date']:", columnIndexes["date"]);
+
+        // APIにPOST
+        const response = await fetch(`${BACKEND_URL}/amazon/import-sales-csv/${selectedProductForSales}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: parsedData }),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          setAmazonSalesSuccess(result.message);
+        } else {
+          setAmazonSalesError(result.message || "データの保存に失敗しました");
+        }
+      } catch (err) {
+        console.error("CSV parse error:", err);
+        setAmazonSalesError("CSVファイルの解析に失敗しました");
+      } finally {
+        setAmazonSalesUploading(false);
+        if (amazonSalesFileRef.current) {
+          amazonSalesFileRef.current.value = "";
+        }
+      }
+    };
+
+    reader.onerror = () => {
+      setAmazonSalesError("ファイルの読み込みに失敗しました");
+      setAmazonSalesUploading(false);
+    };
+
+    // エンコーディング自動検出
+    const tryReadWithEncoding = async (encoding: string): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = (e) => resolve(e.target?.result as string);
+        r.onerror = () => reject(new Error("読み込みエラー"));
+        r.readAsText(file, encoding);
+      });
+    };
+
+    // BOMと先頭バイトを確認
+    const arrayBufferReader = new FileReader();
+    arrayBufferReader.onload = async (e) => {
+      const buffer = e.target?.result as ArrayBuffer;
+      const bytes = new Uint8Array(buffer.slice(0, 4));
+      console.log("[CSVパース] 先頭バイト:", Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' '));
+
+      let encoding = "UTF-8";
+      let skipBytes = 0;
+
+      // BOM検出
+      if (bytes[0] === 0xFF && bytes[1] === 0xFE) {
+        encoding = "UTF-16LE";
+        skipBytes = 2;
+        console.log("[CSVパース] UTF-16 LE BOM検出");
+      } else if (bytes[0] === 0xFE && bytes[1] === 0xFF) {
+        encoding = "UTF-16BE";
+        skipBytes = 2;
+        console.log("[CSVパース] UTF-16 BE BOM検出");
+      } else if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+        encoding = "UTF-8";
+        skipBytes = 3;
+        console.log("[CSVパース] UTF-8 BOM検出");
+      }
+
+      // 検出したエンコーディングで読み込み
+      try {
+        let text = await tryReadWithEncoding(encoding);
+
+        // BOMをスキップ（テキストとして読んだ場合もBOM文字が残ることがある）
+        if (text.charCodeAt(0) === 0xFEFF) {
+          text = text.substring(1);
+        }
+
+        // ヘッダー検証（空行をスキップして実際のヘッダー行を探す）
+        const allLines = text.split(/\r?\n/);
+        console.log("[CSVパース] 最初の5行:", allLines.slice(0, 5));
+
+        // 最初の有効な行（空カンマ行でない行）を探す
+        let validLine = "";
+        for (const line of allLines) {
+          const values = line.split(",").filter(v => v.trim().replace(/^["']|["']$/g, "").length > 0);
+          if (values.length > 0) {
+            validLine = line;
+            break;
+          }
+        }
+
+        console.log("[CSVパース] 検出エンコーディング:", encoding, "有効な行:", validLine.substring(0, 50));
+
+        // UTF-8で日本語が正しく読めているかチェック（文字化けしていないか）
+        const hasValidJapanese = /[日付注文商品売上]/.test(validLine);
+        const hasMojibake = /[\uFFFD]|譌･莉|豕ｨ譁/.test(validLine);
+
+        console.log("[CSVパース] 日本語チェック: hasValidJapanese=", hasValidJapanese, "hasMojibake=", hasMojibake);
+
+        if (hasValidJapanese && !hasMojibake) {
+          // UTF-8で正しく読めている
+          reader.onload?.({ target: { result: text } } as ProgressEvent<FileReader>);
+        } else if (!hasMojibake && validLine.length > 0) {
+          // 文字化けなし、日本語なし（英語CSVなど）
+          reader.onload?.({ target: { result: text } } as ProgressEvent<FileReader>);
+        } else {
+          // Shift-JISで再試行
+          console.log("[CSVパース] Shift-JISで再試行");
+          const sjisText = await tryReadWithEncoding("Shift-JIS");
+          reader.onload?.({ target: { result: sjisText } } as ProgressEvent<FileReader>);
+        }
+      } catch (err) {
+        console.error("[CSVパース] エンコーディング検出失敗:", err);
+        setAmazonSalesError("ファイルの読み込みに失敗しました");
+        setAmazonSalesUploading(false);
+      }
+    };
+    arrayBufferReader.readAsArrayBuffer(file);
+  }, [selectedProductForSales]);
+
+  // 楽天売上CSVテンプレートダウンロード
+  const handleDownloadRakutenSalesTemplate = useCallback(() => {
+    const headers = [
+      "日付",
+      "商品管理番号",
+      "商品番号",
+      "売上",
+      "売上件数",
+      "売上個数",
+      "アクセス人数",
+      "ユニークユーザー数",
+      "転換率",
+      "客単価",
+      "総購入件数",
+      "新規購入件数",
+      "リピート購入件数",
+      "未購入アクセス人数",
+      "レビュー投稿数",
+      "レビュー総合評価（点）",
+      "総レビュー数",
+      "滞在時間（秒）",
+      "直帰数",
+      "離脱数",
+      "離脱率",
+      "お気に入り登録ユーザ数",
+      "お気に入り総ユーザ数",
+      "在庫数",
+    ];
+
+    const sampleData = [
+      ["2025-12-01", "ITEM001", "12345", "50000", "5", "10", "100", "80", "5.0", "10000", "5", "3", "2", "95", "1", "4.5", "10", "120", "20", "30", "30.0", "5", "50", "100"],
+      ["2025-12-02", "ITEM001", "12345", "75000", "8", "15", "150", "120", "6.0", "9375", "8", "5", "3", "142", "2", "4.6", "12", "130", "25", "35", "28.0", "8", "58", "85"],
+    ];
+
+    const csvContent = [
+      headers.join(","),
+      ...sampleData.map(row => row.join(","))
+    ].join("\n");
+
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "楽天売上データテンプレート.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // 楽天売上CSVインポート
+  const handleRakutenSalesCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selectedProductForRakutenSales) return;
+
+    setRakutenSalesError(null);
+    setRakutenSalesSuccess(null);
+    setRakutenSalesUploading(true);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const lines = text.split(/\r?\n/).filter(line => line.trim());
+
+        if (lines.length < 2) {
+          setRakutenSalesError("CSVファイルにデータがありません（ヘッダー行のみ）");
+          setRakutenSalesUploading(false);
+          return;
+        }
+
+        const parsedData = [];
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+          const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
+
+          if (values.length < 1 || !values[0]) {
+            continue;
+          }
+
+          parsedData.push({
+            date: values[0],
+            productManagementCode: values[1] || "",
+            productCode: values[2] || "",
+            salesAmount: values[3] || "0",
+            salesCount: values[4] || "0",
+            salesUnits: values[5] || "0",
+            accessUsers: values[6] || "0",
+            uniqueUsers: values[7] || "0",
+            conversionRate: values[8] || "0",
+            averageOrderValue: values[9] || "0",
+            totalPurchases: values[10] || "0",
+            newPurchases: values[11] || "0",
+            repeatPurchases: values[12] || "0",
+            nonPurchaseAccess: values[13] || "0",
+            reviewCount: values[14] || "0",
+            reviewRating: values[15] || "0",
+            totalReviews: values[16] || "0",
+            stayTime: values[17] || "0",
+            bounceCount: values[18] || "0",
+            exitCount: values[19] || "0",
+            exitRate: values[20] || "0",
+            favoriteUsers: values[21] || "0",
+            totalFavoriteUsers: values[22] || "0",
+            stockCount: values[23] || "0",
+          });
+        }
+
+        if (parsedData.length === 0) {
+          setRakutenSalesError("有効なデータがありません");
+          setRakutenSalesUploading(false);
+          return;
+        }
+
+        const response = await fetch(`${BACKEND_URL}/rakuten/import-sales-csv/${selectedProductForRakutenSales}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: parsedData }),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          setRakutenSalesSuccess(result.message);
+        } else {
+          setRakutenSalesError(result.message || "データの保存に失敗しました");
+        }
+      } catch (err) {
+        console.error("CSV parse error:", err);
+        setRakutenSalesError("CSVファイルの解析に失敗しました");
+      } finally {
+        setRakutenSalesUploading(false);
+        if (rakutenSalesFileRef.current) {
+          rakutenSalesFileRef.current.value = "";
+        }
+      }
+    };
+
+    reader.onerror = () => {
+      setRakutenSalesError("ファイルの読み込みに失敗しました");
+      setRakutenSalesUploading(false);
+    };
+
+    reader.readAsText(file, "UTF-8");
+  }, [selectedProductForRakutenSales]);
+
+  // Qoo10売上CSVテンプレートダウンロード
+  const handleDownloadQoo10SalesTemplate = useCallback(() => {
+    const headers = [
+      "日付",
+      "売上",
+      "売上個数",
+    ];
+
+    const sampleData = [
+      ["2025-12-01", "30000", "5"],
+      ["2025-12-02", "45000", "8"],
+    ];
+
+    const csvContent = [
+      headers.join(","),
+      ...sampleData.map(row => row.join(","))
+    ].join("\n");
+
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "Qoo10売上データテンプレート.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // Qoo10売上CSVインポート
+  const handleQoo10SalesCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selectedProductForQoo10Sales) return;
+
+    setQoo10SalesError(null);
+    setQoo10SalesSuccess(null);
+    setQoo10SalesUploading(true);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const lines = text.split(/\r?\n/).filter(line => line.trim());
+
+        if (lines.length < 2) {
+          setQoo10SalesError("CSVファイルにデータがありません（ヘッダー行のみ）");
+          setQoo10SalesUploading(false);
+          return;
+        }
+
+        const parsedData = [];
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+          const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
+
+          if (values.length < 1 || !values[0]) {
+            continue;
+          }
+
+          parsedData.push({
+            date: values[0].replace(/\//g, "-"),
+            sales: values[1] || "0",
+            units: values[2] || "0",
+          });
+        }
+
+        if (parsedData.length === 0) {
+          setQoo10SalesError("有効なデータがありません");
+          setQoo10SalesUploading(false);
+          return;
+        }
+
+        // APIにPOST
+        const response = await fetch(`${BACKEND_URL}/qoo10/import-sales-csv/${selectedProductForQoo10Sales}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: parsedData }),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          setQoo10SalesSuccess(result.message);
+        } else {
+          setQoo10SalesError(result.message || "データの保存に失敗しました");
+        }
+      } catch (err) {
+        console.error("CSV parse error:", err);
+        setQoo10SalesError("CSVファイルの解析に失敗しました");
+      } finally {
+        setQoo10SalesUploading(false);
+        if (qoo10SalesFileRef.current) {
+          qoo10SalesFileRef.current.value = "";
+        }
+      }
+    };
+
+    reader.onerror = () => {
+      setQoo10SalesError("ファイルの読み込みに失敗しました");
+      setQoo10SalesUploading(false);
+    };
+
+    reader.readAsText(file, "UTF-8");
+  }, [selectedProductForQoo10Sales]);
 
   // カスタムドロップダウンコンポーネント
   const ProductCodeDropdown = ({
@@ -976,12 +1651,15 @@ export default function ProductsPage() {
                 <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
                   操作
                 </th>
+                <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
+                  売上入稿
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {products.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                     登録されている商品はありません
                   </td>
                 </tr>
@@ -1071,6 +1749,9 @@ export default function ProductsPage() {
                             </button>
                           </div>
                         </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="text-gray-400">-</span>
+                        </td>
                       </>
                     ) : (
                       <>
@@ -1149,6 +1830,31 @@ export default function ProductsPage() {
                             </button>
                           </div>
                         </td>
+                        <td className="px-4 py-3 text-center">
+                          <div className="flex justify-center gap-1">
+                            <button
+                              onClick={() => setSelectedProductForSales(product.id)}
+                              className="p-1 text-orange-600 hover:bg-orange-100 rounded"
+                              title="Amazon売上入稿"
+                            >
+                              <FileSpreadsheet className="w-5 h-5" />
+                            </button>
+                            <button
+                              onClick={() => setSelectedProductForRakutenSales(product.id)}
+                              className="p-1 text-red-600 hover:bg-red-100 rounded"
+                              title="楽天売上入稿"
+                            >
+                              <FileSpreadsheet className="w-5 h-5" />
+                            </button>
+                            <button
+                              onClick={() => setSelectedProductForQoo10Sales(product.id)}
+                              className="p-1 text-blue-600 hover:bg-blue-100 rounded"
+                              title="Qoo10売上入稿"
+                            >
+                              <FileSpreadsheet className="w-5 h-5" />
+                            </button>
+                          </div>
+                        </td>
                       </>
                     )}
                   </tr>
@@ -1158,6 +1864,264 @@ export default function ProductsPage() {
           </table>
         </div>
       </div>
+
+      {/* Amazon売上データ入稿モーダル */}
+      {selectedProductForSales && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-orange-600" />
+                  Amazon売上データ入稿
+                </h2>
+                <button
+                  onClick={() => {
+                    setSelectedProductForSales(null);
+                    setAmazonSalesError(null);
+                    setAmazonSalesSuccess(null);
+                  }}
+                  className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-sm text-gray-600 mb-4">
+                商品: <span className="font-medium">{products.find(p => p.id === selectedProductForSales)?.productName}</span>
+              </p>
+
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-4">
+                  <button
+                    onClick={handleDownloadAmazonSalesTemplate}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+                  >
+                    <Download className="w-5 h-5" />
+                    テンプレートDL
+                  </button>
+
+                  <div>
+                    <input
+                      type="file"
+                      ref={amazonSalesFileRef}
+                      accept=".csv"
+                      onChange={handleAmazonSalesCsvImport}
+                      className="hidden"
+                      id="amazon-sales-csv-upload"
+                      disabled={amazonSalesUploading}
+                    />
+                    <label
+                      htmlFor="amazon-sales-csv-upload"
+                      className={`flex items-center gap-2 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors cursor-pointer ${amazonSalesUploading ? "opacity-50 cursor-not-allowed" : ""}`}
+                    >
+                      {amazonSalesUploading ? (
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Upload className="w-5 h-5" />
+                      )}
+                      {amazonSalesUploading ? "アップロード中..." : "CSVアップロード"}
+                    </label>
+                  </div>
+                </div>
+
+                {amazonSalesError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                    {amazonSalesError}
+                  </div>
+                )}
+
+                {amazonSalesSuccess && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+                    {amazonSalesSuccess}
+                  </div>
+                )}
+
+                <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
+                  <p className="text-xs break-words">
+                    日付, 注文商品の売上額, 注文商品の売上額 - B2B, 注文された商品点数, 注文点数 - B2B,
+                    注文品目総数, 注文品目総数 - B2B, ページビュー - 合計, ページビュー - 合計 - B2B,
+                    セッション数 - 合計, セッション数 - 合計 - B2B, おすすめ出品の獲得率, おすすめ出品の獲得率 - B2B,
+                    ユニットセッション率, ユニットセッション率 - B2B, 平均出品数, 親商品の平均数
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 楽天売上データ入稿モーダル */}
+      {selectedProductForRakutenSales && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-red-600" />
+                  楽天売上データ入稿
+                </h2>
+                <button
+                  onClick={() => {
+                    setSelectedProductForRakutenSales(null);
+                    setRakutenSalesError(null);
+                    setRakutenSalesSuccess(null);
+                  }}
+                  className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-sm text-gray-600 mb-4">
+                商品: <span className="font-medium">{products.find(p => p.id === selectedProductForRakutenSales)?.productName}</span>
+              </p>
+
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-4">
+                  <button
+                    onClick={handleDownloadRakutenSalesTemplate}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+                  >
+                    <Download className="w-5 h-5" />
+                    テンプレートDL
+                  </button>
+
+                  <div>
+                    <input
+                      type="file"
+                      ref={rakutenSalesFileRef}
+                      accept=".csv"
+                      onChange={handleRakutenSalesCsvImport}
+                      className="hidden"
+                      id="rakuten-sales-csv-upload"
+                      disabled={rakutenSalesUploading}
+                    />
+                    <label
+                      htmlFor="rakuten-sales-csv-upload"
+                      className={`flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors cursor-pointer ${rakutenSalesUploading ? "opacity-50 cursor-not-allowed" : ""}`}
+                    >
+                      {rakutenSalesUploading ? (
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Upload className="w-5 h-5" />
+                      )}
+                      {rakutenSalesUploading ? "アップロード中..." : "CSVアップロード"}
+                    </label>
+                  </div>
+                </div>
+
+                {rakutenSalesError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                    {rakutenSalesError}
+                  </div>
+                )}
+
+                {rakutenSalesSuccess && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+                    {rakutenSalesSuccess}
+                  </div>
+                )}
+
+                <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
+                  <p className="text-xs break-words">
+                    日付, 商品管理番号, 商品番号, 売上, 売上件数, 売上個数, アクセス人数, ユニークユーザー数,
+                    転換率, 客単価, 総購入件数, 新規購入件数, リピート購入件数, 未購入アクセス人数,
+                    レビュー投稿数, レビュー総合評価（点）, 総レビュー数, 滞在時間（秒）, 直帰数, 離脱数,
+                    離脱率, お気に入り登録ユーザ数, お気に入り総ユーザ数, 在庫数
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Qoo10売上データ入稿モーダル */}
+      {selectedProductForQoo10Sales && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-blue-600" />
+                  Qoo10売上データ入稿
+                </h2>
+                <button
+                  onClick={() => {
+                    setSelectedProductForQoo10Sales(null);
+                    setQoo10SalesError(null);
+                    setQoo10SalesSuccess(null);
+                  }}
+                  className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-sm text-gray-600 mb-4">
+                商品: <span className="font-medium">{products.find(p => p.id === selectedProductForQoo10Sales)?.productName}</span>
+              </p>
+
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-4">
+                  <button
+                    onClick={handleDownloadQoo10SalesTemplate}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+                  >
+                    <Download className="w-5 h-5" />
+                    テンプレートDL
+                  </button>
+
+                  <div>
+                    <input
+                      type="file"
+                      ref={qoo10SalesFileRef}
+                      accept=".csv"
+                      onChange={handleQoo10SalesCsvImport}
+                      className="hidden"
+                      id="qoo10-sales-csv-upload"
+                      disabled={qoo10SalesUploading}
+                    />
+                    <label
+                      htmlFor="qoo10-sales-csv-upload"
+                      className={`flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors cursor-pointer ${qoo10SalesUploading ? "opacity-50 cursor-not-allowed" : ""}`}
+                    >
+                      {qoo10SalesUploading ? (
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Upload className="w-5 h-5" />
+                      )}
+                      {qoo10SalesUploading ? "アップロード中..." : "CSVアップロード"}
+                    </label>
+                  </div>
+                </div>
+
+                {qoo10SalesError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                    {qoo10SalesError}
+                  </div>
+                )}
+
+                {qoo10SalesSuccess && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+                    {qoo10SalesSuccess}
+                  </div>
+                )}
+
+                <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
+                  <p className="text-xs break-words">
+                    日付, 売上, 売上個数
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

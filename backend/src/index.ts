@@ -24,7 +24,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // ヘルスチェック用エンドポイント
 app.get("/", (req: Request, res: Response) => {
@@ -2332,22 +2332,52 @@ app.get("/amazon/product-sales/:sku", async (req: Request, res: Response) => {
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
+    // SKUからproductIdを取得（ダッシュボード用）
+    let productId: string | null = null;
+    try {
+      const productSnapshot = await db.collection("registered_products")
+        .where("amazonCode", "==", sku)
+        .limit(1)
+        .get();
+      if (!productSnapshot.empty) {
+        productId = productSnapshot.docs[0].id;
+      }
+    } catch (e) {
+      console.log("Could not find productId for SKU:", sku);
+    }
+
     // product_salesコレクションに永続的に保存（日付ごとにドキュメント）
     for (const daySales of dailySalesArray) {
       const docId = `amazon_${sku}_${daySales.date}`;
       await db.collection("product_sales").doc(docId).set({
         productCode: sku,
+        productId: productId || undefined,
         mall: 'amazon',
         date: daySales.date,
         sales: daySales.sales,
         quantity: daySales.quantity,
         updatedAt: Timestamp.now(),
       }, { merge: true });
+
+      // amazon_daily_salesコレクションにも保存（ダッシュボードがこちらを参照）
+      if (productId) {
+        const amazonDocId = `${sku}_${daySales.date}`;
+        await db.collection("amazon_daily_sales").doc(amazonDocId).set({
+          productId,
+          amazonCode: sku,
+          date: daySales.date,
+          salesAmount: daySales.sales,
+          orderedUnits: daySales.quantity,
+          source: 'sp_api',
+          importedAt: new Date(),
+        }, { merge: true });
+      }
     }
 
     // キャッシュにも保存（API呼び出し削減用）
     await db.collection("settings").doc(`product_sales_cache_${sku}`).set({
       sku,
+      productId: productId || undefined,
       dailySales: dailySalesArray,
       startDate,
       endDate,
@@ -2357,9 +2387,11 @@ app.get("/amazon/product-sales/:sku", async (req: Request, res: Response) => {
     res.json({
       success: true,
       sku,
+      productId: productId || undefined,
       dailySales: dailySalesArray,
       totalSales: dailySalesArray.reduce((sum, d) => sum + d.sales, 0),
       totalQuantity: dailySalesArray.reduce((sum, d) => sum + d.quantity, 0),
+      savedToAmazonDailySales: !!productId,
       cached: false,
     });
 
@@ -2527,25 +2559,57 @@ app.post("/amazon/sync-all-product-sales", async (req: Request, res: Response) =
 
     console.log(`Finished processing. API calls: ${apiCallCount}, SKUs found: ${Object.keys(skuSalesMap).length}`);
 
-    // 3. Firestoreに一括保存（バッチ書き込み）
+    // 3. SKUからproductIdのマッピングを取得
+    const skuToProductId: { [sku: string]: string } = {};
+    const productsSnapshot = await db.collection("registered_products").get();
+    for (const doc of productsSnapshot.docs) {
+      const data = doc.data();
+      if (data.amazonCode) {
+        skuToProductId[data.amazonCode] = doc.id;
+      }
+    }
+    console.log(`Found ${Object.keys(skuToProductId).length} SKU-to-productId mappings`);
+
+    // 4. Firestoreに一括保存（バッチ書き込み）
     const batch = db.batch();
     let batchCount = 0;
-    const maxBatchSize = 500; // Firestoreバッチの最大サイズ
+    const maxBatchSize = 400; // Firestoreバッチの最大サイズ（余裕を持たせる）
 
     for (const [sku, dateMap] of Object.entries(skuSalesMap)) {
+      const productId = skuToProductId[sku];
+
       for (const [date, data] of Object.entries(dateMap)) {
+        // product_salesコレクションに保存
         const docId = `amazon_${sku}_${date}`;
         const docRef = db.collection("product_sales").doc(docId);
-        batch.set(docRef, {
+        const productSalesData: any = {
           productCode: sku,
           mall: 'amazon',
           date,
           sales: Math.round(data.sales),
           quantity: data.quantity,
           updatedAt: Timestamp.now(),
-        }, { merge: true });
-
+        };
+        if (productId) {
+          productSalesData.productId = productId;
+        }
+        batch.set(docRef, productSalesData, { merge: true });
         batchCount++;
+
+        // amazon_daily_salesコレクションにも保存（ダッシュボード用）
+        if (productId) {
+          const amazonDocRef = db.collection("amazon_daily_sales").doc(`${sku}_${date}`);
+          batch.set(amazonDocRef, {
+            productId,
+            amazonCode: sku,
+            date,
+            salesAmount: Math.round(data.sales),
+            orderedUnits: data.quantity,
+            source: 'sp_api',
+            importedAt: new Date(),
+          }, { merge: true });
+          batchCount++;
+        }
 
         // バッチサイズ制限に達したらコミット
         if (batchCount >= maxBatchSize) {
@@ -3879,28 +3943,241 @@ app.post("/sync/daily", async (req: Request, res: Response) => {
 
 // ==================== End 売上データ同期・取得 ====================
 
-// バッチ処理トリガー（将来のスクレイピング用）
-app.post("/trigger-batch", async (req: Request, res: Response) => {
+// TikTokトークンリフレッシュ関数
+async function refreshTikTokAccessToken(accountId: string, refreshToken: string): Promise<{ accessToken: string; refreshToken: string; expiresIn: number } | null> {
   try {
-    console.log("Batch process triggered at:", new Date().toISOString());
+    const config = await getTikTokOAuthConfig();
+    if (!config?.clientKey || !config?.clientSecret) {
+      console.error("TikTok OAuth config not found");
+      return null;
+    }
 
-    // Phase 3で実際のスクレイピング処理を実装予定
-    // 現在はダミーデータを書き込む
-    const batchResult = {
-      triggeredAt: Timestamp.now(),
-      status: "completed",
-      message: "Batch process placeholder - actual scraping will be implemented in Phase 3",
+    const axios = (await import('axios')).default;
+
+    const response = await axios.post(
+      'https://open.tiktokapis.com/v2/oauth/token/',
+      new URLSearchParams({
+        client_key: config.clientKey,
+        client_secret: config.clientSecret,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      }
+    );
+
+    const tokenData = response.data;
+    if (tokenData.error) {
+      console.error(`Token refresh error for account ${accountId}:`, tokenData);
+      return null;
+    }
+
+    // Firestoreのアカウント情報を更新
+    await db.collection("tiktok_accounts").doc(accountId).update({
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token || refreshToken, // 新しいリフレッシュトークンがない場合は既存を維持
+      expiresAt: Timestamp.fromMillis(Date.now() + (tokenData.expires_in || 86400) * 1000),
+      lastTokenRefreshAt: Timestamp.now(),
+    });
+
+    console.log(`Token refreshed for account ${accountId}`);
+
+    return {
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token || refreshToken,
+      expiresIn: tokenData.expires_in || 86400,
     };
 
-    await db.collection("batch_logs").add(batchResult);
+  } catch (error: any) {
+    console.error(`Failed to refresh token for account ${accountId}:`, error?.response?.data || error?.message);
+    return null;
+  }
+}
+
+// TikTok OAuth設定（Firestoreから取得）- 前方宣言用
+async function getTikTokOAuthConfig() {
+  const settingsDoc = await db.collection("settings").doc("tiktok_oauth").get();
+  if (!settingsDoc.exists) {
+    return null;
+  }
+  return settingsDoc.data();
+}
+
+// バッチ処理トリガー（毎朝8時に実行 - Cloud Scheduler用）
+app.post("/trigger-batch", async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  console.log("=== Daily Batch Process Started ===", new Date().toISOString());
+
+  const batchLog: {
+    triggeredAt: any;
+    status: string;
+    steps: any[];
+    totalDuration?: number;
+    error?: string;
+  } = {
+    triggeredAt: Timestamp.now(),
+    status: "running",
+    steps: [],
+  };
+
+  try {
+    // Step 1: 全TikTokアカウントの動画データを同期
+    console.log("Step 1: Syncing all TikTok videos...");
+    const accountsSnapshot = await db.collection("tiktok_accounts").get();
+
+    if (!accountsSnapshot.empty) {
+      let videoSyncSuccess = 0;
+      let videoSyncError = 0;
+
+      for (const accountDoc of accountsSnapshot.docs) {
+        const accountId = accountDoc.id;
+        let account = accountDoc.data();
+
+        if (!account.accessToken) {
+          console.warn(`Skipping account ${accountId}: No access token`);
+          continue;
+        }
+
+        // リフレッシュトークンがあれば、バッチ実行前にトークンを更新
+        if (account.refreshToken) {
+          console.log(`Refreshing token for account ${accountId}...`);
+          const refreshResult = await refreshTikTokAccessToken(accountId, account.refreshToken);
+          if (refreshResult) {
+            account = { ...account, accessToken: refreshResult.accessToken, refreshToken: refreshResult.refreshToken };
+            console.log(`Token refreshed successfully for account ${accountId}`);
+          } else {
+            console.warn(`Token refresh failed for account ${accountId}, trying with existing token`);
+          }
+        }
+
+        try {
+          // ユーザー情報を取得してアバターURLを更新
+          const userInfo = await fetchTikTokUserInfo(account.accessToken, account.tiktokUserId);
+          if (userInfo && userInfo.avatarUrl) {
+            await db.collection("tiktok_accounts").doc(accountId).update({
+              tiktokAvatarUrl: userInfo.avatarUrl,
+              tiktokUserName: userInfo.displayName || account.tiktokUserName,
+            });
+            console.log(`Updated avatar for account ${accountId}`);
+          }
+
+          // 動画リストを取得
+          const videos = await fetchAllTikTokVideos(account.accessToken, account.tiktokUserId);
+
+          // Firestoreに保存（サムネイルURLも更新される）
+          await saveTikTokVideosToFirestore(
+            accountId,
+            account.tiktokUserId,
+            account.productId,
+            videos
+          );
+
+          // アカウントの最終同期日時を更新
+          await db.collection("tiktok_accounts").doc(accountId).update({
+            lastVideoSyncAt: Timestamp.now(),
+            totalVideos: videos.length,
+          });
+
+          // 日次統計も保存
+          await saveDailyStats(accountId, account.tiktokUserId, account.productId, videos);
+
+          videoSyncSuccess++;
+          console.log(`Synced account ${account.tiktokUserName}: ${videos.length} videos`);
+        } catch (accountError: any) {
+          console.error(`Error syncing account ${accountId}:`, accountError?.message);
+          videoSyncError++;
+        }
+
+        // レート制限対策
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      batchLog.steps.push({
+        step: "sync_videos",
+        success: videoSyncSuccess,
+        error: videoSyncError,
+        totalAccounts: accountsSnapshot.size,
+      });
+    } else {
+      batchLog.steps.push({
+        step: "sync_videos",
+        message: "No TikTok accounts found",
+      });
+    }
+
+    // Step 2: 全商品の日次スナップショットを保存
+    console.log("Step 2: Saving daily snapshots...");
+    const today = new Date().toISOString().split('T')[0];
+    let totalSnapshots = 0;
+
+    for (const accountDoc of accountsSnapshot.docs) {
+      const accountData = accountDoc.data();
+      const accountId = accountDoc.id;
+      const productId = accountData.productId;
+
+      const videosSnapshot = await db.collection("tiktok_videos")
+        .where("accountId", "==", accountId)
+        .get();
+
+      const batch = db.batch();
+
+      for (const videoDoc of videosSnapshot.docs) {
+        const video = videoDoc.data();
+        const videoId = videoDoc.id;
+        const snapshotId = `${videoId}_${today}`;
+
+        const snapshotRef = db.collection("tiktok_video_daily_snapshots").doc(snapshotId);
+        batch.set(snapshotRef, {
+          videoId,
+          accountId,
+          productId,
+          date: today,
+          viewCount: video.viewCount || 0,
+          likeCount: video.likeCount || 0,
+          commentCount: video.commentCount || 0,
+          shareCount: video.shareCount || 0,
+          createTime: video.createTime,
+          savedAt: new Date(),
+        }, { merge: true });
+        totalSnapshots++;
+      }
+
+      await batch.commit();
+    }
+
+    batchLog.steps.push({
+      step: "save_snapshots",
+      date: today,
+      totalSnapshots,
+    });
+
+    // 完了
+    const duration = Date.now() - startTime;
+    batchLog.status = "completed";
+    batchLog.totalDuration = duration;
+
+    await db.collection("batch_logs").add(batchLog);
+
+    console.log(`=== Daily Batch Process Completed in ${duration}ms ===`);
 
     res.json({
       success: true,
-      message: "Batch process triggered successfully",
-      result: batchResult,
+      message: "Daily batch process completed successfully",
+      result: batchLog,
     });
   } catch (error) {
+    const duration = Date.now() - startTime;
     console.error("Error in batch process:", error);
+
+    batchLog.status = "failed";
+    batchLog.error = error instanceof Error ? error.message : "Unknown error";
+    batchLog.totalDuration = duration;
+
+    await db.collection("batch_logs").add(batchLog);
+
     res.status(500).json({
       success: false,
       message: "Batch process failed",
@@ -3910,15 +4187,6 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
 });
 
 // ==================== TikTok OAuth連携 ====================
-
-// TikTok OAuth設定（Firestoreから取得）
-async function getTikTokOAuthConfig() {
-  const settingsDoc = await db.collection("settings").doc("tiktok_oauth").get();
-  if (!settingsDoc.exists) {
-    return null;
-  }
-  return settingsDoc.data();
-}
 
 // TikTok認証開始エンドポイント
 // productIdをstateに埋め込んでTikTokにリダイレクト
@@ -4356,7 +4624,7 @@ app.post("/tiktok/accounts/bulk-register", async (req: Request, res: Response) =
     let failed = 0;
 
     for (const account of accounts) {
-      const { openId, accessToken } = account;
+      const { openId, accessToken, refreshToken } = account;
       if (!openId || !accessToken) {
         failed++;
         continue;
@@ -4384,6 +4652,7 @@ app.post("/tiktok/accounts/bulk-register", async (req: Request, res: Response) =
           const existingDoc = existingSnapshot.docs[0];
           await existingDoc.ref.update({
             accessToken: accessToken,
+            refreshToken: refreshToken || '',
             tiktokUserName: displayName,
             tiktokAvatarUrl: avatarUrl,
             updatedAt: Timestamp.now(),
@@ -4397,6 +4666,7 @@ app.post("/tiktok/accounts/bulk-register", async (req: Request, res: Response) =
             tiktokUserName: displayName,
             tiktokAvatarUrl: avatarUrl,
             accessToken: accessToken,
+            refreshToken: refreshToken || '',
             connectedAt: Timestamp.now(),
             registeredManually: true,
           });
@@ -4443,9 +4713,12 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
     let updated = 0;
     let failed = 0;
 
+    // TikTok OAuth設定を取得（トークンリフレッシュ用）
+    const tiktokConfig = await getTikTokOAuthConfig();
+
     for (const account of accounts) {
-      const { productId, openId, accessToken } = account;
-      if (!productId || !openId || !accessToken) {
+      const { productId, openId, accessToken: originalAccessToken, refreshToken } = account;
+      if (!productId || !openId || !originalAccessToken) {
         failed++;
         continue;
       }
@@ -4454,8 +4727,48 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
         // UserInfo APIでプロフィール情報を自動取得
         let displayName = "Unknown";
         let avatarUrl = "";
+        let currentAccessToken = originalAccessToken;
+        let currentRefreshToken = refreshToken || '';
 
-        const userInfo = await fetchTikTokUserInfo(accessToken, openId);
+        // まずオリジナルのアクセストークンで試行
+        let userInfo = await fetchTikTokUserInfo(currentAccessToken, openId);
+
+        // アクセストークンが無効でリフレッシュトークンがある場合、トークンをリフレッシュ
+        if (!userInfo && refreshToken && tiktokConfig?.clientKey && tiktokConfig?.clientSecret) {
+          console.log(`Access token invalid for ${openId}, attempting refresh...`);
+          try {
+            const axios = (await import('axios')).default;
+            const tokenResponse = await axios.post(
+              'https://open.tiktokapis.com/v2/oauth/token/',
+              new URLSearchParams({
+                client_key: tiktokConfig.clientKey,
+                client_secret: tiktokConfig.clientSecret,
+                grant_type: 'refresh_token',
+                refresh_token: refreshToken,
+              }),
+              {
+                headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                },
+              }
+            );
+
+            const tokenData = tokenResponse.data;
+            if (!tokenData.error && tokenData.access_token) {
+              currentAccessToken = tokenData.access_token;
+              currentRefreshToken = tokenData.refresh_token || refreshToken;
+              console.log(`Token refreshed successfully for ${openId}`);
+
+              // 新しいアクセストークンで再試行
+              userInfo = await fetchTikTokUserInfo(currentAccessToken, openId);
+            } else {
+              console.error(`Token refresh failed for ${openId}:`, tokenData.error);
+            }
+          } catch (refreshErr: any) {
+            console.error(`Token refresh error for ${openId}:`, refreshErr?.response?.data || refreshErr?.message);
+          }
+        }
+
         if (userInfo) {
           displayName = userInfo.displayName;
           avatarUrl = userInfo.avatarUrl;
@@ -4472,7 +4785,8 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
           // 既存アカウントのトークンを更新
           const existingDoc = existingSnapshot.docs[0];
           await existingDoc.ref.update({
-            accessToken: accessToken,
+            accessToken: currentAccessToken,
+            refreshToken: currentRefreshToken,
             tiktokUserName: displayName,
             tiktokAvatarUrl: avatarUrl,
             updatedAt: Timestamp.now(),
@@ -4486,7 +4800,8 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
             tiktokUserId: openId,
             tiktokUserName: displayName,
             tiktokAvatarUrl: avatarUrl,
-            accessToken: accessToken,
+            accessToken: currentAccessToken,
+            refreshToken: currentRefreshToken,
             connectedAt: Timestamp.now(),
             registeredManually: true,
           });
@@ -4494,22 +4809,9 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
           registered++;
         }
 
-        // 動画同期を自動実行（バックグラウンドで）
-        try {
-          console.log(`Auto-syncing videos for account: ${accountDocId}`);
-          const videos = await fetchAllTikTokVideos(accessToken, openId);
-          if (videos.length > 0) {
-            await saveTikTokVideosToFirestore(accountDocId, openId, productId, videos);
-            await db.collection("tiktok_accounts").doc(accountDocId).update({
-              lastVideoSyncAt: Timestamp.now(),
-              totalVideos: videos.length,
-            });
-            console.log(`Synced ${videos.length} videos for account: ${accountDocId}`);
-          }
-        } catch (syncErr) {
-          console.error(`Error syncing videos for account ${openId}:`, syncErr);
-          // 動画同期エラーは登録失敗としない
-        }
+        // 動画同期は一括登録時はスキップ（タイムアウト防止）
+        // 動画同期は後から手動で行う or バッチで行う
+        console.log(`Registered account: ${accountDocId}, name: ${displayName} (video sync skipped)`);
       } catch (err) {
         console.error(`Error registering account ${openId}:`, err);
         failed++;
@@ -4534,6 +4836,123 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
   }
 });
 
+// Unknownアカウントのプロフィール再取得
+app.post("/tiktok/accounts/refresh-unknown", async (req: Request, res: Response) => {
+  try {
+    // Unknownのアカウントを全件取得
+    const unknownSnapshot = await db.collection("tiktok_accounts")
+      .where("tiktokUserName", "==", "Unknown")
+      .get();
+
+    if (unknownSnapshot.empty) {
+      return res.json({
+        success: true,
+        message: "Unknownのアカウントはありません",
+        processed: 0,
+        success_count: 0,
+        failed: 0,
+      });
+    }
+
+    console.log(`Found ${unknownSnapshot.size} Unknown accounts to refresh`);
+
+    // TikTok OAuth設定を取得
+    const tiktokConfig = await getTikTokOAuthConfig();
+
+    let processed = 0;
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const doc of unknownSnapshot.docs) {
+      const account = doc.data();
+      const accountId = doc.id;
+      const { accessToken, refreshToken, tiktokUserId } = account;
+
+      processed++;
+      console.log(`Processing account ${processed}/${unknownSnapshot.size}: ${accountId}`);
+
+      try {
+        let currentAccessToken = accessToken;
+        let currentRefreshToken = refreshToken || '';
+
+        // まず現在のアクセストークンで試行
+        let userInfo = await fetchTikTokUserInfo(currentAccessToken, tiktokUserId);
+
+        // 失敗した場合、リフレッシュトークンで更新を試みる
+        if (!userInfo && refreshToken && tiktokConfig?.clientKey && tiktokConfig?.clientSecret) {
+          console.log(`Attempting token refresh for account ${accountId}...`);
+          try {
+            const axios = (await import('axios')).default;
+            const tokenResponse = await axios.post(
+              'https://open.tiktokapis.com/v2/oauth/token/',
+              new URLSearchParams({
+                client_key: tiktokConfig.clientKey,
+                client_secret: tiktokConfig.clientSecret,
+                grant_type: 'refresh_token',
+                refresh_token: refreshToken,
+              }),
+              {
+                headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                },
+              }
+            );
+
+            const tokenData = tokenResponse.data;
+            if (!tokenData.error && tokenData.access_token) {
+              currentAccessToken = tokenData.access_token;
+              currentRefreshToken = tokenData.refresh_token || refreshToken;
+              console.log(`Token refreshed for account ${accountId}`);
+
+              // 新しいアクセストークンで再試行
+              userInfo = await fetchTikTokUserInfo(currentAccessToken, tiktokUserId);
+            } else {
+              console.error(`Token refresh failed for ${accountId}:`, tokenData.error);
+            }
+          } catch (refreshErr: any) {
+            console.error(`Token refresh error for ${accountId}:`, refreshErr?.response?.data || refreshErr?.message);
+          }
+        }
+
+        if (userInfo && userInfo.displayName !== "Unknown") {
+          // プロフィール取得成功 - Firestoreを更新
+          await doc.ref.update({
+            tiktokUserName: userInfo.displayName,
+            tiktokAvatarUrl: userInfo.avatarUrl,
+            accessToken: currentAccessToken,
+            refreshToken: currentRefreshToken,
+            updatedAt: Timestamp.now(),
+          });
+          console.log(`Updated account ${accountId}: ${userInfo.displayName}`);
+          successCount++;
+        } else {
+          console.log(`Could not get profile for account ${accountId}`);
+          failedCount++;
+        }
+      } catch (err) {
+        console.error(`Error processing account ${accountId}:`, err);
+        failedCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${successCount}件のアカウントを更新しました（失敗: ${failedCount}）`,
+      processed,
+      success_count: successCount,
+      failed: failedCount,
+    });
+
+  } catch (error: any) {
+    console.error("Error refreshing Unknown accounts:", error);
+    res.status(500).json({
+      success: false,
+      message: "Unknownアカウントの再取得に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
 // TikTokアカウント削除
 app.delete("/tiktok/accounts/:accountId", async (req: Request, res: Response) => {
   try {
@@ -4551,6 +4970,118 @@ app.delete("/tiktok/accounts/:accountId", async (req: Request, res: Response) =>
     res.status(500).json({
       success: false,
       message: "TikTokアカウントの削除に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTokアカウントのトークン更新（リフレッシュトークンを手動登録）
+app.put("/tiktok/accounts/:accountId/tokens", async (req: Request, res: Response) => {
+  try {
+    const accountId = req.params.accountId;
+    const { accessToken, refreshToken } = req.body;
+
+    if (!accessToken && !refreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: "accessTokenまたはrefreshTokenが必要です",
+      });
+    }
+
+    const updateData: any = {
+      updatedAt: Timestamp.now(),
+    };
+
+    if (accessToken) {
+      updateData.accessToken = accessToken;
+    }
+    if (refreshToken) {
+      updateData.refreshToken = refreshToken;
+    }
+
+    await db.collection("tiktok_accounts").doc(accountId).update(updateData);
+
+    res.json({
+      success: true,
+      message: "トークンを更新しました",
+    });
+
+  } catch (error: any) {
+    console.error("Error updating TikTok tokens:", error);
+    res.status(500).json({
+      success: false,
+      message: "トークンの更新に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTokアカウントの一括トークン更新
+app.post("/tiktok/accounts/bulk-update-tokens", async (req: Request, res: Response) => {
+  try {
+    const { accounts } = req.body;
+
+    if (!accounts || !Array.isArray(accounts)) {
+      return res.status(400).json({
+        success: false,
+        message: "accounts配列が必要です",
+      });
+    }
+
+    let updated = 0;
+    let failed = 0;
+    const results: any[] = [];
+
+    for (const account of accounts) {
+      const { tiktokUserId, accessToken, refreshToken } = account;
+      if (!tiktokUserId) {
+        failed++;
+        results.push({ tiktokUserId, status: 'failed', reason: 'Missing tiktokUserId' });
+        continue;
+      }
+
+      try {
+        // tiktokUserIdでアカウントを検索
+        const snapshot = await db.collection("tiktok_accounts")
+          .where("tiktokUserId", "==", tiktokUserId)
+          .get();
+
+        if (snapshot.empty) {
+          failed++;
+          results.push({ tiktokUserId, status: 'failed', reason: 'Account not found' });
+          continue;
+        }
+
+        const updateData: any = {
+          updatedAt: Timestamp.now(),
+        };
+        if (accessToken) updateData.accessToken = accessToken;
+        if (refreshToken) updateData.refreshToken = refreshToken;
+
+        for (const doc of snapshot.docs) {
+          await doc.ref.update(updateData);
+        }
+
+        updated++;
+        results.push({ tiktokUserId, status: 'updated' });
+
+      } catch (e: any) {
+        failed++;
+        results.push({ tiktokUserId, status: 'failed', reason: e?.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${updated}件更新、${failed}件失敗`,
+      data: { updated, failed, results },
+    });
+
+  } catch (error: any) {
+    console.error("Error bulk updating tokens:", error);
+    res.status(500).json({
+      success: false,
+      message: "一括トークン更新に失敗しました",
       error: error?.message || "Unknown error",
     });
   }
@@ -4651,15 +5182,19 @@ async function fetchAllTikTokVideos(
             'Content-Type': 'application/json',
           },
           params: {
-            fields: 'id,title,cover_image_url,embed_html,embed_link,share_url,create_time,duration,view_count,like_count,comment_count,share_count',
+            fields: 'id,title,cover_image_url,embed_html,embed_link,share_url,create_time,duration,view_count,like_count,comment_count,share_count,visibility',
           },
         }
       );
 
       const data = response.data?.data;
       if (data?.videos && Array.isArray(data.videos)) {
-        allVideos.push(...data.videos);
-        console.log(`Fetched ${data.videos.length} videos, total: ${allVideos.length}`);
+        // 公開動画のみフィルタリング（非公開・フォロワー限定などを除外）
+        const publicVideos = data.videos.filter((v: any) =>
+          v.visibility === 'PUBLIC_TO_EVERYONE' || !v.visibility
+        );
+        allVideos.push(...publicVideos);
+        console.log(`Fetched ${data.videos.length} videos (${publicVideos.length} public), total: ${allVideos.length}`);
       }
 
       // ページネーション制御
@@ -4721,17 +5256,20 @@ async function saveTikTokVideosToFirestore(
       likeCount: video.like_count || 0,
       commentCount: video.comment_count || 0,
       shareCount: video.share_count || 0,
+      // 公開設定
+      visibility: video.visibility || 'PUBLIC_TO_EVERYONE',
       // メタデータ
       lastFetchedAt: Timestamp.now(),
     };
 
     if (existingDoc.exists) {
-      // 既存の場合は統計データのみ更新
+      // 既存の場合は統計データとサムネイルURLを更新
       batch.update(docRef, {
         viewCount: videoData.viewCount,
         likeCount: videoData.likeCount,
         commentCount: videoData.commentCount,
         shareCount: videoData.shareCount,
+        coverImageUrl: videoData.coverImageUrl, // サムネイルURLも更新（期限切れ対策）
         lastFetchedAt: videoData.lastFetchedAt,
       });
       updated++;
@@ -4863,6 +5401,15 @@ app.post("/tiktok/sync-all-videos", async (req: Request, res: Response) => {
 
       try {
         console.log(`Processing account: ${account.tiktokUserName}`);
+
+        // ユーザー情報を取得してアバターURLを更新
+        const userInfo = await fetchTikTokUserInfo(account.accessToken, account.tiktokUserId);
+        if (userInfo && userInfo.avatarUrl) {
+          await db.collection("tiktok_accounts").doc(accountId).update({
+            tiktokAvatarUrl: userInfo.avatarUrl,
+            tiktokUserName: userInfo.displayName || account.tiktokUserName,
+          });
+        }
 
         // 動画リストを取得
         const videos = await fetchAllTikTokVideos(account.accessToken, account.tiktokUserId);
@@ -5200,17 +5747,19 @@ app.get("/tiktok/analytics/summary/:productId", async (req: Request, res: Respon
       return d.toISOString().split('T')[0];
     })();
 
-    // アカウント情報を取得
+    // アカウント情報を取得（非表示アカウントを除外）
     const accountsSnapshot = await db.collection("tiktok_accounts")
       .where("productId", "==", productId)
       .get();
 
-    const accounts = accountsSnapshot.docs.map(doc => ({
-      id: doc.id,
-      tiktokUserId: doc.data().tiktokUserId,
-      tiktokUserName: doc.data().tiktokUserName || 'Unknown',
-      tiktokAvatarUrl: doc.data().tiktokAvatarUrl || '',
-    }));
+    const accounts = accountsSnapshot.docs
+      .filter(doc => doc.data().hidden !== true)  // 非表示アカウントを除外
+      .map(doc => ({
+        id: doc.id,
+        tiktokUserId: doc.data().tiktokUserId,
+        tiktokUserName: doc.data().tiktokUserName || 'Unknown',
+        tiktokAvatarUrl: doc.data().tiktokAvatarUrl || '',
+      }));
 
     // 各アカウントのサマリーを計算
     const summaries: any[] = [];
@@ -5375,7 +5924,7 @@ app.get("/tiktok/analytics/all-videos/:productId", async (req: Request, res: Res
   try {
     const productId = req.params.productId;
 
-    // アカウント情報を取得
+    // アカウント情報を取得（非表示アカウントを除外）
     const accountsSnapshot = await db.collection("tiktok_accounts")
       .where("productId", "==", productId)
       .get();
@@ -5383,6 +5932,10 @@ app.get("/tiktok/analytics/all-videos/:productId", async (req: Request, res: Res
     const accountsMap = new Map<string, { name: string; avatar: string }>();
     for (const doc of accountsSnapshot.docs) {
       const data = doc.data();
+      // 非表示アカウントはスキップ
+      if (data.hidden === true) {
+        continue;
+      }
       accountsMap.set(doc.id, {
         name: data.tiktokUserName || 'Unknown',
         avatar: data.tiktokAvatarUrl || '',
@@ -5404,7 +5957,9 @@ app.get("/tiktok/analytics/all-videos/:productId", async (req: Request, res: Res
           title: videoData.title || '',
           coverImageUrl: videoData.coverImageUrl || '',
           shareUrl: videoData.shareUrl || '',
-          createTime: videoData.createTime?.toDate?.()?.toISOString() || null,
+          createTime: typeof videoData.createTime === 'string'
+            ? videoData.createTime
+            : videoData.createTime?.toDate?.()?.toISOString() || null,
           viewCount: videoData.viewCount || 0,
           likeCount: videoData.likeCount || 0,
           commentCount: videoData.commentCount || 0,
@@ -5742,7 +6297,1476 @@ app.post("/tiktok/sync-all-engagements/:productId", async (req: Request, res: Re
   }
 });
 
+// createTimeを1年戻す（2024年→2025年に修正）
+app.post("/tiktok/fix-createtime-to-2025", async (req: Request, res: Response) => {
+  try {
+    const videosSnapshot = await db.collection("tiktok_videos").get();
+    let updated = 0;
+
+    for (const doc of videosSnapshot.docs) {
+      const video = doc.data();
+      const createTime = video.createTime;
+
+      if (typeof createTime === 'string' && createTime.includes('2024')) {
+        const fixedTime = createTime.replace('2024', '2025');
+        await db.collection("tiktok_videos").doc(doc.id).update({
+          createTime: fixedTime
+        });
+        updated++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${updated}件のcreateTimeを2025年に修正しました`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message });
+  }
+});
+
+// デバッグ用：全TikTokアカウントを取得
+app.get("/tiktok/debug/all-accounts", async (req: Request, res: Response) => {
+  try {
+    const accountsSnapshot = await db.collection("tiktok_accounts").get();
+    const accounts = accountsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    res.json({ success: true, accounts, count: accounts.length });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message });
+  }
+});
+
+// 商品全体の日次推移データ（TikTok + モール売上）
+app.get("/tiktok/analytics/daily-trend/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+    const { startDate, endDate } = req.query;
+
+    // デフォルト期間（過去7日）
+    const end = endDate ? String(endDate) : new Date().toISOString().split('T')[0];
+    const start = startDate ? String(startDate) : (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 6);
+      return d.toISOString().split('T')[0];
+    })();
+
+    // 日付リストを生成
+    const dateList: string[] = [];
+    const currentDate = new Date(start);
+    const endDateObj = new Date(end);
+    while (currentDate <= endDateObj) {
+      dateList.push(currentDate.toISOString().split('T')[0]);
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    // 商品情報を取得
+    const productDoc = await db.collection("registered_products").doc(productId).get();
+    if (!productDoc.exists) {
+      return res.status(404).json({ success: false, message: "商品が見つかりません" });
+    }
+    const productData = productDoc.data();
+    const productCode = productData?.productCode || productId;
+
+    // 1. TikTok日次統計を取得（スナップショットの差分から計算）
+    const tiktokDailyMap: { [date: string]: { views: number; likes: number; comments: number; shares: number; videoCount: number } } = {};
+
+    // アカウントIDリストを取得（非表示アカウントを除外）
+    const accountsSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .get();
+    const accountIds = accountsSnapshot.docs
+      .filter(doc => doc.data().hidden !== true)  // 非表示アカウントを除外
+      .map(doc => doc.id);
+
+    // 日次スナップショットから差分を計算
+    if (accountIds.length > 0) {
+      // 前日のデータも必要なので、start-1日からのスナップショットを取得
+      const prevDay = new Date(start);
+      prevDay.setDate(prevDay.getDate() - 1);
+      const prevDayStr = prevDay.toISOString().split('T')[0];
+
+      // videoIdごとに日別のスナップショットを取得
+      const videoSnapshots: { [videoId: string]: { [date: string]: { viewCount: number; likeCount: number; commentCount: number; shareCount: number } } } = {};
+
+      for (const accountId of accountIds) {
+        const snapshotsQuery = await db.collection("tiktok_video_daily_snapshots")
+          .where("accountId", "==", accountId)
+          .where("date", ">=", prevDayStr)
+          .where("date", "<=", end)
+          .get();
+
+        for (const doc of snapshotsQuery.docs) {
+          const snap = doc.data();
+          const videoId = snap.videoId;
+          const date = snap.date;
+
+          if (!videoSnapshots[videoId]) {
+            videoSnapshots[videoId] = {};
+          }
+          videoSnapshots[videoId][date] = {
+            viewCount: snap.viewCount || 0,
+            likeCount: snap.likeCount || 0,
+            commentCount: snap.commentCount || 0,
+            shareCount: snap.shareCount || 0,
+          };
+        }
+      }
+
+      // 各日のビューを差分で計算
+      for (const date of dateList) {
+        if (!tiktokDailyMap[date]) {
+          tiktokDailyMap[date] = { views: 0, likes: 0, comments: 0, shares: 0, videoCount: 0 };
+        }
+
+        const prevDate = new Date(date);
+        prevDate.setDate(prevDate.getDate() - 1);
+        const prevDateStr = prevDate.toISOString().split('T')[0];
+
+        for (const videoId in videoSnapshots) {
+          const todaySnap = videoSnapshots[videoId][date];
+          const prevSnap = videoSnapshots[videoId][prevDateStr];
+
+          if (todaySnap) {
+            // 当日のスナップショットがある場合
+            if (prevSnap) {
+              // 前日もある場合は差分を計算
+              const viewDiff = Math.max(0, todaySnap.viewCount - prevSnap.viewCount);
+              const likeDiff = Math.max(0, todaySnap.likeCount - prevSnap.likeCount);
+              const commentDiff = Math.max(0, todaySnap.commentCount - prevSnap.commentCount);
+              const shareDiff = Math.max(0, todaySnap.shareCount - prevSnap.shareCount);
+
+              tiktokDailyMap[date].views += viewDiff;
+              tiktokDailyMap[date].likes += likeDiff;
+              tiktokDailyMap[date].comments += commentDiff;
+              tiktokDailyMap[date].shares += shareDiff;
+              if (viewDiff > 0 || likeDiff > 0 || commentDiff > 0 || shareDiff > 0) {
+                tiktokDailyMap[date].videoCount += 1;
+              }
+            }
+            // 前日がない場合は差分計算不可なのでスキップ（初日のデータ）
+          }
+        }
+      }
+    }
+
+    // 2. モール売上データを取得
+    const salesDailyMap: { [date: string]: { qoo10Sales: number; rakutenSales: number; totalSales: number } } = {};
+
+    try {
+      const salesSnapshot = await db.collection("product_sales")
+        .where("productCode", "==", productCode)
+        .where("date", ">=", start)
+        .where("date", "<=", end)
+        .get();
+
+      for (const doc of salesSnapshot.docs) {
+        const data = doc.data();
+        const date = data.date;
+        const mall = data.mall;
+
+        if (!salesDailyMap[date]) {
+          salesDailyMap[date] = { qoo10Sales: 0, rakutenSales: 0, totalSales: 0 };
+        }
+
+        if (mall === 'qoo10') {
+          salesDailyMap[date].qoo10Sales += data.sales || 0;
+        } else if (mall === 'rakuten') {
+          salesDailyMap[date].rakutenSales += data.sales || 0;
+        }
+        salesDailyMap[date].totalSales = salesDailyMap[date].qoo10Sales + salesDailyMap[date].rakutenSales;
+      }
+    } catch (err: any) {
+      console.log("product_sales query error (index may be building):", err?.message);
+    }
+
+    // 3. 日付ごとのデータを整形
+    const dailyData = dateList.map(date => {
+      const tiktok = tiktokDailyMap[date] || { views: 0, likes: 0, comments: 0, shares: 0, videoCount: 0 };
+      const sales = salesDailyMap[date] || { qoo10Sales: 0, rakutenSales: 0, totalSales: 0 };
+
+      const engagementRate = tiktok.views > 0
+        ? ((tiktok.likes + tiktok.comments + tiktok.shares) / tiktok.views) * 100
+        : 0;
+
+      return {
+        date,
+        views: tiktok.views,
+        videoCount: tiktok.videoCount,
+        engagementRate: parseFloat(engagementRate.toFixed(2)),
+        qoo10Sales: sales.qoo10Sales,
+        rakutenSales: sales.rakutenSales,
+        totalSales: sales.totalSales,
+      };
+    });
+
+    res.json({
+      success: true,
+      productId,
+      productCode,
+      period: { startDate: start, endDate: end },
+      dailyData,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching daily trend:", error);
+    res.status(500).json({
+      success: false,
+      message: "日次推移データの取得に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 動画の日次スナップショットを保存（毎日実行用）
+// Firestoreコレクション: tiktok_video_daily_snapshots/{videoId}_{date}
+app.post("/tiktok/save-daily-snapshots/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+    // アカウントIDリストを取得（非表示アカウントを除外）
+    const accountsSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .get();
+    const accountIds = accountsSnapshot.docs
+      .filter(doc => doc.data().hidden !== true)  // 非表示アカウントを除外
+      .map(doc => doc.id);
+
+    if (accountIds.length === 0) {
+      return res.status(404).json({ success: false, message: "TikTokアカウントが見つかりません" });
+    }
+
+    let savedCount = 0;
+    const batch = db.batch();
+
+    // 各動画の現在のデータをスナップショットとして保存
+    for (const accountId of accountIds) {
+      const videosSnapshot = await db.collection("tiktok_videos")
+        .where("accountId", "==", accountId)
+        .get();
+
+      for (const doc of videosSnapshot.docs) {
+        const video = doc.data();
+        const videoId = doc.id;
+        const snapshotId = `${videoId}_${today}`;
+
+        const snapshotRef = db.collection("tiktok_video_daily_snapshots").doc(snapshotId);
+        batch.set(snapshotRef, {
+          videoId,
+          accountId,
+          productId,
+          date: today,
+          viewCount: video.viewCount || 0,
+          likeCount: video.likeCount || 0,
+          commentCount: video.commentCount || 0,
+          shareCount: video.shareCount || 0,
+          createTime: video.createTime,
+          savedAt: new Date(),
+        }, { merge: true });
+        savedCount++;
+      }
+    }
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: `${savedCount}件の動画スナップショットを保存しました`,
+      date: today,
+      productId,
+    });
+  } catch (error: any) {
+    console.error("Error saving daily snapshots:", error);
+    res.status(500).json({
+      success: false,
+      message: "日次スナップショットの保存に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// 全商品の日次スナップショットを保存（cron用）
+app.post("/tiktok/save-all-daily-snapshots", async (req: Request, res: Response) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+
+    // 全TikTokアカウントを取得
+    const accountsSnapshot = await db.collection("tiktok_accounts").get();
+
+    let totalSaved = 0;
+    const productResults: { productId: string; count: number }[] = [];
+
+    for (const accountDoc of accountsSnapshot.docs) {
+      const accountData = accountDoc.data();
+      const accountId = accountDoc.id;
+      const productId = accountData.productId;
+
+      const videosSnapshot = await db.collection("tiktok_videos")
+        .where("accountId", "==", accountId)
+        .get();
+
+      const batch = db.batch();
+      let productCount = 0;
+
+      for (const videoDoc of videosSnapshot.docs) {
+        const video = videoDoc.data();
+        const videoId = videoDoc.id;
+        const snapshotId = `${videoId}_${today}`;
+
+        const snapshotRef = db.collection("tiktok_video_daily_snapshots").doc(snapshotId);
+        batch.set(snapshotRef, {
+          videoId,
+          accountId,
+          productId,
+          date: today,
+          viewCount: video.viewCount || 0,
+          likeCount: video.likeCount || 0,
+          commentCount: video.commentCount || 0,
+          shareCount: video.shareCount || 0,
+          createTime: video.createTime,
+          savedAt: new Date(),
+        }, { merge: true });
+        productCount++;
+      }
+
+      await batch.commit();
+      totalSaved += productCount;
+      productResults.push({ productId, count: productCount });
+    }
+
+    res.json({
+      success: true,
+      message: `${totalSaved}件の動画スナップショットを保存しました`,
+      date: today,
+      details: productResults,
+    });
+  } catch (error: any) {
+    console.error("Error saving all daily snapshots:", error);
+    res.status(500).json({
+      success: false,
+      message: "日次スナップショットの保存に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// 差分計算の日次推移データ取得
+app.get("/tiktok/analytics/daily-trend-v2/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+    const { startDate, endDate } = req.query;
+
+    // デフォルト期間（過去7日）
+    const end = endDate ? String(endDate) : new Date().toISOString().split('T')[0];
+    const start = startDate ? String(startDate) : (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 6);
+      return d.toISOString().split('T')[0];
+    })();
+
+    // 日付リストを生成
+    const dateList: string[] = [];
+    const currentDate = new Date(start);
+    const endDateObj = new Date(end);
+    while (currentDate <= endDateObj) {
+      dateList.push(currentDate.toISOString().split('T')[0]);
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    // 商品情報を取得
+    const productDoc = await db.collection("registered_products").doc(productId).get();
+    if (!productDoc.exists) {
+      return res.status(404).json({ success: false, message: "商品が見つかりません" });
+    }
+    const productData = productDoc.data();
+    const productCode = productData?.productCode || productId;
+
+    // アカウントIDリストを取得（非表示アカウントを除外）
+    const accountsSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .get();
+    const accountIds = accountsSnapshot.docs
+      .filter(doc => doc.data().hidden !== true)  // 非表示アカウントを除外
+      .map(doc => doc.id);
+
+    // 日付リストを生成（startDateの前日も含める、差分計算用）
+    const prevDay = new Date(start);
+    prevDay.setDate(prevDay.getDate() - 1);
+    const prevDayStr = prevDay.toISOString().split('T')[0];
+
+    // スナップショットデータを取得（startDate-1日からendDateまで）
+    const snapshotsByDate: { [date: string]: { views: number; likes: number; comments: number; shares: number } } = {};
+    const videoPostsByDate: { [date: string]: number } = {}; // 投稿日別の動画数
+
+    if (accountIds.length > 0) {
+      // 動画のcreateTime（投稿日）を取得
+      for (const accountId of accountIds) {
+        const videosSnapshot = await db.collection("tiktok_videos")
+          .where("accountId", "==", accountId)
+          .get();
+
+        for (const doc of videosSnapshot.docs) {
+          const video = doc.data();
+          const createTime = video.createTime;
+          if (createTime) {
+            let postDate: string;
+            if (typeof createTime === 'string') {
+              postDate = createTime.split('T')[0];
+            } else if (typeof createTime === 'number') {
+              postDate = new Date(createTime * 1000).toISOString().split('T')[0];
+            } else if (createTime?.toDate) {
+              postDate = createTime.toDate().toISOString().split('T')[0];
+            } else {
+              continue;
+            }
+            // 期間内の投稿をカウント
+            if (postDate >= start && postDate <= end) {
+              videoPostsByDate[postDate] = (videoPostsByDate[postDate] || 0) + 1;
+            }
+          }
+        }
+      }
+
+      // スナップショットを取得
+      const snapshotsQuery = await db.collection("tiktok_video_daily_snapshots")
+        .where("productId", "==", productId)
+        .where("date", ">=", prevDayStr)
+        .where("date", "<=", end)
+        .get();
+
+      for (const doc of snapshotsQuery.docs) {
+        const snap = doc.data();
+        const date = snap.date;
+        if (!snapshotsByDate[date]) {
+          snapshotsByDate[date] = { views: 0, likes: 0, comments: 0, shares: 0 };
+        }
+        snapshotsByDate[date].views += snap.viewCount || 0;
+        snapshotsByDate[date].likes += snap.likeCount || 0;
+        snapshotsByDate[date].comments += snap.commentCount || 0;
+        snapshotsByDate[date].shares += snap.shareCount || 0;
+      }
+
+      // スナップショットデータがない場合、tiktok_videosから今日の累計データを取得
+      const today = new Date().toISOString().split('T')[0];
+      if (Object.keys(snapshotsByDate).length === 0 || !snapshotsByDate[today]) {
+        // tiktok_videosから現在の累計値を取得して今日のスナップショットとして使う
+        let totalViews = 0;
+        let totalLikes = 0;
+        let totalComments = 0;
+        let totalShares = 0;
+
+        for (const accountId of accountIds) {
+          const videosSnapshot = await db.collection("tiktok_videos")
+            .where("accountId", "==", accountId)
+            .get();
+
+          for (const doc of videosSnapshot.docs) {
+            const video = doc.data();
+            totalViews += video.viewCount || 0;
+            totalLikes += video.likeCount || 0;
+            totalComments += video.commentCount || 0;
+            totalShares += video.shareCount || 0;
+          }
+        }
+
+        // 今日の日付が期間内であれば、累計値を今日のデータとして設定
+        if (today >= start && today <= end) {
+          snapshotsByDate[today] = {
+            views: totalViews,
+            likes: totalLikes,
+            comments: totalComments,
+            shares: totalShares,
+          };
+          console.log(`[daily-trend-v2] Using tiktok_videos total as today's data: views=${totalViews}`);
+        }
+      }
+    }
+
+    // モール売上データを取得
+    const salesDailyMap: { [date: string]: { qoo10Sales: number; rakutenSales: number; amazonSales: number; totalSales: number } } = {};
+    try {
+      const salesSnapshot = await db.collection("product_sales")
+        .where("productCode", "==", productCode)
+        .where("date", ">=", start)
+        .where("date", "<=", end)
+        .get();
+
+      for (const doc of salesSnapshot.docs) {
+        const data = doc.data();
+        const date = data.date;
+        const mall = data.mall;
+
+        if (!salesDailyMap[date]) {
+          salesDailyMap[date] = { qoo10Sales: 0, rakutenSales: 0, amazonSales: 0, totalSales: 0 };
+        }
+
+        if (mall === 'qoo10') {
+          salesDailyMap[date].qoo10Sales += data.sales || 0;
+        } else if (mall === 'rakuten') {
+          salesDailyMap[date].rakutenSales += data.sales || 0;
+        }
+      }
+    } catch (err: any) {
+      console.log("product_sales query error:", err?.message);
+    }
+
+    // Amazon売上データを取得（amazon_daily_salesコレクションから）
+    // 複合インデックスを避けるため、productIdのみでクエリしてからクライアント側で日付フィルタ
+    try {
+      const amazonSalesSnapshot = await db.collection("amazon_daily_sales")
+        .where("productId", "==", productId)
+        .get();
+
+      console.log(`[daily-trend-v2] amazon_daily_sales query: ${amazonSalesSnapshot.size} docs for productId=${productId}`);
+
+      for (const doc of amazonSalesSnapshot.docs) {
+        const data = doc.data();
+        const date = data.date;
+
+        // 日付範囲チェック
+        if (date < start || date > end) {
+          continue;
+        }
+
+        if (!salesDailyMap[date]) {
+          salesDailyMap[date] = { qoo10Sales: 0, rakutenSales: 0, amazonSales: 0, totalSales: 0 };
+        }
+
+        // salesAmountを数値として取得（既に数値型で保存されている場合も対応）
+        const salesAmount = typeof data.salesAmount === 'number' ? data.salesAmount : (parseFloat(data.salesAmount) || 0);
+        salesDailyMap[date].amazonSales += salesAmount;
+        console.log(`[daily-trend-v2] Amazon ${date}: salesAmount=${salesAmount}`);
+      }
+    } catch (err: any) {
+      console.log("amazon_daily_sales query error:", err?.message);
+    }
+
+    // 楽天売上データも取得（rakuten_daily_salesコレクションから）
+    try {
+      const rakutenSalesSnapshot = await db.collection("rakuten_daily_sales")
+        .where("productId", "==", productId)
+        .get();
+
+      for (const doc of rakutenSalesSnapshot.docs) {
+        const data = doc.data();
+        const date = data.date;
+
+        // 日付範囲チェック
+        if (date < start || date > end) {
+          continue;
+        }
+
+        if (!salesDailyMap[date]) {
+          salesDailyMap[date] = { qoo10Sales: 0, rakutenSales: 0, amazonSales: 0, totalSales: 0 };
+        }
+
+        // salesAmountを数値として取得
+        const salesAmount = typeof data.salesAmount === 'number' ? data.salesAmount : (parseFloat(data.salesAmount) || 0);
+        salesDailyMap[date].rakutenSales += salesAmount;
+      }
+    } catch (err: any) {
+      console.log("rakuten_daily_sales query error:", err?.message);
+    }
+
+    // totalSalesを計算
+    for (const date of Object.keys(salesDailyMap)) {
+      const s = salesDailyMap[date];
+      s.totalSales = s.qoo10Sales + s.rakutenSales + s.amazonSales;
+    }
+
+    // 日付ごとの差分データを計算
+    const dailyData = dateList.map((date, index) => {
+      // 前日の日付
+      const prevDate = index === 0 ? prevDayStr : dateList[index - 1];
+
+      const todaySnap = snapshotsByDate[date] || { views: 0, likes: 0, comments: 0, shares: 0 };
+      const prevSnap = snapshotsByDate[prevDate] || { views: 0, likes: 0, comments: 0, shares: 0 };
+
+      // 差分計算（当日 - 前日）
+      // 前日のスナップショットがない場合は、当日の値をそのまま使用
+      const viewsDiff = prevSnap.views === 0 ? todaySnap.views : Math.max(0, todaySnap.views - prevSnap.views);
+      const likesDiff = prevSnap.likes === 0 ? todaySnap.likes : Math.max(0, todaySnap.likes - prevSnap.likes);
+      const commentsDiff = prevSnap.comments === 0 ? todaySnap.comments : Math.max(0, todaySnap.comments - prevSnap.comments);
+      const sharesDiff = prevSnap.shares === 0 ? todaySnap.shares : Math.max(0, todaySnap.shares - prevSnap.shares);
+
+      // ER% = (いいね + コメント + シェア) / 再生数 * 100
+      const engagementRate = viewsDiff > 0
+        ? ((likesDiff + commentsDiff + sharesDiff) / viewsDiff) * 100
+        : 0;
+
+      const sales = salesDailyMap[date] || { qoo10Sales: 0, rakutenSales: 0, amazonSales: 0, totalSales: 0 };
+      const videoCount = videoPostsByDate[date] || 0;
+
+      return {
+        date,
+        views: viewsDiff, // 日次増分（前日のスナップショットがなければ累計値）
+        videoCount, // 投稿日にカウント
+        engagementRate: parseFloat(engagementRate.toFixed(2)),
+        qoo10Sales: sales.qoo10Sales,
+        rakutenSales: sales.rakutenSales,
+        amazonSales: sales.amazonSales,
+        totalSales: sales.totalSales,
+      };
+    });
+
+    res.json({
+      success: true,
+      productId,
+      productCode,
+      period: { startDate: start, endDate: end },
+      dailyData,
+      hasSnapshotData: Object.keys(snapshotsByDate).length > 0,
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching daily trend v2:", error);
+    res.status(500).json({
+      success: false,
+      message: "日次推移データの取得に失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// デバッグ用：TikTokスナップショットを確認
+app.get("/debug/tiktok-snapshots/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+    const today = new Date().toISOString().split('T')[0];
+    const yesterday = (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      return d.toISOString().split('T')[0];
+    })();
+
+    // アカウント取得
+    const accountsSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .get();
+
+    const accountIds = accountsSnapshot.docs.map(doc => doc.id);
+
+    // 今日と昨日のスナップショットを取得
+    const todaySnapshots = await db.collection("tiktok_daily_stats")
+      .where("productId", "==", productId)
+      .where("date", "==", today)
+      .limit(10)
+      .get();
+
+    const yesterdaySnapshots = await db.collection("tiktok_daily_stats")
+      .where("productId", "==", productId)
+      .where("date", "==", yesterday)
+      .limit(10)
+      .get();
+
+    res.json({
+      success: true,
+      productId,
+      today,
+      yesterday,
+      accountCount: accountIds.length,
+      todaySnapshotCount: todaySnapshots.size,
+      yesterdaySnapshotCount: yesterdaySnapshots.size,
+      todaySamples: todaySnapshots.docs.slice(0, 3).map(d => d.data()),
+      yesterdaySamples: yesterdaySnapshots.docs.slice(0, 3).map(d => d.data()),
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message });
+  }
+});
+
+// デバッグ用：amazon_daily_salesのデータを確認
+app.get("/debug/amazon-daily-sales/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+    const { startDate, endDate } = req.query;
+
+    const start = startDate ? String(startDate) : "2025-09-01";
+    const end = endDate ? String(endDate) : "2025-09-10";
+
+    const snapshot = await db.collection("amazon_daily_sales")
+      .where("productId", "==", productId)
+      .get();
+
+    const allData = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    // 日付範囲内のデータ
+    const filteredData = allData.filter((d: any) => d.date >= start && d.date <= end);
+
+    res.json({
+      success: true,
+      productId,
+      totalCount: allData.length,
+      filteredCount: filteredData.length,
+      sampleDates: allData.slice(0, 5).map((d: any) => d.date),
+      sampleData: filteredData.slice(0, 5),
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// 既存の動画データから過去のスナップショットを生成（初期データ投入用）
+app.post("/tiktok/backfill-snapshots/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+    const { days = 30 } = req.body; // デフォルト30日分
+
+    // アカウントIDリストを取得（非表示アカウントを除外）
+    const accountsSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .get();
+    const accountIds = accountsSnapshot.docs
+      .filter(doc => doc.data().hidden !== true)  // 非表示アカウントを除外
+      .map(doc => doc.id);
+
+    if (accountIds.length === 0) {
+      return res.status(404).json({ success: false, message: "TikTokアカウントが見つかりません" });
+    }
+
+    // 現在の動画データを取得
+    const allVideos: { id: string; data: any }[] = [];
+    for (const accountId of accountIds) {
+      const videosSnapshot = await db.collection("tiktok_videos")
+        .where("accountId", "==", accountId)
+        .get();
+
+      for (const doc of videosSnapshot.docs) {
+        allVideos.push({ id: doc.id, data: doc.data() });
+      }
+    }
+
+    // 過去N日分のスナップショットを生成
+    // 注意: これは現在の累計値をそのまま各日に入れるので、差分は0になる
+    // 実際の運用では、本日から毎日スナップショットを保存していく
+    const today = new Date();
+    let savedCount = 0;
+
+    for (let i = 0; i < days; i++) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+
+      const batch = db.batch();
+      for (const video of allVideos) {
+        const snapshotId = `${video.id}_${dateStr}`;
+        const snapshotRef = db.collection("tiktok_video_daily_snapshots").doc(snapshotId);
+
+        batch.set(snapshotRef, {
+          videoId: video.id,
+          accountId: video.data.accountId,
+          productId,
+          date: dateStr,
+          viewCount: video.data.viewCount || 0,
+          likeCount: video.data.likeCount || 0,
+          commentCount: video.data.commentCount || 0,
+          shareCount: video.data.shareCount || 0,
+          createTime: video.data.createTime,
+          savedAt: new Date(),
+          isBackfilled: true, // バックフィルデータであることを示すフラグ
+        }, { merge: true });
+        savedCount++;
+      }
+      await batch.commit();
+    }
+
+    res.json({
+      success: true,
+      message: `${savedCount}件のスナップショットを生成しました`,
+      days,
+      videoCount: allVideos.length,
+      productId,
+    });
+  } catch (error: any) {
+    console.error("Error backfilling snapshots:", error);
+    res.status(500).json({
+      success: false,
+      message: "スナップショットの生成に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// スナップショットを削除（特定日以外）
+app.delete("/tiktok/delete-snapshots-except/:productId/:keepDate", async (req: Request, res: Response) => {
+  try {
+    const { productId, keepDate } = req.params;
+
+    const snapshotsQuery = await db.collection("tiktok_video_daily_snapshots")
+      .where("productId", "==", productId)
+      .get();
+
+    let deletedCount = 0;
+    const batch = db.batch();
+
+    for (const doc of snapshotsQuery.docs) {
+      const snap = doc.data();
+      if (snap.date !== keepDate) {
+        batch.delete(doc.ref);
+        deletedCount++;
+      }
+    }
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: `${deletedCount}件のスナップショットを削除しました（${keepDate}以外）`,
+      keepDate,
+      productId,
+    });
+  } catch (error: any) {
+    console.error("Error deleting snapshots:", error);
+    res.status(500).json({
+      success: false,
+      message: "スナップショットの削除に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// スナップショットのデバッグ用エンドポイント
+app.get("/tiktok/debug-snapshots/:productId", async (req: Request, res: Response) => {
+  try {
+    const productId = req.params.productId;
+
+    // アカウントIDリストを取得
+    const accountsSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .get();
+    const accountIds = accountsSnapshot.docs.map(doc => doc.id);
+
+    // スナップショットを日付でグループ化して取得
+    const dateStats: { [date: string]: { count: number; totalViews: number } } = {};
+
+    for (const accountId of accountIds) {
+      const snapshotsQuery = await db.collection("tiktok_video_daily_snapshots")
+        .where("accountId", "==", accountId)
+        .get();
+
+      for (const doc of snapshotsQuery.docs) {
+        const snap = doc.data();
+        const date = snap.date;
+        if (!dateStats[date]) {
+          dateStats[date] = { count: 0, totalViews: 0 };
+        }
+        dateStats[date].count++;
+        dateStats[date].totalViews += snap.viewCount || 0;
+      }
+    }
+
+    // 日付でソート
+    const sortedDates = Object.keys(dateStats).sort();
+
+    res.json({
+      success: true,
+      productId,
+      accountIds,
+      snapshotsByDate: sortedDates.map(date => ({
+        date,
+        ...dateStats[date]
+      })),
+      totalDates: sortedDates.length,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message });
+  }
+});
+
+// 非公開動画をチェックして削除するエンドポイント
+app.post("/tiktok/cleanup-private-videos", async (req: Request, res: Response) => {
+  try {
+    console.log("Starting cleanup of private videos...");
+
+    // 全アカウントを取得
+    const accountsSnapshot = await db.collection("tiktok_accounts").get();
+
+    let totalChecked = 0;
+    let totalDeleted = 0;
+    let totalErrors = 0;
+    const deletedVideos: string[] = [];
+
+    for (const accountDoc of accountsSnapshot.docs) {
+      const account = accountDoc.data();
+      const accountId = accountDoc.id;
+
+      if (!account.accessToken || !account.tiktokUserId) {
+        continue;
+      }
+
+      try {
+        // TikTok APIから現在の動画リストを取得（visibility含む）
+        const axios = (await import('axios')).default;
+        let cursor = 0;
+        let hasMore = true;
+        const publicVideoIds = new Set<string>();
+
+        while (hasMore) {
+          const response = await axios.post(
+            'https://open.tiktokapis.com/v2/video/list/',
+            { max_count: 20, cursor },
+            {
+              headers: {
+                'Authorization': `Bearer ${account.accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              params: {
+                fields: 'id,visibility',
+              },
+            }
+          );
+
+          const data = response.data?.data;
+          if (data?.videos && Array.isArray(data.videos)) {
+            for (const video of data.videos) {
+              // 公開動画のIDを記録
+              if (video.visibility === 'PUBLIC_TO_EVERYONE' || !video.visibility) {
+                publicVideoIds.add(video.id);
+              }
+            }
+          }
+
+          hasMore = data?.has_more === true;
+          if (hasMore && data?.cursor !== undefined) {
+            cursor = data.cursor;
+          } else {
+            hasMore = false;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        // Firestoreにある動画で、APIにない or 非公開の動画を削除
+        const videosSnapshot = await db.collection("tiktok_videos")
+          .where("accountId", "==", accountId)
+          .get();
+
+        for (const videoDoc of videosSnapshot.docs) {
+          totalChecked++;
+          const videoId = videoDoc.id;
+
+          // APIから取得した公開動画リストにない = 非公開か削除された動画
+          if (!publicVideoIds.has(videoId)) {
+            await videoDoc.ref.delete();
+            deletedVideos.push(videoId);
+            totalDeleted++;
+            console.log(`Deleted private/removed video: ${videoId} from account ${accountId}`);
+          }
+        }
+
+      } catch (accountError: any) {
+        console.error(`Error checking account ${accountId}:`, accountError?.message);
+        totalErrors++;
+      }
+
+      // レート制限対策
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    res.json({
+      success: true,
+      message: `非公開動画のクリーンアップが完了しました`,
+      totalChecked,
+      totalDeleted,
+      totalErrors,
+      deletedVideos: deletedVideos.slice(0, 100), // 最大100件まで表示
+    });
+
+  } catch (error: any) {
+    console.error("Error cleaning up private videos:", error);
+    res.status(500).json({
+      success: false,
+      message: "非公開動画のクリーンアップに失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
 // ==================== End TikTok Business API ====================
+
+// ==================== Amazon売上データ手動入稿 ====================
+
+// Amazon売上データCSV入稿
+app.post("/amazon/import-sales-csv/:productId", async (req: Request, res: Response) => {
+  try {
+    const { productId } = req.params;
+    const { data } = req.body; // CSVパース済みのデータ配列
+
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "データが空です",
+      });
+    }
+
+    // 商品情報を取得
+    const productDoc = await db.collection("registered_products").doc(productId).get();
+    if (!productDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "商品が見つかりません",
+      });
+    }
+
+    const productData = productDoc.data();
+    // amazonCodeがなくてもproductIdをキーとして保存可能に
+    const amazonCode = productData?.amazonCode || productId;
+
+    let savedCount = 0;
+    const batch = db.batch();
+
+    for (const row of data) {
+      // 日付をパース (YYYY-MM-DD または YYYY/MM/DD 形式を想定)
+      const dateStr = row.date?.replace(/\//g, "-");
+      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        continue;
+      }
+
+      const docId = `${amazonCode}_${dateStr}`;
+      const docRef = db.collection("amazon_daily_sales").doc(docId);
+
+      batch.set(docRef, {
+        productId,
+        amazonCode,
+        date: dateStr,
+        // 売上データ
+        salesAmount: parseFloat(row.salesAmount) || 0,
+        salesAmountB2B: parseFloat(row.salesAmountB2B) || 0,
+        orderedUnits: parseInt(row.orderedUnits) || 0,
+        orderedUnitsB2B: parseInt(row.orderedUnitsB2B) || 0,
+        totalOrderItems: parseInt(row.totalOrderItems) || 0,
+        totalOrderItemsB2B: parseInt(row.totalOrderItemsB2B) || 0,
+        // トラフィックデータ
+        pageViews: parseInt(row.pageViews) || 0,
+        pageViewsB2B: parseInt(row.pageViewsB2B) || 0,
+        sessions: parseInt(row.sessions) || 0,
+        sessionsB2B: parseInt(row.sessionsB2B) || 0,
+        // カート獲得率
+        buyBoxPercentage: parseFloat(row.buyBoxPercentage) || 0,
+        buyBoxPercentageB2B: parseFloat(row.buyBoxPercentageB2B) || 0,
+        // CVR
+        unitSessionPercentage: parseFloat(row.unitSessionPercentage) || 0,
+        unitSessionPercentageB2B: parseFloat(row.unitSessionPercentageB2B) || 0,
+        // その他
+        averageOfferCount: parseFloat(row.averageOfferCount) || 0,
+        averageParentItems: parseFloat(row.averageParentItems) || 0,
+        // メタデータ
+        importedAt: new Date(),
+        source: "manual_csv",
+      }, { merge: true });
+
+      // ダッシュボードで参照しているproduct_salesにも書き込む
+      // productIdベースで保存（amazonCodeが空でも動作するように）
+      const productSalesRef = db.collection("product_sales").doc(`amazon_${productId}_${dateStr}`);
+      batch.set(productSalesRef, {
+        productId,
+        productCode: amazonCode || productId, // amazonCodeがあれば使用、なければproductId
+        mall: "amazon",
+        date: dateStr,
+        sales: parseFloat(row.salesAmount) || 0,
+        quantity: parseInt(row.orderedUnits) || 0,
+        updatedAt: Timestamp.now(),
+      }, { merge: true });
+
+      savedCount++;
+    }
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: `${savedCount}件のAmazon売上データを保存しました`,
+      productId,
+      amazonCode,
+      savedCount,
+    });
+  } catch (error: any) {
+    console.error("Error importing Amazon sales CSV:", error);
+    res.status(500).json({
+      success: false,
+      message: "Amazon売上データの保存に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// Amazon売上データ取得
+app.get("/amazon/daily-sales/:productId", async (req: Request, res: Response) => {
+  try {
+    const { productId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    // 商品情報を取得
+    const productDoc = await db.collection("registered_products").doc(productId).get();
+    if (!productDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "商品が見つかりません",
+      });
+    }
+
+    const productData = productDoc.data();
+    const amazonCode = productData?.amazonCode;
+    if (!amazonCode) {
+      return res.json({
+        success: true,
+        data: [],
+        message: "この商品にはAmazon商品コードが設定されていません",
+      });
+    }
+
+    let query = db.collection("amazon_daily_sales")
+      .where("amazonCode", "==", amazonCode);
+
+    if (startDate) {
+      query = query.where("date", ">=", startDate);
+    }
+    if (endDate) {
+      query = query.where("date", "<=", endDate);
+    }
+
+    const snapshot = await query.orderBy("date", "asc").get();
+
+    const salesData = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    res.json({
+      success: true,
+      data: salesData,
+      count: salesData.length,
+    });
+  } catch (error: any) {
+    console.error("Error fetching Amazon daily sales:", error);
+    res.status(500).json({
+      success: false,
+      message: "Amazon売上データの取得に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// デバッグ用: amazon_daily_sales全データ取得
+app.get("/debug/amazon-daily-sales", async (req: Request, res: Response) => {
+  try {
+    const snapshot = await db.collection("amazon_daily_sales").limit(20).get();
+    const data = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    res.json({ success: true, count: data.length, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message });
+  }
+});
+
+// 既存の amazon_daily_sales を product_sales にバックフィル
+app.post("/amazon/backfill-product-sales", async (req: Request, res: Response) => {
+  try {
+    const { productId, startDate, endDate } = req.body || {};
+
+    let query = db.collection("amazon_daily_sales") as FirebaseFirestore.Query<FirebaseFirestore.DocumentData>;
+    if (productId) {
+      query = query.where("productId", "==", productId);
+    }
+    if (startDate) {
+      query = query.where("date", ">=", startDate);
+    }
+    if (endDate) {
+      query = query.where("date", "<=", endDate);
+    }
+
+    // 範囲クエリを使う場合は orderBy が必要
+    query = query.orderBy("date", "asc");
+
+    const snapshot = await query.get();
+    if (snapshot.empty) {
+      return res.json({ success: true, message: "対象データがありません", migrated: 0 });
+    }
+
+    let migrated = 0;
+    let batch = db.batch();
+    let ops = 0;
+
+    const commitBatch = async () => {
+      if (ops > 0) {
+        await batch.commit();
+        batch = db.batch();
+        ops = 0;
+      }
+    };
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const dateStr = data.date;
+      if (!dateStr) continue;
+
+      const amazonCode = data.amazonCode || data.productCode || data.productId || productId || "unknown";
+      const docId = `amazon_${amazonCode}_${dateStr}`;
+      const productSalesRef = db.collection("product_sales").doc(docId);
+
+      batch.set(productSalesRef, {
+        productId: data.productId || productId || "",
+        productCode: amazonCode,
+        mall: "amazon",
+        date: dateStr,
+        sales: parseFloat(data.salesAmount) || 0,
+        quantity: parseInt(data.orderedUnits) || 0,
+        updatedAt: Timestamp.now(),
+      }, { merge: true });
+
+      migrated++;
+      ops++;
+
+      // Firestore batch は最大500件
+      if (ops >= 450) {
+        await commitBatch();
+      }
+    }
+
+    await commitBatch();
+
+    res.json({
+      success: true,
+      message: `${migrated}件をproduct_salesへ移行しました`,
+      migrated,
+      filter: { productId: productId || null, startDate: startDate || null, endDate: endDate || null },
+    });
+  } catch (error: any) {
+    console.error("Backfill amazon_daily_sales -> product_sales error:", error);
+    res.status(500).json({
+      success: false,
+      message: "バックフィルに失敗しました",
+      error: error?.message || "Unknown error",
+    });
+  }
+});
+
+// ==================== End Amazon売上データ手動入稿 ====================
+
+// ==================== 楽天売上データ手動入稿 ====================
+
+// 楽天売上データCSV入稿
+app.post("/rakuten/import-sales-csv/:productId", async (req: Request, res: Response) => {
+  try {
+    const { productId } = req.params;
+    const { data } = req.body; // CSVパース済みのデータ配列
+
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "データが空です",
+      });
+    }
+
+    // 商品情報を取得
+    const productDoc = await db.collection("registered_products").doc(productId).get();
+    if (!productDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "商品が見つかりません",
+      });
+    }
+
+    const productData = productDoc.data();
+    // rakutenCodeがなくてもproductIdをキーとして保存可能に
+    const rakutenCode = productData?.rakutenCode || productId;
+
+    let savedCount = 0;
+    const batch = db.batch();
+
+    for (const row of data) {
+      // 日付をパース (YYYY-MM-DD または YYYY/MM/DD 形式を想定)
+      const dateStr = row.date?.replace(/\//g, "-");
+      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        continue;
+      }
+
+      // 商品管理番号または商品番号をキーに使用
+      const itemCode = row.productManagementCode || row.productCode || rakutenCode;
+      const docId = `${productId}_${itemCode}_${dateStr}`;
+      const docRef = db.collection("rakuten_daily_sales").doc(docId);
+
+      batch.set(docRef, {
+        productId,
+        rakutenCode,
+        itemCode,
+        date: dateStr,
+        // 商品識別情報
+        productManagementCode: row.productManagementCode || "",
+        productCode: row.productCode || "",
+        // 売上データ
+        salesAmount: parseInt(row.salesAmount) || 0,
+        salesCount: parseInt(row.salesCount) || 0,
+        salesUnits: parseInt(row.salesUnits) || 0,
+        // アクセスデータ
+        accessUsers: parseInt(row.accessUsers) || 0,
+        uniqueUsers: parseInt(row.uniqueUsers) || 0,
+        conversionRate: parseFloat(row.conversionRate) || 0,
+        averageOrderValue: parseInt(row.averageOrderValue) || 0,
+        // 購入データ
+        totalPurchases: parseInt(row.totalPurchases) || 0,
+        newPurchases: parseInt(row.newPurchases) || 0,
+        repeatPurchases: parseInt(row.repeatPurchases) || 0,
+        nonPurchaseAccess: parseInt(row.nonPurchaseAccess) || 0,
+        // レビューデータ
+        reviewCount: parseInt(row.reviewCount) || 0,
+        reviewRating: parseFloat(row.reviewRating) || 0,
+        totalReviews: parseInt(row.totalReviews) || 0,
+        // 行動データ
+        stayTime: parseInt(row.stayTime) || 0,
+        bounceCount: parseInt(row.bounceCount) || 0,
+        exitCount: parseInt(row.exitCount) || 0,
+        exitRate: parseFloat(row.exitRate) || 0,
+        // お気に入りデータ
+        favoriteUsers: parseInt(row.favoriteUsers) || 0,
+        totalFavoriteUsers: parseInt(row.totalFavoriteUsers) || 0,
+        // 在庫データ
+        stockCount: parseInt(row.stockCount) || 0,
+        // メタデータ
+        importedAt: new Date(),
+        source: "manual_csv",
+      }, { merge: true });
+
+      savedCount++;
+    }
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: `${savedCount}件の楽天売上データを保存しました`,
+      productId,
+      rakutenCode,
+      savedCount,
+    });
+  } catch (error: any) {
+    console.error("Error importing Rakuten sales CSV:", error);
+    res.status(500).json({
+      success: false,
+      message: "楽天売上データの保存に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// 楽天売上データ取得
+app.get("/rakuten/daily-sales/:productId", async (req: Request, res: Response) => {
+  try {
+    const { productId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    let query = db.collection("rakuten_daily_sales")
+      .where("productId", "==", productId);
+
+    if (startDate) {
+      query = query.where("date", ">=", startDate);
+    }
+    if (endDate) {
+      query = query.where("date", "<=", endDate);
+    }
+
+    const snapshot = await query.orderBy("date", "asc").get();
+
+    const salesData = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    res.json({
+      success: true,
+      data: salesData,
+      count: salesData.length,
+    });
+  } catch (error: any) {
+    console.error("Error fetching Rakuten daily sales:", error);
+    res.status(500).json({
+      success: false,
+      message: "楽天売上データの取得に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// ==================== End 楽天売上データ手動入稿 ====================
+
+// ==================== Qoo10売上データ手動入稿 ====================
+
+// Qoo10売上CSVインポート
+app.post("/qoo10/import-sales-csv/:productId", async (req: Request, res: Response) => {
+  try {
+    const { productId } = req.params;
+    const { data } = req.body;
+
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "データが空です",
+      });
+    }
+
+    const productDoc = await db.collection("registered_products").doc(productId).get();
+    if (!productDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "商品が見つかりません",
+      });
+    }
+
+    let savedCount = 0;
+    const batch = db.batch();
+
+    for (const row of data) {
+      const dateStr = row.date?.replace(/\//g, "-");
+      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        continue;
+      }
+
+      const docId = `qoo10_${productId}_${dateStr}`;
+      const docRef = db.collection("product_sales").doc(docId);
+
+      batch.set(docRef, {
+        productId,
+        date: dateStr,
+        mall: "qoo10",
+        sales: parseInt(row.sales) || 0,
+        units: parseInt(row.units) || 0,
+        importedAt: new Date(),
+        source: "manual_csv",
+      }, { merge: true });
+
+      savedCount++;
+    }
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: `${savedCount}件のQoo10売上データを保存しました`,
+      productId,
+      savedCount,
+    });
+  } catch (error: any) {
+    console.error("Error importing Qoo10 sales CSV:", error);
+    res.status(500).json({
+      success: false,
+      message: "Qoo10売上データの保存に失敗しました",
+      error: error?.message,
+    });
+  }
+});
+
+// ==================== End Qoo10売上データ手動入稿 ====================
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);

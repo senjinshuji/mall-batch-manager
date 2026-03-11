@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Flag, Plus, Trash2, Edit2, Save, X, Calendar, RefreshCw } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Flag, Plus, Trash2, Edit2, Save, X, Calendar, RefreshCw, Upload, Download } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from "firebase/firestore";
 import { useAuth } from "@/lib/auth-context";
@@ -39,6 +39,12 @@ export default function FlagsPage() {
     date: "",
     description: "",
   });
+
+  // CSV入稿用
+  const csvFileRef = useRef<HTMLInputElement>(null);
+  const [csvUploading, setCsvUploading] = useState(false);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const [csvSuccess, setCsvSuccess] = useState<string | null>(null);
 
   // Firestoreからフラグ一覧を取得
   useEffect(() => {
@@ -167,6 +173,100 @@ export default function FlagsPage() {
     setEditingId(null);
   };
 
+  // CSVテンプレートダウンロード
+  const handleDownloadTemplate = useCallback(() => {
+    const csvContent = [
+      "日付,イベント名,詳細",
+      "2025-12-01,セール開始,ブラックフライデーセール",
+      "2025-12-15,広告開始,TikTok広告キャンペーン",
+    ].join("\n");
+
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "フラグ登録テンプレート.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // CSVインポート
+  const handleCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setCsvError(null);
+    setCsvSuccess(null);
+    setCsvUploading(true);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const lines = text.split(/\r?\n/).filter(line => line.trim());
+
+        if (lines.length < 2) {
+          setCsvError("CSVファイルにデータがありません（ヘッダー行のみ）");
+          setCsvUploading(false);
+          return;
+        }
+
+        const newFlags: EventFlag[] = [];
+        let savedCount = 0;
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+          const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
+
+          if (values.length < 2 || !values[0] || !values[1]) continue;
+
+          const dateStr = values[0].replace(/\//g, "-");
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
+
+          const flagData = {
+            name: values[1],
+            date: dateStr,
+            description: values[2] || "",
+          };
+
+          if (isRealDataUser) {
+            const docRef = await addDoc(collection(db, "event_flags"), {
+              ...flagData,
+              createdAt: new Date(),
+            });
+            newFlags.push({ id: docRef.id, ...flagData });
+          } else {
+            newFlags.push({ id: `demo-csv-${Date.now()}-${i}`, ...flagData });
+          }
+          savedCount++;
+        }
+
+        if (savedCount === 0) {
+          setCsvError("有効なデータがありません");
+        } else {
+          setFlags(prev => [...newFlags, ...prev].sort((a, b) => b.date.localeCompare(a.date)));
+          setCsvSuccess(`${savedCount}件のフラグを登録しました`);
+        }
+      } catch (err) {
+        console.error("CSV parse error:", err);
+        setCsvError("CSVファイルの解析に失敗しました");
+      } finally {
+        setCsvUploading(false);
+        if (csvFileRef.current) csvFileRef.current.value = "";
+      }
+    };
+
+    reader.onerror = () => {
+      setCsvError("ファイルの読み込みに失敗しました");
+      setCsvUploading(false);
+    };
+
+    reader.readAsText(file, "UTF-8");
+  }, [isRealDataUser, flags]);
+
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
     return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
@@ -193,19 +293,62 @@ export default function FlagsPage() {
             </span>
           )}
         </div>
-        <button
-          onClick={() => setIsAdding(true)}
-          disabled={isAdding}
-          className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-          新規登録
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleDownloadTemplate}
+            className="flex items-center gap-2 px-3 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm"
+          >
+            <Download className="w-4 h-4" />
+            テンプレートDL
+          </button>
+          <div>
+            <input
+              type="file"
+              ref={csvFileRef}
+              accept=".csv"
+              onChange={handleCsvImport}
+              className="hidden"
+              id="flag-csv-upload"
+              disabled={csvUploading}
+            />
+            <label
+              htmlFor="flag-csv-upload"
+              className={`flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors cursor-pointer text-sm ${csvUploading ? "opacity-50 cursor-not-allowed" : ""}`}
+            >
+              {csvUploading ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              {csvUploading ? "登録中..." : "CSV一括登録"}
+            </label>
+          </div>
+          <button
+            onClick={() => setIsAdding(true)}
+            disabled={isAdding}
+            className="flex items-center gap-2 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+          >
+            <Plus className="w-4 h-4" />
+            新規登録
+          </button>
+        </div>
       </div>
 
       <p className="text-gray-600 mb-6">
         イベントやキャンペーンのフラグを登録すると、ダッシュボードのグラフ上に表示されます。
       </p>
+
+      {/* CSVインポート結果 */}
+      {csvError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">
+          {csvError}
+        </div>
+      )}
+      {csvSuccess && (
+        <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm mb-4">
+          {csvSuccess}
+        </div>
+      )}
 
       {/* 新規登録フォーム */}
       {isAdding && (
