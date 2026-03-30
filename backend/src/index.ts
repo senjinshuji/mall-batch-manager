@@ -5736,13 +5736,23 @@ async function fetchAllTikTokVideos(
           const retention1s = retentionData.find((r: any) => r.second === "1" || r.second === 1);
           const retention2s = retentionData.find((r: any) => r.second === "2" || r.second === 2);
 
+          // videoIdからcreate_timeを抽出（Snowflake形式: 上位32ビット = Unixタイムスタンプ）
+          let createTimeISO: string | null = null;
+          try {
+            const videoIdBigInt = BigInt(v.item_id);
+            const unixTimestamp = Number(videoIdBigInt >> 32n);
+            createTimeISO = new Date(unixTimestamp * 1000).toISOString();
+          } catch (e) {
+            // BigInt変換失敗時はnullのまま
+          }
+
           return {
             id: v.item_id,
             videoId: v.item_id,
             title: "",
             cover_image_url: "",
             share_url: `https://www.tiktok.com/video/${v.item_id}`,
-            create_time: null,
+            create_time: createTimeISO,
             duration: v.video_duration || 0,
             view_count: v.video_views || 0,
             like_count: v.likes || 0,
