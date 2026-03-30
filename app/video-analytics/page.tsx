@@ -1384,9 +1384,16 @@ export default function VideoAnalyticsPage() {
                               <Play size={16} className="text-gray-400" />
                             </div>
                             <div className="min-w-0 max-w-[200px]">
-                              <p className="text-sm font-medium text-gray-800 truncate">
-                                {video.title || "（タイトルなし）"}
-                              </p>
+                              {video.shareUrl ? (
+                                <a href={video.shareUrl} target="_blank" rel="noopener noreferrer"
+                                  className="text-sm font-medium text-blue-600 hover:text-blue-800 truncate block">
+                                  {video.title || `動画 ${video.videoId.slice(-8)}`}
+                                </a>
+                              ) : (
+                                <p className="text-sm font-medium text-gray-800 truncate">
+                                  {video.title || `動画 ${video.videoId.slice(-8)}`}
+                                </p>
+                              )}
                             </div>
                           </div>
                         </td>

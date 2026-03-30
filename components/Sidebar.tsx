@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Upload, Flag, BarChart3 } from "lucide-react";
+import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Users, Flag, BarChart3 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 
@@ -23,9 +23,9 @@ const menuItems = [
     icon: BarChart3,
   },
   {
-    name: "外部データ入稿",
+    name: "アカウントリスト",
     href: "/external-data",
-    icon: Upload,
+    icon: Users,
   },
   {
     name: "フラグ登録",

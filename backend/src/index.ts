@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { chromium } from "playwright";
+import { BigQuery } from "@google-cloud/bigquery";
 
 // Firebase Admin初期化
 // Cloud Run上ではADC（Application Default Credentials）を使用
@@ -10,6 +11,103 @@ if (getApps().length === 0) {
 }
 
 const db = getFirestore();
+
+// BigQuery初期化
+const bigquery = new BigQuery({ projectId: "mall-batch-manager" });
+const BQ_DATASET = "tiktok_analytics";
+const BQ_TABLE_SNAPSHOTS = "video_daily_snapshots";
+const BQ_TABLE_VIDEOS = "videos";
+const BQ_TABLE_ACCOUNTS = "accounts";
+
+// BigQueryへ動画スナップショットを書き込む
+async function insertSnapshotsToBigQuery(
+  snapshots: Array<{
+    videoId: string;
+    accountId: string;
+    productId: string;
+    productName: string;
+    accountName: string;
+    date: string;
+    viewCount: number;
+    likeCount: number;
+    commentCount: number;
+    shareCount: number;
+    createTime: string | null;
+  }>
+): Promise<void> {
+  if (snapshots.length === 0) return;
+
+  const rows = snapshots.map(s => ({
+    video_id: s.videoId,
+    account_id: s.accountId,
+    product_id: s.productId,
+    product_name: s.productName,
+    account_name: s.accountName,
+    snapshot_date: s.date,
+    view_count: s.viewCount,
+    like_count: s.likeCount,
+    comment_count: s.commentCount,
+    share_count: s.shareCount,
+    create_time: s.createTime || null,
+    collected_at: new Date().toISOString(),
+  }));
+
+  // 500件ずつバッチ挿入
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    await bigquery.dataset(BQ_DATASET).table(BQ_TABLE_SNAPSHOTS).insert(batch);
+  }
+  console.log(`Inserted ${rows.length} snapshots to BigQuery`);
+}
+
+// BigQueryへ動画情報を書き込む（upsert的にMERGE）
+async function upsertVideosToBigQuery(
+  videos: Array<{
+    videoId: string;
+    accountId: string;
+    productId: string;
+    tiktokUserId: string;
+    title: string;
+    coverImageUrl: string;
+    shareUrl: string;
+    createTime: string | null;
+    duration: number;
+    viewCount: number;
+    likeCount: number;
+    commentCount: number;
+    shareCount: number;
+  }>
+): Promise<void> {
+  if (videos.length === 0) return;
+
+  // 一時テーブルに挿入してからMERGE
+  const tempTable = `_temp_videos_${Date.now()}`;
+  const rows = videos.map(v => ({
+    video_id: v.videoId,
+    account_id: v.accountId,
+    product_id: v.productId,
+    tiktok_user_id: v.tiktokUserId,
+    title: v.title || "",
+    cover_image_url: v.coverImageUrl || "",
+    share_url: v.shareUrl || "",
+    create_time: v.createTime || null,
+    duration: v.duration || 0,
+    view_count: v.viewCount || 0,
+    like_count: v.likeCount || 0,
+    comment_count: v.commentCount || 0,
+    share_count: v.shareCount || 0,
+    updated_at: new Date().toISOString(),
+  }));
+
+  // 直接挿入（重複は最新のupdated_atで判断可能）
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    await bigquery.dataset(BQ_DATASET).table(BQ_TABLE_VIDEOS).insert(batch);
+  }
+  console.log(`Inserted ${rows.length} videos to BigQuery`);
+}
 const app = express();
 const PORT = process.env.PORT || 8080;
 
@@ -4024,6 +4122,13 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
   };
 
   try {
+    // 商品マスタを取得（BQ書き込み用）
+    const productsSnapshot = await db.collection("registered_products").get();
+    const productNameMap: Record<string, string> = {};
+    productsSnapshot.docs.forEach(doc => {
+      productNameMap[doc.id] = doc.data().productName || "";
+    });
+
     // Step 1: 全TikTokアカウントの動画データを同期
     console.log("Step 1: Syncing all TikTok videos...");
     const accountsSnapshot = await db.collection("tiktok_accounts").get();
@@ -4064,8 +4169,14 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
             console.log(`Updated avatar for account ${accountId}`);
           }
 
-          // 動画リストを取得
-          const videos = await fetchAllTikTokVideos(account.accessToken, account.tiktokUserId);
+          // 動画リストを取得（アカウントIDでoEmbed取得も実行）
+          // tiktokAccountIdがなければprofileUrlから抽出
+          let accountUsername = account.tiktokAccountId || "";
+          if (!accountUsername && account.profileUrl) {
+            const urlMatch = account.profileUrl.match(/@([^/?]+)/);
+            if (urlMatch) accountUsername = urlMatch[1];
+          }
+          const videos = await fetchAllTikTokVideos(account.accessToken, account.tiktokUserId, accountUsername);
 
           // Firestoreに保存（サムネイルURLも更新される）
           await saveTikTokVideosToFirestore(
@@ -4108,15 +4219,27 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
       });
     }
 
-    // Step 2: 全商品の日次スナップショットを保存
+    // Step 2: 全商品の日次スナップショットを保存（Firestore + BigQuery）
     console.log("Step 2: Saving daily snapshots...");
     const today = new Date().toISOString().split('T')[0];
     let totalSnapshots = 0;
+    const allBqSnapshots: Array<{
+      videoId: string; accountId: string; productId: string; productName: string;
+      accountName: string; date: string; viewCount: number; likeCount: number;
+      commentCount: number; shareCount: number; createTime: string | null;
+    }> = [];
+    const allBqVideos: Array<{
+      videoId: string; accountId: string; productId: string; tiktokUserId: string;
+      title: string; coverImageUrl: string; shareUrl: string; createTime: string | null;
+      duration: number; viewCount: number; likeCount: number; commentCount: number; shareCount: number;
+    }> = [];
 
     for (const accountDoc of accountsSnapshot.docs) {
       const accountData = accountDoc.data();
       const accountId = accountDoc.id;
       const productId = accountData.productId;
+      const productName = productNameMap[productId] || "";
+      const accountName = accountData.tiktokUserName || "";
 
       const videosSnapshot = await db.collection("tiktok_videos")
         .where("accountId", "==", accountId)
@@ -4143,15 +4266,54 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
           savedAt: new Date(),
         }, { merge: true });
         totalSnapshots++;
+
+        // BQ用データを蓄積
+        allBqSnapshots.push({
+          videoId, accountId, productId, productName, accountName, date: today,
+          viewCount: video.viewCount || 0, likeCount: video.likeCount || 0,
+          commentCount: video.commentCount || 0, shareCount: video.shareCount || 0,
+          createTime: video.createTime?.toDate?.()?.toISOString() || video.createTime || null,
+        });
+
+        allBqVideos.push({
+          videoId, accountId, productId, tiktokUserId: accountData.tiktokUserId || "",
+          title: video.title || "", coverImageUrl: video.coverImageUrl || "",
+          shareUrl: video.shareUrl || "",
+          createTime: video.createTime?.toDate?.()?.toISOString() || video.createTime || null,
+          duration: video.duration || 0, viewCount: video.viewCount || 0,
+          likeCount: video.likeCount || 0, commentCount: video.commentCount || 0,
+          shareCount: video.shareCount || 0,
+        });
       }
 
       await batch.commit();
+    }
+
+    // Step 3: BigQueryに書き込み
+    console.log("Step 3: Writing to BigQuery...");
+    let bqSnapshotsInserted = 0;
+    let bqVideosInserted = 0;
+    try {
+      await insertSnapshotsToBigQuery(allBqSnapshots);
+      bqSnapshotsInserted = allBqSnapshots.length;
+    } catch (bqError: any) {
+      console.error("BigQuery snapshot insert error:", bqError?.message);
+      batchLog.steps.push({ step: "bq_snapshots", error: bqError?.message });
+    }
+    try {
+      await upsertVideosToBigQuery(allBqVideos);
+      bqVideosInserted = allBqVideos.length;
+    } catch (bqError: any) {
+      console.error("BigQuery video insert error:", bqError?.message);
+      batchLog.steps.push({ step: "bq_videos", error: bqError?.message });
     }
 
     batchLog.steps.push({
       step: "save_snapshots",
       date: today,
       totalSnapshots,
+      bqSnapshotsInserted,
+      bqVideosInserted,
     });
 
     // 完了
@@ -4399,18 +4561,43 @@ app.get("/tiktok/all-videos", async (req: Request, res: Response) => {
   }
 });
 
-// 全TikTokアカウント一覧取得（デバッグ用）
+// 全TikTokアカウント一覧取得（商品名結合済み）
 app.get("/tiktok/all-accounts", async (req: Request, res: Response) => {
   try {
+    // 商品マスタを取得してID→名前マッピングを作成
+    const productsSnapshot = await db.collection("registered_products").get();
+    const productMap: Record<string, string> = {};
+    productsSnapshot.docs.forEach(doc => {
+      productMap[doc.id] = doc.data().productName || "";
+    });
+
     const snapshot = await db.collection("tiktok_accounts").get();
 
-    const accounts = snapshot.docs.map(doc => ({
-      id: doc.id,
-      productId: doc.data().productId,
-      tiktokUserId: doc.data().tiktokUserId,
-      tiktokUserName: doc.data().tiktokUserName,
-      tiktokAvatarUrl: doc.data().tiktokAvatarUrl,
-    }));
+    const accounts = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        productId: data.productId || "",
+        productName: productMap[data.productId] || "",
+        tiktokUserId: data.tiktokUserId || "",
+        tiktokUserName: data.tiktokUserName || "",
+        tiktokAccountId: data.tiktokAccountId || "",
+        tiktokAvatarUrl: data.tiktokAvatarUrl || "",
+        device: data.device || "",
+        email: data.email || "",
+        password: data.password || "",
+        profileUrl: data.profileUrl || "",
+        operator: data.operator || "",
+        accessToken: data.accessToken || "",
+        refreshToken: data.refreshToken || "",
+        followerCount: data.followerCount || null,
+        likeCount: data.likeCount || null,
+        accessTokenExpiresAt: data.accessTokenExpiresAt?.toDate?.() || data.expiresAt?.toDate?.() || null,
+        refreshTokenExpiresAt: data.refreshTokenExpiresAt?.toDate?.() || null,
+        connectedAt: data.connectedAt?.toDate?.() || null,
+        updatedAt: data.updatedAt?.toDate?.() || null,
+      };
+    });
 
     res.json({
       success: true,
@@ -4512,7 +4699,7 @@ async function fetchTikTokUserInfo(accessToken: string, openId: string): Promise
 
 app.post("/tiktok/accounts/register", async (req: Request, res: Response) => {
   try {
-    const { productId, openId, accessToken, userName } = req.body;
+    const { productId, openId, accessToken, userName, refreshToken, device, email, password, operator, profileUrl } = req.body;
 
     // バリデーション
     if (!productId || !openId || !accessToken) {
@@ -4533,6 +4720,20 @@ app.post("/tiktok/accounts/register", async (req: Request, res: Response) => {
       console.log(`Fetched TikTok profile: ${displayName}, avatar: ${avatarUrl}`);
     }
 
+    // 追加フィールド（指定されたもののみ保存）
+    const extraFields: Record<string, unknown> = {};
+    if (refreshToken) extraFields.refreshToken = refreshToken;
+    if (device) extraFields.device = device;
+    if (email) extraFields.email = email;
+    if (password) extraFields.password = password;
+    if (operator) extraFields.operator = operator;
+    if (profileUrl) extraFields.profileUrl = profileUrl;
+    // URLからアカウントIDを自動抽出
+    if (profileUrl) {
+      const match = profileUrl.match(/@([^/?]+)/);
+      if (match) extraFields.tiktokAccountId = match[1];
+    }
+
     // 重複チェック（同じproductIdとopenIdの組み合わせがないか）
     const existingSnapshot = await db.collection("tiktok_accounts")
       .where("productId", "==", productId)
@@ -4547,6 +4748,7 @@ app.post("/tiktok/accounts/register", async (req: Request, res: Response) => {
         tiktokUserName: displayName,
         tiktokAvatarUrl: avatarUrl,
         updatedAt: Timestamp.now(),
+        ...extraFields,
       });
 
       return res.json({
@@ -4566,7 +4768,8 @@ app.post("/tiktok/accounts/register", async (req: Request, res: Response) => {
       tiktokAvatarUrl: avatarUrl,
       accessToken: accessToken,
       connectedAt: Timestamp.now(),
-      registeredManually: true, // 手動登録フラグ
+      registeredManually: true,
+      ...extraFields,
     });
 
     // 動画同期を自動実行
@@ -4717,15 +4920,28 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
     const tiktokConfig = await getTikTokOAuthConfig();
 
     for (const account of accounts) {
-      const { productId, openId, accessToken: originalAccessToken, refreshToken } = account;
+      const { productId, openId, accessToken: originalAccessToken, refreshToken, userName, device, email, password, operator, profileUrl } = account;
       if (!productId || !openId || !originalAccessToken) {
         failed++;
         continue;
       }
 
+      // 追加フィールド
+      const extraFields: Record<string, unknown> = {};
+      if (device) extraFields.device = device;
+      if (email) extraFields.email = email;
+      if (password) extraFields.password = password;
+      if (operator) extraFields.operator = operator;
+      if (profileUrl) extraFields.profileUrl = profileUrl;
+      // URLからアカウントIDを自動抽出
+      if (profileUrl) {
+        const match = profileUrl.match(/@([^/?]+)/);
+        if (match) extraFields.tiktokAccountId = match[1];
+      }
+
       try {
-        // UserInfo APIでプロフィール情報を自動取得
-        let displayName = "Unknown";
+        // UserInfo APIでプロフィール情報を自動取得（userNameが指定されていればフォールバックとして使用）
+        let displayName = userName || "Unknown";
         let avatarUrl = "";
         let currentAccessToken = originalAccessToken;
         let currentRefreshToken = refreshToken || '';
@@ -4790,6 +5006,7 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
             tiktokUserName: displayName,
             tiktokAvatarUrl: avatarUrl,
             updatedAt: Timestamp.now(),
+            ...extraFields,
           });
           accountDocId = existingDoc.id;
           updated++;
@@ -4804,6 +5021,7 @@ app.post("/tiktok/accounts/bulk-register-v2", async (req: Request, res: Response
             refreshToken: currentRefreshToken,
             connectedAt: Timestamp.now(),
             registeredManually: true,
+            ...extraFields,
           });
           accountDocId = newDoc.id;
           registered++;
@@ -4953,6 +5171,300 @@ app.post("/tiktok/accounts/refresh-unknown", async (req: Request, res: Response)
   }
 });
 
+// 認証コードでTikTokアカウント登録（GASのAuthorizeByAuthCodeと同等）
+app.post("/tiktok/accounts/auth-code", async (req: Request, res: Response) => {
+  try {
+    const { authCode, productId, device, email, password, operator } = req.body;
+
+    if (!authCode || !productId) {
+      return res.status(400).json({
+        success: false,
+        message: "authCodeとproductIdは必須です",
+      });
+    }
+
+    // GASと同じBusiness API credentials を使用
+    const TIKTOK_CLIENT_ID = "7457840155068465153";
+    const TIKTOK_CLIENT_SECRET = "49b99b63fb90d9e328de292c21157ee20b616a1e";
+    const TIKTOK_REDIRECT_URI = "https://script.google.com/macros/s/AKfycbyhJNjd9bDrASLwvqW049k40QHZg29ggc_4zZfX_kgNitvD4zKJvb3SXD3CTCQyVm-v/exec";
+
+    const axios = (await import('axios')).default;
+
+    // GASと同じBusiness API v1.3 でトークン交換
+    const tokenResponse = await axios.post(
+      'https://business-api.tiktok.com/open_api/v1.3/tt_user/oauth2/token/',
+      {
+        client_id: TIKTOK_CLIENT_ID,
+        client_secret: TIKTOK_CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        auth_code: authCode,
+        redirect_uri: TIKTOK_REDIRECT_URI,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    const responseData = tokenResponse.data;
+    console.log("TikTok Business API token response:", JSON.stringify(responseData));
+
+    if (responseData.code !== 0 || !responseData.data?.access_token) {
+      console.error("TikTok token error:", responseData);
+      return res.status(400).json({
+        success: false,
+        message: `Token exchange failed: ${responseData.message || JSON.stringify(responseData)}`,
+      });
+    }
+
+    const tokenData = responseData.data;
+    const accessToken = tokenData.access_token;
+    const refreshToken = tokenData.refresh_token;
+    const openId = tokenData.open_id;
+    const expiresIn = tokenData.expires_in;
+    const refreshExpiresIn = tokenData.refresh_token_expires_in;
+
+    // GASと同じAPIでユーザー情報を取得
+    let displayName = "Unknown";
+    let avatarUrl = "";
+    try {
+      const userResponse = await axios.get('https://open-api.tiktok.com/oauth/userinfo/', {
+        params: {
+          access_token: accessToken,
+          open_id: openId,
+        },
+      });
+      const userData = userResponse.data;
+      if (userData.message === "success" && userData.data) {
+        displayName = userData.data.display_name || "Unknown";
+        avatarUrl = userData.data.avatar_url || "";
+      }
+    } catch (userErr: any) {
+      console.error("Failed to fetch user info:", userErr?.message);
+      // フォールバック: fetchTikTokUserInfo（Open API v2）も試す
+      const userInfo = await fetchTikTokUserInfo(accessToken, openId);
+      if (userInfo) {
+        displayName = userInfo.displayName;
+        avatarUrl = userInfo.avatarUrl;
+      }
+    }
+
+    // 追加フィールド
+    const extraFields: Record<string, unknown> = {};
+    if (device) extraFields.device = device;
+    if (email) extraFields.email = email;
+    if (password) extraFields.password = password;
+    if (operator) extraFields.operator = operator;
+
+    // 有効期限を計算
+    const now = Date.now();
+    const accessTokenExpiresAt = expiresIn ? Timestamp.fromMillis(now + expiresIn * 1000) : null;
+    const refreshTokenExpiresAt = refreshExpiresIn ? Timestamp.fromMillis(now + refreshExpiresIn * 1000) : null;
+
+    // 重複チェック（同じproductIdとopenIdの組み合わせ）
+    const existingSnapshot = await db.collection("tiktok_accounts")
+      .where("productId", "==", productId)
+      .where("tiktokUserId", "==", openId)
+      .get();
+
+    if (!existingSnapshot.empty) {
+      const existingDoc = existingSnapshot.docs[0];
+      const updateData: Record<string, unknown> = {
+        accessToken,
+        refreshToken: refreshToken || "",
+        tiktokUserName: displayName,
+        tiktokAvatarUrl: avatarUrl,
+        updatedAt: Timestamp.now(),
+        ...extraFields,
+      };
+      if (accessTokenExpiresAt) updateData.accessTokenExpiresAt = accessTokenExpiresAt;
+      if (refreshTokenExpiresAt) updateData.refreshTokenExpiresAt = refreshTokenExpiresAt;
+
+      await existingDoc.ref.update(updateData);
+
+      return res.json({
+        success: true,
+        message: "既存アカウントを更新しました",
+        accountId: existingDoc.id,
+        updated: true,
+        profile: { displayName, avatarUrl },
+      });
+    }
+
+    // 新規登録
+    const newData: Record<string, unknown> = {
+      productId,
+      tiktokUserId: openId,
+      tiktokUserName: displayName,
+      tiktokAvatarUrl: avatarUrl,
+      accessToken,
+      refreshToken: refreshToken || "",
+      connectedAt: Timestamp.now(),
+      ...extraFields,
+    };
+    if (accessTokenExpiresAt) newData.accessTokenExpiresAt = accessTokenExpiresAt;
+    if (refreshTokenExpiresAt) newData.refreshTokenExpiresAt = refreshTokenExpiresAt;
+
+    const accountDoc = await db.collection("tiktok_accounts").add(newData);
+
+    // 動画同期を自動実行
+    let videoCount = 0;
+    try {
+      const videos = await fetchAllTikTokVideos(accessToken, openId);
+      if (videos.length > 0) {
+        await saveTikTokVideosToFirestore(accountDoc.id, openId, productId, videos);
+        await db.collection("tiktok_accounts").doc(accountDoc.id).update({
+          lastVideoSyncAt: Timestamp.now(),
+          totalVideos: videos.length,
+        });
+        videoCount = videos.length;
+      }
+    } catch (syncErr) {
+      console.error(`Error syncing videos for auth-code account ${openId}:`, syncErr);
+    }
+
+    res.json({
+      success: true,
+      message: `アカウントを登録しました（動画${videoCount}件を同期）`,
+      accountId: accountDoc.id,
+      updated: false,
+      profile: { displayName, avatarUrl },
+      videoCount,
+    });
+
+  } catch (error: any) {
+    console.error("Error registering TikTok account by auth code:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "認証コードによるアカウント登録に失敗しました",
+      error: error?.response?.data?.error_description || error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTokアカウントのトークンリフレッシュ（GASのRefreshAuthorizationと同等）
+app.post("/tiktok/accounts/:accountId/refresh", async (req: Request, res: Response) => {
+  try {
+    const accountId = req.params.accountId;
+
+    // Firestoreからアカウント情報を取得
+    const accountDoc = await db.collection("tiktok_accounts").doc(accountId).get();
+    if (!accountDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
+    }
+
+    const accountData = accountDoc.data()!;
+    const currentRefreshToken = accountData.refreshToken;
+    if (!currentRefreshToken) {
+      return res.status(400).json({
+        success: false,
+        message: "リフレッシュトークンが登録されていません",
+      });
+    }
+
+    // GASと同じBusiness API credentials
+    const TIKTOK_CLIENT_ID = "7457840155068465153";
+    const TIKTOK_CLIENT_SECRET = "49b99b63fb90d9e328de292c21157ee20b616a1e";
+
+    const axios = (await import('axios')).default;
+
+    // GASと同じBusiness API v1.3 でリフレッシュ
+    const tokenResponse = await axios.post(
+      'https://business-api.tiktok.com/open_api/v1.3/tt_user/oauth2/refresh_token/',
+      {
+        client_id: TIKTOK_CLIENT_ID,
+        client_secret: TIKTOK_CLIENT_SECRET,
+        grant_type: 'refresh_token',
+        refresh_token: currentRefreshToken,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    const responseData = tokenResponse.data;
+    if (responseData.code !== 0 || !responseData.data?.access_token) {
+      console.error("TikTok refresh token error:", responseData);
+      return res.status(400).json({
+        success: false,
+        message: `Token refresh failed: ${responseData.message || JSON.stringify(responseData)}`,
+      });
+    }
+
+    const tokenData = responseData.data;
+    const now = Date.now();
+    const updateData: Record<string, unknown> = {
+      accessToken: tokenData.access_token,
+      updatedAt: Timestamp.now(),
+    };
+    if (tokenData.refresh_token) {
+      updateData.refreshToken = tokenData.refresh_token;
+    }
+    if (tokenData.expires_in) {
+      updateData.accessTokenExpiresAt = Timestamp.fromMillis(now + tokenData.expires_in * 1000);
+    }
+    if (tokenData.refresh_token_expires_in) {
+      updateData.refreshTokenExpiresAt = Timestamp.fromMillis(now + tokenData.refresh_token_expires_in * 1000);
+    }
+
+    await db.collection("tiktok_accounts").doc(accountId).update(updateData);
+
+    res.json({
+      success: true,
+      message: "トークンをリフレッシュしました",
+      accessTokenExpiresAt: tokenData.expires_in ? new Date(now + tokenData.expires_in * 1000).toISOString() : null,
+    });
+
+  } catch (error: any) {
+    console.error("Error refreshing TikTok token:", error?.response?.data || error);
+    res.status(500).json({
+      success: false,
+      message: "トークンのリフレッシュに失敗しました",
+      error: error?.response?.data?.error_description || error?.message || "Unknown error",
+    });
+  }
+});
+
+// TikTokデータ全削除（アカウント+動画+スナップショット）
+app.post("/tiktok/delete-all", async (req: Request, res: Response) => {
+  try {
+    const { includeProducts } = req.body || {};
+    const collections = ["tiktok_accounts", "tiktok_videos", "tiktok_video_daily_snapshots"];
+    if (includeProducts) collections.push("registered_products");
+    const results: Record<string, number> = {};
+
+    for (const colName of collections) {
+      let deleted = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const snapshot = await db.collection(colName).limit(500).get();
+        if (snapshot.empty) {
+          hasMore = false;
+          break;
+        }
+        const batch = db.batch();
+        snapshot.docs.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+        deleted += snapshot.size;
+        console.log(`${colName}: ${deleted} deleted so far`);
+      }
+      results[colName] = deleted;
+    }
+
+    console.log("All TikTok data deleted:", results);
+    res.json({ success: true, message: "全データを削除しました", results });
+  } catch (error: any) {
+    console.error("Error deleting all TikTok data:", error);
+    res.status(500).json({ success: false, message: "Deletion failed", error: error?.message });
+  }
+});
+
 // TikTokアカウント削除
 app.delete("/tiktok/accounts/:accountId", async (req: Request, res: Response) => {
   try {
@@ -4979,24 +5491,32 @@ app.delete("/tiktok/accounts/:accountId", async (req: Request, res: Response) =>
 app.put("/tiktok/accounts/:accountId/tokens", async (req: Request, res: Response) => {
   try {
     const accountId = req.params.accountId;
-    const { accessToken, refreshToken } = req.body;
+    const { accessToken, refreshToken, tiktokUserId, device, email, password, operator, profileUrl } = req.body;
 
-    if (!accessToken && !refreshToken) {
-      return res.status(400).json({
-        success: false,
-        message: "accessTokenまたはrefreshTokenが必要です",
-      });
-    }
-
-    const updateData: any = {
+    const updateData: Record<string, unknown> = {
       updatedAt: Timestamp.now(),
     };
 
-    if (accessToken) {
-      updateData.accessToken = accessToken;
+    if (tiktokUserId) updateData.tiktokUserId = tiktokUserId;
+    if (accessToken) updateData.accessToken = accessToken;
+    if (refreshToken) updateData.refreshToken = refreshToken;
+    if (device !== undefined) updateData.device = device;
+    if (email !== undefined) updateData.email = email;
+    if (password !== undefined) updateData.password = password;
+    if (operator !== undefined) updateData.operator = operator;
+    if (profileUrl !== undefined) {
+      updateData.profileUrl = profileUrl;
+      // URLからアカウントIDを自動抽出
+      const match = profileUrl.match(/@([^/?]+)/);
+      if (match) updateData.tiktokAccountId = match[1];
     }
-    if (refreshToken) {
-      updateData.refreshToken = refreshToken;
+
+    // 更新するフィールドがupdatedAtだけなら何もしない
+    if (Object.keys(updateData).length <= 1) {
+      return res.status(400).json({
+        success: false,
+        message: "更新するフィールドがありません",
+      });
     }
 
     await db.collection("tiktok_accounts").doc(accountId).update(updateData);
@@ -5156,63 +5676,136 @@ app.get("/settings/tiktok-oauth", async (req: Request, res: Response) => {
 // TikTok動画リストを取得する関数（ページネーション対応）
 async function fetchAllTikTokVideos(
   accessToken: string,
-  openId: string
+  openId: string,
+  tiktokAccountId?: string
 ): Promise<any[]> {
   const axios = (await import('axios')).default;
   const allVideos: any[] = [];
-  let cursor = 0;
+
+  // GASと同じBusiness API を使用してエンゲージメント付き動画一覧を取得
+  // video_view_retention を含める（GASのengagementFieldsと同じ）
+  const fields = [
+    "item_id", "likes", "comments", "shares", "favorites",
+    "video_duration", "reach", "video_views",
+    "total_time_watched", "average_time_watched",
+    "full_video_watched_rate", "new_followers", "profile_views",
+    "video_view_retention"
+  ];
+
+  let cursor = "";
   let hasMore = true;
-  const maxCount = 20; // 1回のリクエストで取得する件数
 
   while (hasMore) {
     try {
-      console.log(`Fetching TikTok videos: cursor=${cursor}`);
+      console.log(`Fetching TikTok videos via Business API: cursor=${cursor || 'start'}`);
 
-      // TikTok Video List API
-      // https://developers.tiktok.com/doc/research-api-specs-query-videos/
-      const response = await axios.post(
-        'https://open.tiktokapis.com/v2/video/list/',
-        {
-          max_count: maxCount,
-          cursor: cursor,
-        },
+      // Business API: GET /business/video/list/
+      const params: Record<string, string> = {
+        business_id: openId,
+        fields: JSON.stringify(fields),
+      };
+      if (cursor) {
+        params.cursor = cursor;
+      }
+
+      const response = await axios.get(
+        'https://business-api.tiktok.com/open_api/v1.3/business/video/list/',
         {
           headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Access-Token': accessToken,
             'Content-Type': 'application/json',
           },
-          params: {
-            fields: 'id,title,cover_image_url,embed_html,embed_link,share_url,create_time,duration,view_count,like_count,comment_count,share_count,visibility',
-          },
+          params,
         }
       );
 
-      const data = response.data?.data;
-      if (data?.videos && Array.isArray(data.videos)) {
-        // 公開動画のみフィルタリング（非公開・フォロワー限定などを除外）
-        const publicVideos = data.videos.filter((v: any) =>
-          v.visibility === 'PUBLIC_TO_EVERYONE' || !v.visibility
-        );
-        allVideos.push(...publicVideos);
-        console.log(`Fetched ${data.videos.length} videos (${publicVideos.length} public), total: ${allVideos.length}`);
+      const json = response.data;
+
+      if (json.code !== 0) {
+        console.error('Business API error:', json);
+        hasMore = false;
+        break;
       }
 
-      // ページネーション制御
+      const data = json.data;
+      if (data?.videos && Array.isArray(data.videos)) {
+        // Business APIのレスポンスを変換
+        const converted = data.videos.map((v: any) => {
+          // 視聴維持率の抽出（GASと同じ方式）
+          const retentionData = v.video_view_retention || [];
+          const retention1s = retentionData.find((r: any) => r.second === "1" || r.second === 1);
+          const retention2s = retentionData.find((r: any) => r.second === "2" || r.second === 2);
+
+          return {
+            id: v.item_id,
+            videoId: v.item_id,
+            title: "",
+            cover_image_url: "",
+            share_url: `https://www.tiktok.com/video/${v.item_id}`,
+            create_time: null,
+            duration: v.video_duration || 0,
+            view_count: v.video_views || 0,
+            like_count: v.likes || 0,
+            comment_count: v.comments || 0,
+            share_count: v.shares || 0,
+            favorites: v.favorites || 0,
+            reach: v.reach || 0,
+            total_time_watched: v.total_time_watched || 0,
+            average_time_watched: v.average_time_watched || 0,
+            full_video_watched_rate: v.full_video_watched_rate || 0,
+            new_followers: v.new_followers || 0,
+            profile_views: v.profile_views || 0,
+            // 視聴維持率
+            retention1s: retention1s ? retention1s.percentage : null,
+            retention2s: retention2s ? retention2s.percentage : null,
+          };
+        });
+        allVideos.push(...converted);
+        console.log(`Fetched ${data.videos.length} videos, total: ${allVideos.length}`);
+      }
+
+      // ページネーション
       hasMore = data?.has_more === true;
-      if (hasMore && data?.cursor !== undefined) {
+      if (hasMore && data?.cursor) {
         cursor = data.cursor;
       } else {
         hasMore = false;
       }
 
-      // レート制限対策: 少し待機
+      // レート制限対策
       await new Promise(resolve => setTimeout(resolve, 500));
 
     } catch (error: any) {
       console.error('Error fetching TikTok videos:', error?.response?.data || error?.message);
-      // エラーが発生してもループを終了
       hasMore = false;
     }
+  }
+
+  // oEmbed APIでタイトル・サムネ・share_urlを取得
+  if (tiktokAccountId && allVideos.length > 0) {
+    console.log(`Fetching oEmbed data for ${allVideos.length} videos (@${tiktokAccountId})...`);
+    for (const video of allVideos) {
+      try {
+        const videoUrl = `https://www.tiktok.com/@${tiktokAccountId}/video/${video.id}`;
+        const oembedRes = await axios.get('https://www.tiktok.com/oembed', {
+          params: { url: videoUrl },
+          timeout: 5000,
+        });
+        const oembed = oembedRes.data;
+        if (oembed) {
+          video.title = oembed.title || "";
+          video.cover_image_url = oembed.thumbnail_url || "";
+          video.share_url = videoUrl;
+        }
+      } catch (err: any) {
+        // oEmbed失敗は無視（動画が非公開等）
+        video.share_url = `https://www.tiktok.com/@${tiktokAccountId}/video/${video.id}`;
+        console.log(`oEmbed failed for ${video.id}: ${err?.message}`);
+      }
+      // レート制限対策
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    console.log(`oEmbed data fetched for ${allVideos.length} videos`);
   }
 
   return allVideos;
@@ -5256,6 +5849,10 @@ async function saveTikTokVideosToFirestore(
       likeCount: video.like_count || 0,
       commentCount: video.comment_count || 0,
       shareCount: video.share_count || 0,
+      // 視聴維持率
+      retention1s: video.retention1s != null ? (video.retention1s > 1 ? video.retention1s : video.retention1s * 100) : null,
+      retention2s: video.retention2s != null ? (video.retention2s > 1 ? video.retention2s : video.retention2s * 100) : null,
+      fullVideoWatchedRate: video.full_video_watched_rate != null ? (video.full_video_watched_rate > 1 ? video.full_video_watched_rate : video.full_video_watched_rate * 100) : null,
       // 公開設定
       visibility: video.visibility || 'PUBLIC_TO_EVERYONE',
       // メタデータ
@@ -5263,13 +5860,18 @@ async function saveTikTokVideosToFirestore(
     };
 
     if (existingDoc.exists) {
-      // 既存の場合は統計データとサムネイルURLを更新
+      // 既存の場合は統計データ + メタデータを更新
       batch.update(docRef, {
+        title: videoData.title || existingDoc.data()?.title || '',
+        coverImageUrl: videoData.coverImageUrl || existingDoc.data()?.coverImageUrl || '',
+        shareUrl: videoData.shareUrl || existingDoc.data()?.shareUrl || '',
         viewCount: videoData.viewCount,
         likeCount: videoData.likeCount,
         commentCount: videoData.commentCount,
         shareCount: videoData.shareCount,
-        coverImageUrl: videoData.coverImageUrl, // サムネイルURLも更新（期限切れ対策）
+        retention1s: videoData.retention1s,
+        retention2s: videoData.retention2s,
+        fullVideoWatchedRate: videoData.fullVideoWatchedRate,
         lastFetchedAt: videoData.lastFetchedAt,
       });
       updated++;
