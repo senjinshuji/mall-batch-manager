@@ -5853,7 +5853,7 @@ async function saveTikTokVideosToFirestore(
       embedLink: video.embed_link || '',
       shareUrl: video.share_url || '',
       duration: video.duration || 0,
-      createTime: video.create_time ? new Date(video.create_time * 1000) : null,
+      createTime: video.create_time ? (typeof video.create_time === 'string' ? new Date(video.create_time) : new Date(video.create_time * 1000)) : null,
       // 統計データ
       viewCount: video.view_count || 0,
       likeCount: video.like_count || 0,
@@ -5875,6 +5875,7 @@ async function saveTikTokVideosToFirestore(
         title: videoData.title || existingDoc.data()?.title || '',
         coverImageUrl: videoData.coverImageUrl || existingDoc.data()?.coverImageUrl || '',
         shareUrl: videoData.shareUrl || existingDoc.data()?.shareUrl || '',
+        createTime: videoData.createTime || existingDoc.data()?.createTime || null,
         viewCount: videoData.viewCount,
         likeCount: videoData.likeCount,
         commentCount: videoData.commentCount,
