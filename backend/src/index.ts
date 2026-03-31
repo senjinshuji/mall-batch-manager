@@ -4221,7 +4221,9 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
 
     // Step 2: 全商品の日次スナップショットを保存（Firestore + BigQuery）
     console.log("Step 2: Saving daily snapshots...");
-    const today = new Date().toISOString().split('T')[0];
+    // JSTで今日の日付を取得（UTC+9）
+    const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const today = nowJST.toISOString().split('T')[0];
     let totalSnapshots = 0;
     const allBqSnapshots: Array<{
       videoId: string; accountId: string; productId: string; productName: string;
