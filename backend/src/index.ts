@@ -4563,6 +4563,25 @@ app.get("/tiktok/all-videos", async (req: Request, res: Response) => {
   }
 });
 
+// スナップショット確認用API
+app.get("/tiktok/snapshots/:date", async (req: Request, res: Response) => {
+  try {
+    const date = req.params.date;
+    const snapshot = await db.collection("tiktok_video_daily_snapshots")
+      .where("date", "==", date)
+      .get();
+
+    const docs = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    res.json({ success: true, date, count: docs.length, snapshots: docs });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message });
+  }
+});
+
 // 全TikTokアカウント一覧取得（商品名結合済み）
 app.get("/tiktok/all-accounts", async (req: Request, res: Response) => {
   try {

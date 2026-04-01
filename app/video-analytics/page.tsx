@@ -22,7 +22,12 @@ const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northe
 
 // デフォルト開始日を取得（スナップショット保存開始日）
 function getDefaultStartDate(): string {
-  return "2025-12-01";
+  const d = new Date();
+  d.setDate(d.getDate() - 7);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 // デフォルト終了日を取得（本日）
@@ -279,9 +284,9 @@ export default function VideoAnalyticsPage() {
       setSummaries(summaryList);
 
       // 4. 日次推移データ（スナップショットから差分計算）
-      const prevDay = new Date(startDate);
+      const prevDay = new Date(startDate + "T00:00:00");
       prevDay.setDate(prevDay.getDate() - 1);
-      const prevDayStr = prevDay.toISOString().split("T")[0];
+      const prevDayStr = `${prevDay.getFullYear()}-${String(prevDay.getMonth() + 1).padStart(2, "0")}-${String(prevDay.getDate()).padStart(2, "0")}`;
 
       // productIdのみでクエリし、日付はクライアント側でフィルタ（複合インデックス不要）
       const snapshotsSnapshot = await getDocs(
@@ -363,12 +368,15 @@ export default function VideoAnalyticsPage() {
         s.totalSales = s.qoo10Sales + s.rakutenSales + s.amazonSales;
       }
 
-      // 日付リスト生成
+      // 日付リスト生成（ローカルタイムで）
       const dateList: string[] = [];
-      const cur = new Date(startDate);
-      const endObj = new Date(endDate);
+      const cur = new Date(startDate + "T00:00:00");
+      const endObj = new Date(endDate + "T00:00:00");
       while (cur <= endObj) {
-        dateList.push(cur.toISOString().split("T")[0]);
+        const y = cur.getFullYear();
+        const m = String(cur.getMonth() + 1).padStart(2, "0");
+        const d = String(cur.getDate()).padStart(2, "0");
+        dateList.push(`${y}-${m}-${d}`);
         cur.setDate(cur.getDate() + 1);
       }
 
@@ -378,11 +386,12 @@ export default function VideoAnalyticsPage() {
         const todaySnap = snapshotsByDate[date] || { views: 0, likes: 0, comments: 0, shares: 0 };
         const prevSnap = snapshotsByDate[prevDate] || { views: 0, likes: 0, comments: 0, shares: 0 };
 
-        const diffViews = Math.max(0, todaySnap.views - prevSnap.views);
-        const diffLikes = Math.max(0, todaySnap.likes - prevSnap.likes);
-        const diffComments = Math.max(0, todaySnap.comments - prevSnap.comments);
-        const diffShares = Math.max(0, todaySnap.shares - prevSnap.shares);
-        const er = diffViews > 0 ? ((diffLikes + diffComments + diffShares) / diffViews) * 100 : 0;
+        const diffViews = todaySnap.views - prevSnap.views;
+        const diffLikes = todaySnap.likes - prevSnap.likes;
+        const diffComments = todaySnap.comments - prevSnap.comments;
+        const diffShares = todaySnap.shares - prevSnap.shares;
+        const absDiffViews = Math.abs(diffViews);
+        const er = absDiffViews > 0 ? ((Math.abs(diffLikes) + Math.abs(diffComments) + Math.abs(diffShares)) / absDiffViews) * 100 : 0;
 
         const sales = salesDailyMap[date] || { qoo10Sales: 0, rakutenSales: 0, amazonSales: 0, totalSales: 0 };
 
