@@ -296,11 +296,16 @@ export default function VideoAnalyticsPage() {
         )
       );
 
+      // endDateの翌日のスナップショットも必要（当日の再生数 = 翌日snap - 当日snap）
+      const endDateNext = new Date(endDate + "T00:00:00");
+      endDateNext.setDate(endDateNext.getDate() + 1);
+      const endDateNextStr = `${endDateNext.getFullYear()}-${String(endDateNext.getMonth() + 1).padStart(2, "0")}-${String(endDateNext.getDate()).padStart(2, "0")}`;
+
       const snapshotsByDate: { [date: string]: { views: number; likes: number; comments: number; shares: number } } = {};
       for (const doc of snapshotsSnapshot.docs) {
         const snap = doc.data();
         const date = snap.date;
-        if (date < prevDayStr || date > endDate) continue;
+        if (date < startDate || date > endDateNextStr) continue;
         if (!snapshotsByDate[date]) {
           snapshotsByDate[date] = { views: 0, likes: 0, comments: 0, shares: 0 };
         }
@@ -380,16 +385,24 @@ export default function VideoAnalyticsPage() {
         cur.setDate(cur.getDate() + 1);
       }
 
-      // 差分計算
-      const dailyData: DailyTrendData[] = dateList.map((date, index) => {
-        const prevDate = index === 0 ? prevDayStr : dateList[index - 1];
-        const todaySnap = snapshotsByDate[date] || { views: 0, likes: 0, comments: 0, shares: 0 };
-        const prevSnap = snapshotsByDate[prevDate] || { views: 0, likes: 0, comments: 0, shares: 0 };
+      // 差分計算（4/1の再生数 = snap[4/2] - snap[4/1]。翌日AM1時のバッチで取得した累計との差分が当日分）
+      // 翌日の日付を計算するヘルパー
+      const getNextDate = (dateStr: string): string => {
+        const d = new Date(dateStr + "T00:00:00");
+        d.setDate(d.getDate() + 1);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      };
 
-        const diffViews = todaySnap.views - prevSnap.views;
-        const diffLikes = todaySnap.likes - prevSnap.likes;
-        const diffComments = todaySnap.comments - prevSnap.comments;
-        const diffShares = todaySnap.shares - prevSnap.shares;
+      const dailyData: DailyTrendData[] = dateList.map((date) => {
+        const nextDate = getNextDate(date);
+        const todaySnap = snapshotsByDate[date] || { views: 0, likes: 0, comments: 0, shares: 0 };
+        const nextSnap = snapshotsByDate[nextDate] || null;
+
+        // 翌日のスナップショットがなければまだ集計されていない（0表示）
+        const diffViews = nextSnap ? nextSnap.views - todaySnap.views : 0;
+        const diffLikes = nextSnap ? nextSnap.likes - todaySnap.likes : 0;
+        const diffComments = nextSnap ? nextSnap.comments - todaySnap.comments : 0;
+        const diffShares = nextSnap ? nextSnap.shares - todaySnap.shares : 0;
         const absDiffViews = Math.abs(diffViews);
         const er = absDiffViews > 0 ? ((Math.abs(diffLikes) + Math.abs(diffComments) + Math.abs(diffShares)) / absDiffViews) * 100 : 0;
 
