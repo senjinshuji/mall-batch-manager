@@ -809,70 +809,47 @@ export default function ProductsPage() {
             return cleaned.replace(/\//g, "-");
           };
 
-          if (isSimpleFormat) {
-            // シンプル形式: A列=日付, B列=売上
-            parsedData.push({
-              date: normalizeDate(values[0]),
-              salesAmount: parseAmount(values[1]),
-              salesAmountB2B: "0",
-              orderedUnits: "0",
-              orderedUnitsB2B: "0",
-              totalOrderItems: "0",
-              totalOrderItemsB2B: "0",
-              pageViews: "0",
-              pageViewsB2B: "0",
-              sessions: "0",
-              sessionsB2B: "0",
-              buyBoxPercentage: "0",
-              buyBoxPercentageB2B: "0",
-              unitSessionPercentage: "0",
-              unitSessionPercentageB2B: "0",
-              averageOfferCount: "0",
-              averageParentItems: "0",
-            });
-          } else if (columnIndexes["date"] !== undefined) {
-            // ヘッダーベースのマッピング
-            parsedData.push({
-              date: normalizeDate(values[columnIndexes["date"]] || ""),
-              salesAmount: parseAmount(values[columnIndexes["salesAmount"]]),
-              salesAmountB2B: parseAmount(values[columnIndexes["salesAmountB2B"]]),
-              orderedUnits: parseAmount(values[columnIndexes["orderedUnits"]]),
-              orderedUnitsB2B: parseAmount(values[columnIndexes["orderedUnitsB2B"]]),
-              totalOrderItems: parseAmount(values[columnIndexes["totalOrderItems"]]),
-              totalOrderItemsB2B: parseAmount(values[columnIndexes["totalOrderItemsB2B"]]),
-              pageViews: parseAmount(values[columnIndexes["pageViews"]]),
-              pageViewsB2B: parseAmount(values[columnIndexes["pageViewsB2B"]]),
-              sessions: parseAmount(values[columnIndexes["sessions"]]),
-              sessionsB2B: parseAmount(values[columnIndexes["sessionsB2B"]]),
-              buyBoxPercentage: values[columnIndexes["buyBoxPercentage"]] || "0",
-              buyBoxPercentageB2B: values[columnIndexes["buyBoxPercentageB2B"]] || "0",
-              unitSessionPercentage: values[columnIndexes["unitSessionPercentage"]] || "0",
-              unitSessionPercentageB2B: values[columnIndexes["unitSessionPercentageB2B"]] || "0",
-              averageOfferCount: parseAmount(values[columnIndexes["averageOfferCount"]]),
-              averageParentItems: parseAmount(values[columnIndexes["averageParentItems"]]),
-            });
-          } else {
-            // 位置ベースのマッピング（Amazon詳細フォーマット）
-            parsedData.push({
-              date: normalizeDate(values[0]),
-              salesAmount: parseAmount(values[1]),
-              salesAmountB2B: parseAmount(values[2]),
-              orderedUnits: parseAmount(values[3]),
-              orderedUnitsB2B: parseAmount(values[4]),
-              totalOrderItems: parseAmount(values[5]),
-              totalOrderItemsB2B: parseAmount(values[6]),
-              pageViews: parseAmount(values[7]),
-              pageViewsB2B: parseAmount(values[8]),
-              sessions: parseAmount(values[9]),
-              sessionsB2B: parseAmount(values[10]),
-              buyBoxPercentage: values[11] || "0",
-              buyBoxPercentageB2B: values[12] || "0",
-              unitSessionPercentage: values[13] || "0",
-              unitSessionPercentageB2B: values[14] || "0",
-              averageOfferCount: parseAmount(values[15]),
-              averageParentItems: parseAmount(values[16]),
-            });
-          }
+          // 日付を取得（ヘッダーマッピングがあればそれを使う、なければ0列目）
+          const dateColIdx = columnIndexes["date"] ?? 0;
+          const date = normalizeDate(values[dateColIdx] || "");
+          if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+
+          // 売上額を取得（ヘッダーマッピングがあればそれを使う）
+          const salesColIdx = columnIndexes["salesAmount"];
+          const salesAmount = salesColIdx !== undefined
+            ? parseAmount(values[salesColIdx])
+            : (isSimpleFormat ? parseAmount(values[1]) : parseAmount(values[1]));
+
+          // 各フィールドをヘッダーから取得（あれば）、なければ"0"
+          const getField = (field: string, fallbackIdx?: number): string => {
+            if (columnIndexes[field] !== undefined) return parseAmount(values[columnIndexes[field]]);
+            if (fallbackIdx !== undefined && values[fallbackIdx]) return parseAmount(values[fallbackIdx]);
+            return "0";
+          };
+          const getFieldRaw = (field: string): string => {
+            if (columnIndexes[field] !== undefined) return values[columnIndexes[field]] || "0";
+            return "0";
+          };
+
+          parsedData.push({
+            date,
+            salesAmount,
+            salesAmountB2B: getField("salesAmountB2B"),
+            orderedUnits: getField("orderedUnits"),
+            orderedUnitsB2B: getField("orderedUnitsB2B"),
+            totalOrderItems: getField("totalOrderItems"),
+            totalOrderItemsB2B: getField("totalOrderItemsB2B"),
+            pageViews: getField("pageViews"),
+            pageViewsB2B: getField("pageViewsB2B"),
+            sessions: getField("sessions"),
+            sessionsB2B: getField("sessionsB2B"),
+            buyBoxPercentage: getFieldRaw("buyBoxPercentage"),
+            buyBoxPercentageB2B: getFieldRaw("buyBoxPercentageB2B"),
+            unitSessionPercentage: getFieldRaw("unitSessionPercentage"),
+            unitSessionPercentageB2B: getFieldRaw("unitSessionPercentageB2B"),
+            averageOfferCount: getField("averageOfferCount"),
+            averageParentItems: getField("averageParentItems"),
+          });
         }
 
         if (parsedData.length === 0) {
