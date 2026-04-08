@@ -607,7 +607,7 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
                 </div>
               )}
 
-              {csvPreview.length > 0 && csvErrors.length === 0 && (
+              {csvPreview.length > 0 && (
                 <div>
                   <p className="text-xs text-gray-500 mb-2">プレビュー（先頭{csvPreview.length}件）</p>
                   <div className="overflow-x-auto">
