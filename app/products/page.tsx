@@ -1204,10 +1204,36 @@ export default function ProductsPage() {
           return;
         }
 
-        // ヘッダー行検出
+        // ダブルクォート対応CSVパーサー
+        const parseQoo10Line = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') inQuotes = !inQuotes;
+            else if (ch === ',' && !inQuotes) { result.push(current.trim().replace(/^["']|["']$/g, "")); current = ""; }
+            else current += ch;
+          }
+          result.push(current.trim().replace(/^["']|["']$/g, ""));
+          return result;
+        };
+
+        // ヘッダー行検出: 「受注金額」「開始日」「日付」を含む行を探す
         let qoo10HeaderIdx = 0;
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes("日付") || lines[i].toLowerCase().includes("date")) { qoo10HeaderIdx = i; break; }
+        let salesColIdx = 1; // デフォルト: 2列目
+        for (let i = 0; i < Math.min(lines.length, 5); i++) {
+          const cols = parseQoo10Line(lines[i]);
+          const idx = cols.findIndex(c => c === "受注金額");
+          if (idx !== -1) {
+            qoo10HeaderIdx = i;
+            salesColIdx = idx;
+            break;
+          }
+          if (cols.some(c => c === "開始日" || c === "日付" || c.toLowerCase() === "date")) {
+            qoo10HeaderIdx = i;
+            break;
+          }
         }
 
         const normQoo10Date = (d: string): string => {
@@ -1222,11 +1248,15 @@ export default function ProductsPage() {
           return cleaned.replace(/\//g, "-");
         };
 
+        const parseQoo10Amount = (val: string): string => {
+          if (!val) return "0";
+          return val.replace(/[¥￥,\s]/g, "") || "0";
+        };
+
         const parsedData = [];
 
         for (let i = qoo10HeaderIdx + 1; i < lines.length; i++) {
-          const line = lines[i];
-          const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
+          const values = parseQoo10Line(lines[i]);
 
           if (values.length < 1 || !values[0]) {
             continue;
@@ -1234,8 +1264,8 @@ export default function ProductsPage() {
 
           parsedData.push({
             date: normQoo10Date(values[0]),
-            sales: values[1] || "0",
-            units: values[2] || "0",
+            sales: parseQoo10Amount(values[salesColIdx]),
+            units: values[salesColIdx + 1] || "0",
           });
         }
 
@@ -2791,8 +2821,8 @@ export default function ProductsPage() {
 
                 <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
                   <p className="font-medium mb-1">対応フォーマット:</p>
-                  <p className="text-xs text-gray-500">ヘッダー行に「日付」を含む3列CSV（日付, 売上, 個数）</p>
-                  <p className="text-xs text-gray-500">日付は M/D, YYYY/MM/DD, YYYY/M/D いずれも対応</p>
+                  <p className="text-xs text-gray-500">A列に開始日（日付）、ヘッダーに「受注金額」を含むCSV</p>
+                  <p className="text-xs text-gray-500">Qoo10の売上データCSVをそのままアップロードできます</p>
                 </div>
               </div>
             </div>
