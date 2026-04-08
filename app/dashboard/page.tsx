@@ -130,8 +130,9 @@ export default function DashboardPage() {
 
   const [startDate, setStartDate] = useState(thirtyDaysAgo.toISOString().split("T")[0]);
   const [endDate, setEndDate] = useState(today.toISOString().split("T")[0]);
+  const DEFAULT_ON_CHANNELS = new Set(["Amazon", "楽天", "Qoo10"]);
   const [selectedChannels, setSelectedChannels] = useState<Record<string, boolean>>(
-    Object.fromEntries(ALL_CHANNELS.map(c => [c.key, true]))
+    Object.fromEntries(ALL_CHANNELS.map(c => [c.key, DEFAULT_ON_CHANNELS.has(c.key)]))
   );
   const [showViews, setShowViews] = useState(true);
   // 旧互換エイリアス
@@ -462,9 +463,7 @@ export default function DashboardPage() {
                 const data = doc.data();
                 // mall === "amazon" かつ 日付範囲内をフィルタ
                 if (data.mall === "amazon" && data.date >= startDate && data.date <= endDate) {
-                  if (!allSalesData[data.date]) {
-                    allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                  }
+                  ensureDate(data.date);
                   addSales(data.date, "Amazon", data.sales || 0, data.quantity || 0);
                 }
               });
