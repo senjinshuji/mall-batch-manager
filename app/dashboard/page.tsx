@@ -507,35 +507,48 @@ export default function DashboardPage() {
         }
 
         // 楽天のデータを取得
-        if (product.rakutenCode) {
-          try {
+        // 1. まずrakuten_daily_salesコレクションからproductIdで取得（CSV入稿データ）
+        try {
+          let rakutenDataFound = false;
+          const rakutenDailySalesQuery = query(
+            collection(db, "rakuten_daily_sales"),
+            where("productId", "==", product.id),
+          );
+          const rakutenDailySalesSnapshot = await getDocs(rakutenDailySalesQuery);
+          if (!rakutenDailySalesSnapshot.empty) {
+            rakutenDailySalesSnapshot.docs.forEach((doc) => {
+              const data = doc.data();
+              if (data.date >= startDate && data.date <= endDate) {
+                rakutenDataFound = true;
+                addSales(data.date, "楽天", data.salesAmount || 0, data.salesCount || data.orderedUnits || 0);
+              }
+            });
+          }
+
+          // 2. CSV入稿データがなければバックエンドAPIから取得
+          if (!rakutenDataFound && product.rakutenCode) {
             const cacheResponse = await fetch(
               `${BACKEND_URL}/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
             );
             const cacheData = await cacheResponse.json();
             if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
               for (const item of cacheData.dailySales) {
-                ensureDate(item.date);
                 addSales(item.date, "楽天", item.rakutenSales || 0, item.rakutenQuantity || 0);
               }
             } else {
-              // キャッシュがなければAPIから直接取得
               const rakutenResponse = await fetch(
                 `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
               );
               const rakutenData = await rakutenResponse.json();
               if (rakutenData.success && rakutenData.dailySales) {
                 for (const item of rakutenData.dailySales) {
-                  if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                  }
                   addSales(item.date, "楽天", item.sales, item.quantity);
                 }
               }
             }
-          } catch (err) {
-            console.error("楽天売上取得エラー:", err);
           }
+        } catch (err) {
+          console.error("楽天売上取得エラー:", err);
         }
       }
 
