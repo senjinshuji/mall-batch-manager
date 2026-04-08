@@ -780,27 +780,17 @@ export default function DashboardPage() {
     });
   }, [filteredData, showAdCost, filteredFlags, startDate, endDate, selectedMalls]);
 
-  // 合計売上を計算（商品選択時はproductSalesDataを使用、チェックボックスで媒体選択）
+  // 合計売上を計算（商品選択時のみ）
   const totalSales = useMemo(() => {
-    if (selectedProduct && productSalesData.length > 0) {
-      // 商品選択時：productSalesDataから合計（チェックボックスで媒体選択）
-      return productSalesData.reduce((sum, day) => {
-        let dayTotal = 0;
-        ALL_CHANNELS.forEach(ch => {
-          if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_sales`] as number) || 0;
-        });
-        return sum + dayTotal;
-      }, 0);
-    }
-    // ダミー商品時：filteredDataから合計
-    return filteredData.reduce((sum, day) => {
+    if (!selectedProduct) return 0;
+    return productSalesData.reduce((sum, day) => {
       let dayTotal = 0;
-      if (selectedMalls.amazon) dayTotal += day.amazon;
-      if (selectedMalls.rakuten) dayTotal += day.rakuten;
-      if (selectedMalls.qoo10) dayTotal += day.qoo10;
+      ALL_CHANNELS.forEach(ch => {
+        if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_sales`] as number) || 0;
+      });
       return sum + dayTotal;
     }, 0);
-  }, [filteredData, selectedMalls, selectedProduct, productSalesData]);
+  }, [selectedChannels, selectedProduct, productSalesData]);
 
   // 合計広告費を計算（商品選択時は0）
   const totalAdCost = useMemo(() => {
@@ -1437,20 +1427,19 @@ export default function DashboardPage() {
                     scale="linear"
                     padding={{ top: 20 }}
                   />
-                  {showViews && productSalesData.some(d => d.totalViews > 0) && (
-                    <YAxis
-                      yAxisId="views"
-                      orientation="right"
-                      tick={{ fill: "#F472B6", fontSize: 12 }}
-                      tickFormatter={(value) =>
-                        value >= 10000 ? `${(value / 10000).toFixed(0)}万` : value.toLocaleString()
-                      }
-                      domain={[0, 'dataMax']}
-                      type="number"
-                      scale="linear"
-                      padding={{ top: 20 }}
-                    />
-                  )}
+                  <YAxis
+                    yAxisId="views"
+                    orientation="right"
+                    tick={showViews && productSalesData.some(d => d.totalViews > 0) ? { fill: "#F472B6", fontSize: 12 } : false}
+                    tickFormatter={(value) =>
+                      value >= 10000 ? `${(value / 10000).toFixed(0)}万` : value.toLocaleString()
+                    }
+                    domain={[0, 'dataMax']}
+                    type="number"
+                    scale="linear"
+                    padding={{ top: 20 }}
+                    hide={!showViews || !productSalesData.some(d => d.totalViews > 0)}
+                  />
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (active && payload && payload.length) {
