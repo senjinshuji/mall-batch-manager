@@ -336,12 +336,15 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
       const productNameToId: Record<string, string> = {};
       products.forEach(p => { productNameToId[p.productName] = p.id; });
 
+      // URLからクエリパラメータを除去
+      const stripParams = (url: string) => url ? url.split("?")[0] : "";
+
       const accounts = dataRows.map(cols => {
         // 新列順: 商材名, プロフィールURL, アカウント名, ...
         if (platform === "tiktok") {
           return {
             productId: productNameToId[cols[0]] || "",
-            profileUrl: cols[1] || "", userName: cols[2] || "",
+            profileUrl: stripParams(cols[1] || ""), userName: cols[2] || "",
             openId: cols[3] || "", accessToken: cols[4] || "",
             refreshToken: cols[5] || "", device: cols[6] || "",
             email: cols[7] || "", password: cols[8] || "", operator: cols[9] || "",
@@ -350,7 +353,7 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
         // Instagram
         return {
           productId: productNameToId[cols[0]] || "",
-          profileUrl: cols[1] || "", userName: cols[2] || "",
+          profileUrl: stripParams(cols[1] || ""), userName: cols[2] || "",
           accessToken: cols[3] || "", device: cols[4] || "",
           email: cols[5] || "", password: cols[6] || "", operator: cols[7] || "",
         };
