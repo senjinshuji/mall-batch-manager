@@ -431,9 +431,7 @@ export default function DashboardPage() {
           // 1. まずamazon_daily_salesコレクションからproductIdで取得（CSV入稿データ）
           const amazonDailySalesQuery = query(
             collection(db, "amazon_daily_sales"),
-            where("productId", "==", product.id),
-            where("date", ">=", startDate),
-            where("date", "<=", endDate)
+            where("productId", "==", product.id)
           );
           const amazonDailySalesSnapshot = await getDocs(amazonDailySalesQuery);
           console.log(`[Amazon売上取得] amazon_daily_salesクエリ結果: ${amazonDailySalesSnapshot.size}件`);
@@ -514,8 +512,6 @@ export default function DashboardPage() {
           const rakutenDailySalesQuery = query(
             collection(db, "rakuten_daily_sales"),
             where("productId", "==", product.id),
-            where("date", ">=", startDate),
-            where("date", "<=", endDate),
           );
           const rakutenDailySalesSnapshot = await getDocs(rakutenDailySalesQuery);
           if (!rakutenDailySalesSnapshot.empty) {
@@ -561,8 +557,6 @@ export default function DashboardPage() {
           const unifiedQuery = query(
             collection(db, "unified_daily_sales"),
             where("productId", "==", product.id),
-            where("date", ">=", startDate),
-            where("date", "<=", endDate),
           );
           const unifiedSnap = await getDocs(unifiedQuery);
           unifiedSnap.forEach((doc) => {
@@ -581,8 +575,6 @@ export default function DashboardPage() {
           const viewsQuery = query(
             collection(db, "daily_views"),
             where("productId", "==", product.id),
-            where("date", ">=", startDate),
-            where("date", "<=", endDate),
           );
           const viewsSnap = await getDocs(viewsQuery);
           viewsSnap.forEach((doc) => {
@@ -1234,49 +1226,6 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
-
-      {/* Amazon売上同期ボタン */}
-      {isRealDataUser && (
-        <div className="flex gap-2 items-center flex-wrap">
-          <button
-            onClick={syncAmazonSales}
-            disabled={amazonSyncLoading}
-            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-            style={{ backgroundColor: amazonSyncLoading ? '#999' : '#FF9900' }}
-          >
-            {amazonSyncLoading ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            Amazon売上を同期
-          </button>
-          <span className="text-xs text-gray-500">
-            {startDate} 〜 {endDate} の売上をAmazonから取得
-          </span>
-        </div>
-      )}
-
-      {/* 売上データ同期ボタン（商品選択時のみ表示） */}
-      {isRealDataUser && selectedProduct && (
-        <div className="flex gap-2 items-center">
-          <button
-            onClick={syncProductSalesData}
-            disabled={syncLoading}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-          >
-            {syncLoading ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            売上データを更新
-          </button>
-          <span className="text-xs text-gray-500">
-            ※ {startDate} 〜 {endDate} の売上をAPIから取得してDBに保存します
-          </span>
-        </div>
-      )}
 
       {/* KPIカード */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
