@@ -589,6 +589,18 @@ export default function DashboardPage() {
         }
       }
 
+      // startDate〜endDateの全日付を生成し、データがない日は0埋め
+      const allDates: string[] = [];
+      const cur = new Date(startDate);
+      const end = new Date(endDate);
+      while (cur <= end) {
+        allDates.push(cur.toISOString().split("T")[0]);
+        cur.setDate(cur.getDate() + 1);
+      }
+      for (const date of allDates) {
+        ensureDate(date);
+      }
+
       // 配列に変換してソート
       const salesArray = Object.entries(allSalesData)
         .map(([date, data]) => ({
