@@ -296,7 +296,6 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
   // CSV一括登録
   const handleCsvSubmit = async () => {
     if (!csvFile) { setResult({ type: "error", message: "CSVファイルを選択してください" }); return; }
-    if (csvErrors.length > 0) { setResult({ type: "error", message: "CSVにエラーがあります" }); return; }
 
     setIsSubmitting(true); setResult(null);
     try {
