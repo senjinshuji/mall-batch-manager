@@ -115,6 +115,7 @@ export default function DashboardPage() {
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [registeredProducts, setRegisteredProducts] = useState<RegisteredProduct[]>([]);
   const [productSalesData, setProductSalesData] = useState<ProductSalesData[]>([]);
+  const [prevProductSalesData, setPrevProductSalesData] = useState<ProductSalesData[]>([]);
   const [eventFlags, setEventFlags] = useState<EventFlag[]>([]);
   const [showFlags, setShowFlags] = useState(true);
   const [selectedFlag, setSelectedFlag] = useState<EventFlag | null>(null);
@@ -302,7 +303,15 @@ export default function DashboardPage() {
     const thisGen = ++fetchGenRef.current;
     setProductLoading(true);
 
-    // Step 1: 全コレクションから生データを並列取得（QuerySnapshotの配列を返す）
+    // 前期間を計算（同じ日数分、startDateの直前）
+    const daysDiff = Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / (86400000)) + 1;
+    const prevEnd = new Date(startDate);
+    prevEnd.setDate(prevEnd.getDate() - 1);
+    const prevStart = new Date(prevEnd);
+    prevStart.setDate(prevStart.getDate() - daysDiff + 1);
+    const prevStartStr = prevStart.toISOString().split("T")[0];
+    const prevEndStr = prevEnd.toISOString().split("T")[0];
+
     type RawRow = { date: string; channel: string; sales: number; qty: number; views?: number };
     const rawRows: RawRow[] = [];
 
@@ -315,65 +324,55 @@ export default function DashboardPage() {
     };
 
     try {
-      // 全商品×全コレクションのクエリを作成
       const allPromises: Promise<void>[] = [];
 
       for (const product of validProducts) {
-        // amazon_daily_sales
         allPromises.push(
           safeQuery("amazon_daily_sales", product.id).then(snap => {
             snap?.docs.forEach(doc => {
               const d = doc.data();
-              if (d.date >= startDate && d.date <= endDate) {
+              if (d.date >= prevStartStr && d.date <= endDate) {
                 rawRows.push({ date: d.date, channel: "Amazon", sales: d.salesAmount || 0, qty: d.orderedUnits || 0 });
               }
             });
           })
         );
-
-        // rakuten_daily_sales
         allPromises.push(
           safeQuery("rakuten_daily_sales", product.id).then(snap => {
             snap?.docs.forEach(doc => {
               const d = doc.data();
-              if (d.date >= startDate && d.date <= endDate) {
+              if (d.date >= prevStartStr && d.date <= endDate) {
                 rawRows.push({ date: d.date, channel: "楽天", sales: d.salesAmount || 0, qty: d.salesCount || d.orderedUnits || 0 });
               }
             });
           })
         );
-
-        // product_sales（旧形式）
         allPromises.push(
           safeQuery("product_sales", product.id).then(snap => {
             snap?.docs.forEach(doc => {
               const d = doc.data();
-              if (d.date >= startDate && d.date <= endDate) {
+              if (d.date >= prevStartStr && d.date <= endDate) {
                 const ch = d.mall === "amazon" ? "Amazon" : d.mall === "qoo10" ? "Qoo10" : d.mall === "rakuten" ? "楽天" : null;
                 if (ch) rawRows.push({ date: d.date, channel: ch, sales: d.sales || 0, qty: d.quantity || 0 });
               }
             });
           })
         );
-
-        // unified_daily_sales
         allPromises.push(
           safeQuery("unified_daily_sales", product.id).then(snap => {
             snap?.docs.forEach(doc => {
               const d = doc.data();
-              if (d.date >= startDate && d.date <= endDate) {
+              if (d.date >= prevStartStr && d.date <= endDate) {
                 rawRows.push({ date: d.date, channel: d.channel, sales: d.salesAmount || 0, qty: d.quantity || 0 });
               }
             });
           })
         );
-
-        // daily_views
         allPromises.push(
           safeQuery("daily_views", product.id).then(snap => {
             snap?.docs.forEach(doc => {
               const d = doc.data();
-              if (d.date >= startDate && d.date <= endDate) {
+              if (d.date >= prevStartStr && d.date <= endDate) {
                 rawRows.push({ date: d.date, channel: "__views__", sales: 0, qty: 0, views: d.views || 0 });
               }
             });
@@ -381,41 +380,33 @@ export default function DashboardPage() {
         );
       }
 
-      // 全クエリを並列実行して待つ
       await Promise.allSettled(allPromises);
 
-      // Step 2: rawRowsを集計
-      const allSalesData: { [date: string]: Record<string, number> } = {};
-
-      // startDate〜endDateの全日付を先に作成
-      const cur = new Date(startDate);
-      const end = new Date(endDate);
-      while (cur <= end) {
-        const dateStr = cur.toISOString().split("T")[0];
-        allSalesData[dateStr] = { totalViews: 0 };
-        cur.setDate(cur.getDate() + 1);
-      }
-
-      // 生データを集計
-      for (const row of rawRows) {
-        if (!allSalesData[row.date]) allSalesData[row.date] = { totalViews: 0 };
-        if (row.channel === "__views__") {
-          allSalesData[row.date].totalViews = (allSalesData[row.date].totalViews || 0) + (row.views || 0);
-        } else {
-          const salesKey = `${row.channel}_sales`;
-          const qtyKey = `${row.channel}_qty`;
-          allSalesData[row.date][salesKey] = (allSalesData[row.date][salesKey] || 0) + row.sales;
-          allSalesData[row.date][qtyKey] = (allSalesData[row.date][qtyKey] || 0) + row.qty;
+      // 現在期間と前期間に分けて集計
+      const aggregate = (fromDate: string, toDate: string) => {
+        const data: { [date: string]: Record<string, number> } = {};
+        const c = new Date(fromDate);
+        const e = new Date(toDate);
+        while (c <= e) { data[c.toISOString().split("T")[0]] = { totalViews: 0 }; c.setDate(c.getDate() + 1); }
+        for (const row of rawRows) {
+          if (row.date < fromDate || row.date > toDate) continue;
+          if (!data[row.date]) data[row.date] = { totalViews: 0 };
+          if (row.channel === "__views__") {
+            data[row.date].totalViews = (data[row.date].totalViews || 0) + (row.views || 0);
+          } else {
+            data[row.date][`${row.channel}_sales`] = (data[row.date][`${row.channel}_sales`] || 0) + row.sales;
+            data[row.date][`${row.channel}_qty`] = (data[row.date][`${row.channel}_qty`] || 0) + row.qty;
+          }
         }
-      }
+        return Object.entries(data).map(([date, d]) => ({ date, ...d } as ProductSalesData)).sort((a, b) => a.date.localeCompare(b.date));
+      };
 
-      const salesArray = Object.entries(allSalesData)
-        .map(([date, data]) => ({ date, ...data } as ProductSalesData))
-        .sort((a, b) => a.date.localeCompare(b.date));
+      const salesArray = aggregate(startDate, endDate);
+      const prevSalesArray = aggregate(prevStartStr, prevEndStr);
 
-      // 古いフェッチの結果は破棄
       if (thisGen !== fetchGenRef.current) return;
       setProductSalesData(salesArray);
+      setPrevProductSalesData(prevSalesArray);
     } catch (err) {
       console.error("商品別売上取得エラー:", err);
       if (thisGen === fetchGenRef.current) setProductSalesData([]);
@@ -635,6 +626,26 @@ export default function DashboardPage() {
     }
     return 0;
   }, [selectedProduct, productSalesData]);
+
+  // 前期間の合計売上
+  const prevTotalSales = useMemo(() => {
+    if (!selectedProduct) return 0;
+    return prevProductSalesData.reduce((sum, day) => {
+      let dayTotal = 0;
+      ALL_CHANNELS.forEach(ch => {
+        if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_sales`] as number) || 0;
+      });
+      return sum + dayTotal;
+    }, 0);
+  }, [selectedChannels, selectedProduct, prevProductSalesData]);
+
+  // 前期間の合計再生数
+  const prevTotalViews = useMemo(() => {
+    if (selectedProduct && prevProductSalesData.length > 0) {
+      return prevProductSalesData.reduce((sum, day) => sum + (day.totalViews || 0), 0);
+    }
+    return 0;
+  }, [selectedProduct, prevProductSalesData]);
 
   // 広告費が1つでも選択されているか
   const isAnyAdSelected = showAdCost.amazon || showAdCost.rakuten || showAdCost.qoo10;
@@ -1044,6 +1055,15 @@ export default function DashboardPage() {
             <div>
               <p className="text-blue-100 text-xs">合計売上</p>
               <p className="text-lg font-bold">{formatCurrency(totalSales)}</p>
+              {totalSales > 0 && prevTotalSales > 0 && (() => {
+                const diff = totalSales - prevTotalSales;
+                const pct = Math.round((diff / prevTotalSales) * 100);
+                return (
+                  <p className={`text-xs ${diff >= 0 ? "text-green-200" : "text-red-200"}`}>
+                    前期比 {diff >= 0 ? "+" : ""}{formatCurrency(diff)}（{diff >= 0 ? "+" : ""}{pct}%）
+                  </p>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -1056,6 +1076,15 @@ export default function DashboardPage() {
               <div>
                 <p className="text-pink-100 text-xs">合計再生数</p>
                 <p className="text-lg font-bold">{totalViews.toLocaleString()}</p>
+                {prevTotalViews > 0 && (() => {
+                  const diff = totalViews - prevTotalViews;
+                  const pct = Math.round((diff / prevTotalViews) * 100);
+                  return (
+                    <p className={`text-xs ${diff >= 0 ? "text-green-200" : "text-red-200"}`}>
+                      前期比 {diff >= 0 ? "+" : ""}{diff.toLocaleString()}（{diff >= 0 ? "+" : ""}{pct}%）
+                    </p>
+                  );
+                })()}
               </div>
             </div>
           </div>
