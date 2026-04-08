@@ -12,6 +12,26 @@ import { useAuth } from "@/lib/auth-context";
 
 const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
+// 全チャネル定義
+const SALES_CHANNELS = {
+  online: [
+    { key: "Amazon", label: "Amazon", color: "#FF9900" },
+    { key: "楽天", label: "楽天", color: "#BF0000" },
+    { key: "Qoo10", label: "Qoo10", color: "#3266CC" },
+    { key: "Yahoo", label: "Yahoo", color: "#FF0033" },
+    { key: "自社サイト", label: "自社サイト", color: "#10B981" },
+  ],
+  store: [
+    { key: "アインズ&トルペ", label: "アインズ&トルペ", color: "#8B5CF6" },
+    { key: "LOFT", label: "LOFT", color: "#D97706" },
+    { key: "ドンキ", label: "ドンキ", color: "#2563EB" },
+    { key: "PLAZA", label: "PLAZA", color: "#EC4899" },
+    { key: "東急ハンズ", label: "東急ハンズ", color: "#059669" },
+    { key: "マツキヨ", label: "マツキヨ", color: "#7C3AED" },
+    { key: "ツルハドラッグ", label: "ツルハドラッグ", color: "#0891B2" },
+  ],
+};
+
 // デモ用データ（空）
 const demoAmazonProducts: MallProduct[] = [];
 const demoRakutenProducts: MallProduct[] = [];
@@ -109,6 +129,14 @@ export default function ProductsPage() {
   const [unifiedSuccess, setUnifiedSuccess] = useState<string | null>(null);
   const unifiedFileRef = useRef<HTMLInputElement>(null);
   const [unifiedClients, setUnifiedClients] = useState<{ id: string; name: string; allowedProductIds: string[]; extraChannels: string[] }[]>([]);
+
+  // チャネル別売上CSV入稿用ステート
+  const [channelSalesUploading, setChannelSalesUploading] = useState(false);
+  const [channelSalesError, setChannelSalesError] = useState<string | null>(null);
+  const [channelSalesSuccess, setChannelSalesSuccess] = useState<string | null>(null);
+  const channelSalesFileRef = useRef<HTMLInputElement>(null);
+  const [selectedProductForChannelSales, setSelectedProductForChannelSales] = useState<string | null>(null);
+  const [selectedChannel, setSelectedChannel] = useState<string>("");
 
   // 再生数CSV入稿用ステート
   const [viewsUploading, setViewsUploading] = useState(false);
@@ -1522,6 +1550,137 @@ export default function ProductsPage() {
     reader.readAsText(file, "UTF-8");
   }, [selectedProductForViews, products]);
 
+  // チャネル別売上CSV入稿ハンドラ（汎用）
+  const handleChannelSalesCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selectedProductForChannelSales || !selectedChannel) return;
+
+    setChannelSalesUploading(true);
+    setChannelSalesError(null);
+    setChannelSalesSuccess(null);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        let text = e.target?.result as string;
+        if (text.charCodeAt(0) === 0xFEFF) text = text.substring(1);
+
+        const lines = text.split(/\r?\n/).filter((l) => l.trim());
+        if (lines.length < 2) {
+          setChannelSalesError("データがありません");
+          setChannelSalesUploading(false);
+          return;
+        }
+
+        // ヘッダー行検出
+        let headerIdx = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes("日付") || lines[i].toLowerCase().includes("date")) { headerIdx = i; break; }
+        }
+
+        const parseCsvLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') inQuotes = !inQuotes;
+            else if (ch === "," && !inQuotes) { result.push(current.trim()); current = ""; }
+            else current += ch;
+          }
+          result.push(current.trim());
+          return result;
+        };
+
+        const normalizeDate = (d: string): string => {
+          const cleaned = d.trim();
+          const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
+          const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+          if (mdMatch) {
+            const year = new Date().getFullYear();
+            return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
+          }
+          return cleaned.replace(/\//g, "-");
+        };
+
+        // ヘッダー解析
+        const header = parseCsvLine(lines[headerIdx]).map(h => h.replace(/^["']|["']$/g, "").trim().toLowerCase());
+        const dateIdx = header.findIndex(h => h === "日付" || h === "date");
+        const salesIdx = header.findIndex(h => h === "売上" || h === "売上額" || h === "sales" || h === "sales_amount" || h.includes("売上"));
+        const qtyIdx = header.findIndex(h => h === "数量" || h === "個数" || h === "quantity" || h === "units" || h.includes("件数") || h.includes("個数"));
+
+        if (dateIdx === -1) {
+          setChannelSalesError("日付列が見つかりません。ヘッダーに「日付」または「date」を含めてください。");
+          setChannelSalesUploading(false);
+          return;
+        }
+        if (salesIdx === -1) {
+          setChannelSalesError("売上列が見つかりません。ヘッダーに「売上」または「sales」を含めてください。");
+          setChannelSalesUploading(false);
+          return;
+        }
+
+        const rows: { date: string; salesAmount: number; quantity: number }[] = [];
+        for (let i = headerIdx + 1; i < lines.length; i++) {
+          const values = parseCsvLine(lines[i]);
+          if (values.length <= dateIdx) continue;
+          const date = normalizeDate(values[dateIdx].replace(/^["']|["']$/g, ""));
+          if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+          const rawSales = (values[salesIdx] || "0").replace(/[¥￥,\s"]/g, "");
+          const salesAmount = parseInt(rawSales) || 0;
+          const rawQty = qtyIdx !== -1 ? (values[qtyIdx] || "0").replace(/[,\s"]/g, "") : "0";
+          const quantity = parseInt(rawQty) || 0;
+          rows.push({ date, salesAmount, quantity });
+        }
+
+        if (rows.length === 0) {
+          setChannelSalesError("有効なデータがありません");
+          setChannelSalesUploading(false);
+          return;
+        }
+
+        // Firestoreにバッチ書き込み（unified_daily_sales）
+        let savedCount = 0;
+        const batchSize = 400;
+        for (let i = 0; i < rows.length; i += batchSize) {
+          const batch = writeBatch(db);
+          const chunk = rows.slice(i, i + batchSize);
+          for (const row of chunk) {
+            const docRef = doc(collection(db, "unified_daily_sales"));
+            batch.set(docRef, {
+              productId: selectedProductForChannelSales,
+              date: row.date,
+              channel: selectedChannel,
+              quantity: row.quantity,
+              salesAmount: row.salesAmount,
+              createdAt: Timestamp.now(),
+            });
+          }
+          await batch.commit();
+          savedCount += chunk.length;
+        }
+
+        const productName = products.find(p => p.id === selectedProductForChannelSales)?.productName || "";
+        setChannelSalesSuccess(`${productName}（${selectedChannel}）: ${savedCount}日分の売上データを保存しました`);
+      } catch (err: unknown) {
+        console.error("チャネル売上CSVエラー:", err);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setChannelSalesError(`エラー: ${errMsg}`);
+      } finally {
+        setChannelSalesUploading(false);
+        if (channelSalesFileRef.current) channelSalesFileRef.current.value = "";
+      }
+    };
+
+    reader.onerror = () => {
+      setChannelSalesError("ファイルの読み込みに失敗しました");
+      setChannelSalesUploading(false);
+    };
+
+    reader.readAsText(file, "UTF-8");
+  }, [selectedProductForChannelSales, selectedChannel, products]);
+
   // カスタムドロップダウンコンポーネント
   const ProductCodeDropdown = ({
     value,
@@ -1876,6 +2035,97 @@ export default function ProductsPage() {
             <p className="font-medium mb-1">対応フォーマット:</p>
             <p className="text-xs text-gray-400">横持ち: 1行目に日付、2行目に全体再生数（TTO共有シートの各媒体分析CSVそのまま対応）</p>
             <p className="text-xs text-gray-400">縦持ち: date, views の2列</p>
+          </div>
+        </div>
+      )}
+
+      {/* チャネル別売上CSV入稿 */}
+      {isRealDataUser && (
+        <div className="bg-white rounded-lg shadow-md p-6 mb-6 border-l-4 border-blue-400">
+          <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5 text-blue-500" />
+            チャネル別売上CSV入稿
+          </h2>
+          <p className="text-sm text-gray-500 mb-4">
+            各販売チャネルの売上データをCSVで入稿します。
+          </p>
+
+          <div className="flex flex-wrap gap-4 items-end">
+            {/* 商品選択 */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">商品</label>
+              <select
+                value={selectedProductForChannelSales || ""}
+                onChange={(e) => setSelectedProductForChannelSales(e.target.value || null)}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm min-w-[160px]"
+              >
+                <option value="">商品を選択...</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.productName}{p.skuName ? `（${p.skuName}）` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* チャネル選択 */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">チャネル</label>
+              <select
+                value={selectedChannel}
+                onChange={(e) => setSelectedChannel(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm min-w-[160px]"
+              >
+                <option value="">チャネルを選択...</option>
+                <optgroup label="オンライン">
+                  {SALES_CHANNELS.online.map(ch => (
+                    <option key={ch.key} value={ch.key}>{ch.label}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="店舗">
+                  {SALES_CHANNELS.store.map(ch => (
+                    <option key={ch.key} value={ch.key}>{ch.label}</option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
+
+            {/* アップロード */}
+            <div>
+              <input
+                type="file"
+                ref={channelSalesFileRef}
+                accept=".csv"
+                onChange={handleChannelSalesCsvImport}
+                className="hidden"
+                id="channel-sales-csv-upload"
+                disabled={channelSalesUploading || !selectedProductForChannelSales || !selectedChannel}
+              />
+              <label
+                htmlFor="channel-sales-csv-upload"
+                className={`flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors cursor-pointer text-sm ${(channelSalesUploading || !selectedProductForChannelSales || !selectedChannel) ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                {channelSalesUploading ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Upload className="w-4 h-4" />
+                )}
+                {channelSalesUploading ? "アップロード中..." : "CSVアップロード"}
+              </label>
+            </div>
+          </div>
+
+          {channelSalesError && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{channelSalesError}</div>
+          )}
+          {channelSalesSuccess && (
+            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{channelSalesSuccess}</div>
+          )}
+
+          <div className="mt-4 bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+            <p className="font-medium mb-1">CSVフォーマット:</p>
+            <p className="text-xs font-mono">日付, 売上, 数量</p>
+            <p className="text-xs mt-1 text-gray-400">日付: YYYY/MM/DD, YYYY-MM-DD, M/D いずれも対応。売上・数量は数値。ヘッダー行に「日付」「売上」を含めてください。</p>
           </div>
         </div>
       )}
