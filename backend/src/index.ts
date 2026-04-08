@@ -9083,16 +9083,26 @@ async function fetchAllInstagramVideos(
   const generateProof = (token: string) => crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(token).digest('hex');
 
   const allVideos: any[] = [];
-  let nextUrl: string | null = `https://graph.facebook.com/v21.0/${igBusinessAccountId}/media`;
+  // IGQトークン → graph.instagram.com/me/media、EAAトークン → graph.facebook.com/{igId}/media
+  const isIgToken = !accessToken.startsWith("EAA");
+  const baseMediaUrl = isIgToken
+    ? `https://graph.instagram.com/me/media`
+    : `https://graph.facebook.com/v21.0/${igBusinessAccountId}/media`;
+  const insightBaseUrl = isIgToken ? 'https://graph.instagram.com' : 'https://graph.facebook.com/v21.0';
+
+  let nextUrl: string | null = baseMediaUrl;
   const fields = 'id,caption,media_type,thumbnail_url,permalink,timestamp,like_count,comments_count,media_product_type';
 
   // メディア一覧を取得（ページネーション）
   while (nextUrl) {
     try {
       const proof = generateProof(accessToken);
-      const isFirstPage: boolean = nextUrl!.includes('graph.facebook.com/v21.0/');
+      const isFirstPage: boolean = nextUrl === baseMediaUrl;
+      const params: Record<string, string | number> = isFirstPage
+        ? { fields, limit: 50, access_token: accessToken, ...(isIgToken ? {} : { appsecret_proof: proof }) }
+        : {};
       const response: any = isFirstPage
-        ? await axios.get(nextUrl!, { params: { fields, limit: 50, access_token: accessToken, appsecret_proof: proof } })
+        ? await axios.get(nextUrl!, { params })
         : await axios.get(nextUrl!);
 
       const data: any = response.data;
@@ -9106,12 +9116,13 @@ async function fetchAllInstagramVideos(
         let insights: Record<string, number> = {};
         try {
           const insightProof = generateProof(accessToken);
-          const insightRes = await axios.get(`https://graph.facebook.com/v21.0/${item.id}/insights`, {
-            params: {
-              metric: 'reach,saved,shares,total_interactions,likes,comments,ig_reels_video_view_total_time,ig_reels_avg_watch_time',
-              access_token: accessToken,
-              appsecret_proof: insightProof,
-            },
+          const insightParams: Record<string, string> = {
+            metric: 'reach,saved,shares,total_interactions,likes,comments,ig_reels_video_view_total_time,ig_reels_avg_watch_time',
+            access_token: accessToken,
+          };
+          if (!isIgToken) insightParams.appsecret_proof = insightProof;
+          const insightRes = await axios.get(`${insightBaseUrl}/${item.id}/insights`, {
+            params: insightParams,
           });
           for (const m of insightRes.data?.data || []) {
             insights[m.name] = m.values?.[0]?.value || 0;
@@ -9226,6 +9237,25 @@ async function getInstagramBusinessAccountId(accessToken: string): Promise<{
   igAccountId: string; pageToken: string;
 } | null> {
   const axios = (await import('axios')).default;
+
+  // IGQトークン（Instagram Business Login）の場合はPage不要、直接meで取得
+  if (!accessToken.startsWith("EAA")) {
+    try {
+      const meRes = await axios.get('https://graph.instagram.com/me', {
+        params: { fields: 'user_id,username', access_token: accessToken },
+      });
+      const userId = meRes.data.user_id || meRes.data.id;
+      if (userId) {
+        return { igAccountId: userId, pageToken: accessToken };
+      }
+      return null;
+    } catch (error: any) {
+      console.error("Error getting IG account (Instagram Login):", error?.response?.data || error?.message);
+      return null;
+    }
+  }
+
+  // EAAトークン（Facebook Graph API）の場合はPage経由
   const crypto = await import('crypto');
   const proof = crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(accessToken).digest('hex');
 
@@ -9240,7 +9270,7 @@ async function getInstagramBusinessAccountId(accessToken: string): Promise<{
     }
     return null;
   } catch (error: any) {
-    console.error("Error getting IG Business Account:", error?.response?.data || error?.message);
+    console.error("Error getting IG Business Account (Facebook API):", error?.response?.data || error?.message);
     return null;
   }
 }
