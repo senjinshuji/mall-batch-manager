@@ -158,15 +158,18 @@ export default function DashboardPage() {
     amazon: true,
     rakuten: true,
     qoo10: true,
+    ownSite: true,
+    ainsTolpe: true,
   });
+  const [showViews, setShowViews] = useState(true);
   const [showAdCost, setShowAdCost] = useState({
-    amazon: true,
-    rakuten: true,
-    qoo10: true,
+    amazon: false,
+    rakuten: false,
+    qoo10: false,
   });
   const [showExternalAd, setShowExternalAd] = useState({
-    x: true,
-    tiktok: true,
+    x: false,
+    tiktok: false,
   });
   const [selectedProduct, setSelectedProduct] = useState("");
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
@@ -811,6 +814,8 @@ export default function DashboardPage() {
         if (selectedMalls.amazon) dayTotal += day.amazonSales;
         if (selectedMalls.rakuten) dayTotal += day.rakutenSales;
         if (selectedMalls.qoo10) dayTotal += day.qoo10Sales;
+        if (selectedMalls.ownSite) dayTotal += day.ownSiteSales;
+        if (selectedMalls.ainsTolpe) dayTotal += day.ainsTolpeSales;
         return sum + dayTotal;
       }, 0);
     }
@@ -1115,7 +1120,7 @@ export default function DashboardPage() {
               <label className="block text-sm font-medium text-gray-600 mb-2">
                 売上（棒グラフ）
               </label>
-              <div className="flex gap-4">
+              <div className="flex gap-4 flex-wrap">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1158,98 +1163,124 @@ export default function DashboardPage() {
                     Qoo10
                   </span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedMalls.ownSite}
+                    onChange={() => handleMallChange("ownSite")}
+                    className="w-4 h-4 rounded"
+                    style={{ accentColor: MALL_COLORS.ownSite }}
+                  />
+                  <span
+                    className="font-medium text-sm"
+                    style={{ color: MALL_COLORS.ownSite }}
+                  >
+                    自社サイト
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedMalls.ainsTolpe}
+                    onChange={() => handleMallChange("ainsTolpe")}
+                    className="w-4 h-4 rounded"
+                    style={{ accentColor: MALL_COLORS.ainsTolpe }}
+                  />
+                  <span
+                    className="font-medium text-sm"
+                    style={{ color: MALL_COLORS.ainsTolpe }}
+                  >
+                    アインズ&トルペ
+                  </span>
+                </label>
               </div>
             </div>
 
-            {/* モール内広告費選択 */}
+            {/* 再生数トグル */}
             <div>
               <label className="block text-sm font-medium text-gray-600 mb-2">
-                モール内広告費（緑線）
+                動画再生数（折れ線）
               </label>
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={showAdCost.amazon}
-                    onChange={() => handleAdCostChange("amazon")}
+                    checked={showViews}
+                    onChange={() => setShowViews(!showViews)}
                     className="w-4 h-4 rounded"
-                    style={{ accentColor: MALL_COLORS.amazon }}
+                    style={{ accentColor: "#F472B6" }}
                   />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.amazon }}
-                  >
-                    Amazon
+                  <span className="font-medium text-sm" style={{ color: "#F472B6" }}>
+                    再生数
                   </span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+              </div>
+            </div>
+
+            {/* モール内広告費選択 */}
+            <div className="opacity-70">
+              <label className="block text-xs font-medium text-gray-400 mb-2">
+                モール内広告費（緑線）
+              </label>
+              <div className="flex gap-3">
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showAdCost.amazon}
+                    onChange={() => handleAdCostChange("amazon")}
+                    className="w-3.5 h-3.5 rounded"
+                    style={{ accentColor: MALL_COLORS.amazon }}
+                  />
+                  <span className="text-xs" style={{ color: MALL_COLORS.amazon }}>Amazon</span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={showAdCost.rakuten}
                     onChange={() => handleAdCostChange("rakuten")}
-                    className="w-4 h-4 rounded"
+                    className="w-3.5 h-3.5 rounded"
                     style={{ accentColor: MALL_COLORS.rakuten }}
                   />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.rakuten }}
-                  >
-                    楽天
-                  </span>
+                  <span className="text-xs" style={{ color: MALL_COLORS.rakuten }}>楽天</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={showAdCost.qoo10}
                     onChange={() => handleAdCostChange("qoo10")}
-                    className="w-4 h-4 rounded"
+                    className="w-3.5 h-3.5 rounded"
                     style={{ accentColor: MALL_COLORS.qoo10 }}
                   />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.qoo10 }}
-                  >
-                    Qoo10
-                  </span>
+                  <span className="text-xs" style={{ color: MALL_COLORS.qoo10 }}>Qoo10</span>
                 </label>
               </div>
             </div>
 
             {/* 外部広告費選択 */}
-            <div>
-              <label className="block text-sm font-medium text-gray-600 mb-2">
+            <div className="opacity-70">
+              <label className="block text-xs font-medium text-gray-400 mb-2">
                 外部広告費（個別線）
               </label>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
+              <div className="flex gap-3">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={showExternalAd.x}
                     onChange={() => handleExternalAdChange("x")}
-                    className="w-4 h-4 rounded"
+                    className="w-3.5 h-3.5 rounded"
                     style={{ accentColor: EXTERNAL_AD_COLORS.x }}
                   />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: EXTERNAL_AD_COLORS.x }}
-                  >
-                    X
-                  </span>
+                  <span className="text-xs" style={{ color: EXTERNAL_AD_COLORS.x }}>X</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={showExternalAd.tiktok}
                     onChange={() => handleExternalAdChange("tiktok")}
-                    className="w-4 h-4 rounded"
+                    className="w-3.5 h-3.5 rounded"
                     style={{ accentColor: EXTERNAL_AD_COLORS.tiktok }}
                   />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: EXTERNAL_AD_COLORS.tiktok }}
-                  >
-                    TikTok
-                  </span>
+                  <span className="text-xs" style={{ color: EXTERNAL_AD_COLORS.tiktok }}>TikTok</span>
                 </label>
               </div>
             </div>
@@ -1443,7 +1474,7 @@ export default function DashboardPage() {
                     scale="linear"
                     padding={{ top: 20 }}
                   />
-                  {productSalesData.some(d => d.totalViews > 0) && (
+                  {showViews && productSalesData.some(d => d.totalViews > 0) && (
                     <YAxis
                       yAxisId="views"
                       orientation="right"
@@ -1537,7 +1568,7 @@ export default function DashboardPage() {
                     />
                   )}
                   {/* 自社サイト売上（積み上げ） */}
-                  {productSalesData.some(d => d.ownSiteSales > 0) && (
+                  {selectedMalls.ownSite && productSalesData.some(d => d.ownSiteSales > 0) && (
                     <Bar
                       yAxisId="sales"
                       dataKey="ownSiteSales"
@@ -1547,7 +1578,7 @@ export default function DashboardPage() {
                     />
                   )}
                   {/* アインズ&トルペ売上（積み上げ） */}
-                  {productSalesData.some(d => d.ainsTolpeSales > 0) && (
+                  {selectedMalls.ainsTolpe && productSalesData.some(d => d.ainsTolpeSales > 0) && (
                     <Bar
                       yAxisId="sales"
                       dataKey="ainsTolpeSales"
@@ -1558,7 +1589,7 @@ export default function DashboardPage() {
                     />
                   )}
                   {/* 再生数（折れ線グラフ・右軸） */}
-                  {productSalesData.some(d => d.totalViews > 0) && (
+                  {showViews && productSalesData.some(d => d.totalViews > 0) && (
                     <Line
                       yAxisId="views"
                       type="monotone"
@@ -1592,19 +1623,19 @@ export default function DashboardPage() {
                     <span>Qoo10</span>
                   </div>
                 )}
-                {productSalesData.some(d => d.ownSiteSales > 0) && (
+                {selectedMalls.ownSite && productSalesData.some(d => d.ownSiteSales > 0) && (
                   <div className="flex items-center gap-1">
                     <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.ownSite }} />
                     <span>自社サイト</span>
                   </div>
                 )}
-                {productSalesData.some(d => d.ainsTolpeSales > 0) && (
+                {selectedMalls.ainsTolpe && productSalesData.some(d => d.ainsTolpeSales > 0) && (
                   <div className="flex items-center gap-1">
                     <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.ainsTolpe }} />
                     <span>アインズ&トルペ</span>
                   </div>
                 )}
-                {productSalesData.some(d => d.totalViews > 0) && (
+                {showViews && productSalesData.some(d => d.totalViews > 0) && (
                   <div className="flex items-center gap-1">
                     <div className="w-6 h-0.5 rounded" style={{ backgroundColor: "#F472B6" }} />
                     <span>再生数</span>
