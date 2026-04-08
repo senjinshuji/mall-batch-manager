@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronUp, RefreshCw, User, Eye, Heart, MessageCircle, Share2, Play, ExternalLink, ArrowUpDown, X, Flag } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, getDocs, query, orderBy, where } from "firebase/firestore";
+import { useAuth } from "@/lib/auth-context";
 import {
   LineChart,
   Line,
@@ -135,6 +136,7 @@ function formatNumber(num: number): string {
 
 export default function VideoAnalyticsPage() {
   const [platform, setPlatform] = useState<Platform>("tiktok");
+  const { allowedProductIds } = useAuth();
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
@@ -184,7 +186,12 @@ export default function VideoAnalyticsPage() {
           const bIsDemo = b.productName.includes("デモ") || b.id.includes("demo") ? -1 : 0;
           return aIsDemo - bIsDemo;
         });
-        setProducts(productList);
+        // クライアントユーザーの場合は許可された商品のみ表示
+        if (allowedProductIds) {
+          setProducts(productList.filter((p) => allowedProductIds.includes(p.id)));
+        } else {
+          setProducts(productList);
+        }
       } catch (error) {
         console.error("商品一覧取得エラー:", error);
       }

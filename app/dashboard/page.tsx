@@ -118,7 +118,7 @@ const demoProducts: RegisteredProduct[] = [
 ];
 
 export default function DashboardPage() {
-  const { isRealDataUser, isAuthLoading } = useAuth();
+  const { isRealDataUser, isAuthLoading, allowedProductIds } = useAuth();
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [registeredProducts, setRegisteredProducts] = useState<RegisteredProduct[]>([]);
   const [productSalesData, setProductSalesData] = useState<ProductSalesData[]>([]);
@@ -209,13 +209,18 @@ export default function DashboardPage() {
           rakutenCode: doc.data().rakutenCode || "",
           qoo10Code: doc.data().qoo10Code || "",
         })) as RegisteredProduct[];
-        setRegisteredProducts(products);
+        // クライアントユーザーの場合は許可された商品のみ表示
+        if (allowedProductIds) {
+          setRegisteredProducts(products.filter((p) => allowedProductIds.includes(p.id)));
+        } else {
+          setRegisteredProducts(products);
+        }
       } catch (err) {
         console.error("商品取得エラー:", err);
       }
     };
     fetchProducts();
-  }, [isRealDataUser, isAuthLoading]);
+  }, [isRealDataUser, isAuthLoading, allowedProductIds]);
 
   // Firestoreからリアルタイムでデータを取得（実データユーザーのみ）
   useEffect(() => {

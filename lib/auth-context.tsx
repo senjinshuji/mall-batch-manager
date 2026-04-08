@@ -1,25 +1,34 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { db } from "@/lib/firebase";
+import { collection, getDocs, query, where } from "firebase/firestore";
+
+type UserRole = "admin" | "client" | "demo";
 
 type User = {
-  email: string;
+  loginId: string;
   isRealDataUser: boolean;
+  role: UserRole;
+  allowedProductIds?: string[];
+  accountId?: string;
 };
 
 type AuthContextType = {
   user: User | null;
-  login: (email: string, password: string) => boolean;
+  login: (loginId: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   isRealDataUser: boolean;
+  isAdmin: boolean;
   isAuthLoading: boolean;
+  allowedProductIds: string[] | null;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// 実データを表示するユーザー
-const REAL_DATA_CREDENTIALS = {
-  email: "yoh.masuda@senjinholdings.com",
+// 管理者アカウント
+const ADMIN_CREDENTIALS = {
+  loginId: "admin",
   password: "senjin4649",
 };
 
@@ -36,19 +45,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsAuthLoading(false);
   }, []);
 
-  const login = (email: string, password: string): boolean => {
-    const isRealDataUser =
-      email === REAL_DATA_CREDENTIALS.email &&
-      password === REAL_DATA_CREDENTIALS.password;
+  const login = async (loginId: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    // 1. 管理者チェック
+    if (loginId === ADMIN_CREDENTIALS.loginId && password === ADMIN_CREDENTIALS.password) {
+      const newUser: User = { loginId, isRealDataUser: true, role: "admin" };
+      setUser(newUser);
+      sessionStorage.setItem("mall_manager_user", JSON.stringify(newUser));
+      return { success: true };
+    }
 
-    const newUser: User = {
-      email,
-      isRealDataUser,
-    };
+    // 2. クライアントアカウントをFirestoreで照合
+    try {
+      const q = query(collection(db, "client_accounts"), where("loginId", "==", loginId));
+      const snapshot = await getDocs(q);
 
+      if (!snapshot.empty) {
+        const doc = snapshot.docs[0];
+        const data = doc.data();
+
+        if (data.password !== password) {
+          return { success: false, error: "パスワードが正しくありません" };
+        }
+
+        const newUser: User = {
+          loginId,
+          isRealDataUser: true,
+          role: "client",
+          allowedProductIds: data.allowedProductIds || [],
+          accountId: doc.id,
+        };
+        setUser(newUser);
+        sessionStorage.setItem("mall_manager_user", JSON.stringify(newUser));
+        return { success: true };
+      }
+    } catch (err) {
+      console.error("クライアントアカウント照合エラー:", err);
+    }
+
+    // 3. デモユーザー
+    const newUser: User = { loginId, isRealDataUser: false, role: "demo" };
     setUser(newUser);
     sessionStorage.setItem("mall_manager_user", JSON.stringify(newUser));
-    return true;
+    return { success: true };
   };
 
   const logout = () => {
@@ -63,7 +101,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         isRealDataUser: user?.isRealDataUser ?? false,
+        isAdmin: user?.role === "admin",
         isAuthLoading,
+        allowedProductIds: user?.role === "client" ? (user.allowedProductIds ?? []) : null,
       }}
     >
       {children}
