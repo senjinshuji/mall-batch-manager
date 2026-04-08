@@ -84,7 +84,7 @@ const EXTERNAL_AD_COLORS = {
   tiktok: "#FF0050",  // TikTok（ピンク）
 };
 
-const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
+
 
 // 商品別売上データの型（動的チャネル対応）
 interface ProductSalesData {
@@ -280,111 +280,6 @@ export default function DashboardPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
-  // 選択中の商品の売上データをAPIから取得してFirestoreに同期
-  const syncProductSalesData = async () => {
-    if (!isRealDataUser || !selectedProduct) return;
-
-    const product = registeredProducts.find(p => p.id === selectedProduct);
-    if (!product) return;
-
-    setSyncLoading(true);
-    try {
-      let totalSynced = 0;
-      const results: string[] = [];
-
-      // Qoo10のデータを取得してFirestoreに保存
-      if (product.qoo10Code) {
-        const qoo10Response = await fetch(
-          `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
-        );
-        const qoo10Data = await qoo10Response.json();
-        if (qoo10Data.success && qoo10Data.dailySales) {
-          // Firestoreに保存するAPIを呼び出す
-          const syncResponse = await fetch(`${BACKEND_URL}/sync/save-product-sales`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              productCode: product.qoo10Code,
-              productName: product.productName,
-              mall: 'qoo10',
-              dailySales: qoo10Data.dailySales,
-            }),
-          });
-          const syncResult = await syncResponse.json();
-          if (syncResult.success) {
-            totalSynced += syncResult.synced || 0;
-            results.push(`Qoo10: ${syncResult.synced}件`);
-          }
-        }
-      }
-
-      // 楽天のデータを取得してFirestoreに保存
-      if (product.rakutenCode) {
-        const rakutenResponse = await fetch(
-          `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
-        );
-        const rakutenData = await rakutenResponse.json();
-        if (rakutenData.success && rakutenData.dailySales) {
-          // Firestoreに保存するAPIを呼び出す
-          const syncResponse = await fetch(`${BACKEND_URL}/sync/save-product-sales`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              productCode: product.rakutenCode,
-              productName: product.productName,
-              mall: 'rakuten',
-              dailySales: rakutenData.dailySales,
-            }),
-          });
-          const syncResult = await syncResponse.json();
-          if (syncResult.success) {
-            totalSynced += syncResult.synced || 0;
-            results.push(`楽天: ${syncResult.synced}件`);
-          }
-        }
-      }
-
-      if (totalSynced > 0) {
-        alert(`売上データを同期しました\n${results.join('\n')}`);
-        // データを再取得
-        fetchProductSales(product);
-      } else {
-        alert("同期するデータがありませんでした");
-      }
-    } catch (err) {
-      console.error("売上データ同期エラー:", err);
-      alert("売上データの同期に失敗しました");
-    } finally {
-      setSyncLoading(false);
-    }
-  };
-
-  // Amazon売上データを同期
-  const syncAmazonSales = async () => {
-    if (!isRealDataUser) return;
-
-    setAmazonSyncLoading(true);
-    try {
-      const response = await fetch(`${BACKEND_URL}/amazon/sync-sales`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startDate, endDate }),
-      });
-      const result = await response.json();
-
-      if (result.success) {
-        alert(`Amazon売上を同期しました！\n${result.syncedDays}日分、合計 ¥${result.totalSales.toLocaleString()}`);
-      } else {
-        alert(`同期エラー: ${result.message || result.error}`);
-      }
-    } catch (err) {
-      console.error("Amazon売上同期エラー:", err);
-      alert("Amazon売上の同期に失敗しました");
-    } finally {
-      setAmazonSyncLoading(false);
-    }
-  };
 
   // 単一商品または複数商品の売上データを取得（実データユーザーのみ）
   const fetchProductSales = async (product: RegisteredProduct) => {
