@@ -392,14 +392,13 @@ export default function DashboardPage() {
     await fetchMultipleProductSales([product]);
   };
 
-  // 複数商品の売上データを取得して合算
+  // 複数商品の売上データを取得して合算（Firestoreのみ・並列実行）
   const fetchMultipleProductSales = async (products: RegisteredProduct[]) => {
     if (!isRealDataUser) {
       setProductSalesData([]);
       return;
     }
 
-    // 有効な商品をフィルタリング（登録されていればOK - amazonCodeが空でもCSV入稿データがある可能性）
     const validProducts = products.filter(p => p.id);
     if (validProducts.length === 0) {
       setProductSalesData([]);
@@ -418,194 +417,59 @@ export default function DashboardPage() {
         allSalesData[date][`${channel}_qty`] = (allSalesData[date][`${channel}_qty`] || 0) + qty;
       };
 
-      console.log("fetchMultipleProductSales対象商品:", validProducts.map(p => ({ id: p.id, name: p.productName, amazon: p.amazonCode, qoo10: p.qoo10Code, rakuten: p.rakutenCode })));
-
-      // すべての商品の売上を取得して合算
-      for (const product of validProducts) {
-        // Amazonのデータを取得
-        // productIdベースで取得（amazonCodeが空でもCSV入稿データを表示可能に）
-        try {
-          console.log(`[Amazon売上取得] productId: ${product.id}, 日付範囲: ${startDate} 〜 ${endDate}`);
-          let amazonDataFound = false;
-
-          // 1. まずamazon_daily_salesコレクションからproductIdで取得（CSV入稿データ）
-          const amazonDailySalesQuery = query(
-            collection(db, "amazon_daily_sales"),
-            where("productId", "==", product.id)
-          );
-          const amazonDailySalesSnapshot = await getDocs(amazonDailySalesQuery);
-          console.log(`[Amazon売上取得] amazon_daily_salesクエリ結果: ${amazonDailySalesSnapshot.size}件`);
-
-          if (!amazonDailySalesSnapshot.empty) {
-            amazonDailySalesSnapshot.docs.forEach((doc) => {
-              const data = doc.data();
-              // 日付範囲内をフィルタ
-              if (data.date >= startDate && data.date <= endDate) {
-                amazonDataFound = true;
-                ensureDate(data.date);
-                addSales(data.date, "Amazon", data.salesAmount || 0, data.orderedUnits || 0);
-              }
-            });
-            console.log(`[Amazon売上取得] amazon_daily_salesからデータ取得完了`);
-          }
-
-          // 2. amazon_daily_salesになければproduct_salesコレクションも確認
-          if (!amazonDataFound) {
-            const productSalesQuery = query(
-              collection(db, "product_sales"),
-              where("productId", "==", product.id)
-            );
-            const productSalesSnapshot = await getDocs(productSalesQuery);
-            console.log(`[Amazon売上取得] product_salesクエリ結果: ${productSalesSnapshot.size}件`);
-
-            if (!productSalesSnapshot.empty) {
-              productSalesSnapshot.docs.forEach((doc) => {
-                const data = doc.data();
-                // mall === "amazon" かつ 日付範囲内をフィルタ
-                if (data.mall === "amazon" && data.date >= startDate && data.date <= endDate) {
-                  ensureDate(data.date);
-                  addSales(data.date, "Amazon", data.sales || 0, data.quantity || 0);
-                }
-              });
+      // 全コレクションを並列で取得（バックエンドAPI呼び出しなし）
+      const queries = validProducts.flatMap(product => [
+        getDocs(query(collection(db, "amazon_daily_sales"), where("productId", "==", product.id)))
+          .then(snap => snap.docs.forEach(doc => {
+            const d = doc.data();
+            if (d.date >= startDate && d.date <= endDate) {
+              addSales(d.date, "Amazon", d.salesAmount || 0, d.orderedUnits || 0);
             }
-          }
-        } catch (err) {
-          console.error("Amazon売上取得エラー:", err);
-        }
-
-        // Qoo10のデータを取得
-        if (product.qoo10Code) {
-          try {
-            const cacheResponse = await fetch(
-              `${BACKEND_URL}/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
-            );
-            const cacheData = await cacheResponse.json();
-            if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
-              for (const item of cacheData.dailySales) {
-                ensureDate(item.date);
-                addSales(item.date, "Qoo10", item.qoo10Sales || 0, item.qoo10Quantity || 0);
-              }
-            } else {
-              // キャッシュがなければAPIから直接取得
-              const qoo10Response = await fetch(
-                `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
-              );
-              const qoo10Data = await qoo10Response.json();
-              if (qoo10Data.success && qoo10Data.dailySales) {
-                for (const item of qoo10Data.dailySales) {
-                  if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                  }
-                  addSales(item.date, "Qoo10", item.sales, item.quantity);
-                }
-              }
+          })).catch(() => {}),
+        getDocs(query(collection(db, "rakuten_daily_sales"), where("productId", "==", product.id)))
+          .then(snap => snap.docs.forEach(doc => {
+            const d = doc.data();
+            if (d.date >= startDate && d.date <= endDate) {
+              addSales(d.date, "楽天", d.salesAmount || 0, d.salesCount || d.orderedUnits || 0);
             }
-          } catch (err) {
-            console.error("Qoo10売上取得エラー:", err);
-          }
-        }
-
-        // 楽天のデータを取得
-        // 1. まずrakuten_daily_salesコレクションからproductIdで取得（CSV入稿データ）
-        try {
-          let rakutenDataFound = false;
-          const rakutenDailySalesQuery = query(
-            collection(db, "rakuten_daily_sales"),
-            where("productId", "==", product.id),
-          );
-          const rakutenDailySalesSnapshot = await getDocs(rakutenDailySalesQuery);
-          if (!rakutenDailySalesSnapshot.empty) {
-            rakutenDailySalesSnapshot.docs.forEach((doc) => {
-              const data = doc.data();
-              if (data.date >= startDate && data.date <= endDate) {
-                rakutenDataFound = true;
-                addSales(data.date, "楽天", data.salesAmount || 0, data.salesCount || data.orderedUnits || 0);
-              }
-            });
-          }
-
-          // 2. CSV入稿データがなければバックエンドAPIから取得
-          if (!rakutenDataFound && product.rakutenCode) {
-            const cacheResponse = await fetch(
-              `${BACKEND_URL}/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
-            );
-            const cacheData = await cacheResponse.json();
-            if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
-              for (const item of cacheData.dailySales) {
-                addSales(item.date, "楽天", item.rakutenSales || 0, item.rakutenQuantity || 0);
-              }
-            } else {
-              const rakutenResponse = await fetch(
-                `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
-              );
-              const rakutenData = await rakutenResponse.json();
-              if (rakutenData.success && rakutenData.dailySales) {
-                for (const item of rakutenData.dailySales) {
-                  addSales(item.date, "楽天", item.sales, item.quantity);
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.error("楽天売上取得エラー:", err);
-        }
-      }
-
-      // unified_daily_salesからデータを取得（統合CSV入稿分）
-      for (const product of validProducts) {
-        try {
-          const unifiedQuery = query(
-            collection(db, "unified_daily_sales"),
-            where("productId", "==", product.id),
-          );
-          const unifiedSnap = await getDocs(unifiedQuery);
-          unifiedSnap.forEach((doc) => {
+          })).catch(() => {}),
+        getDocs(query(collection(db, "product_sales"), where("productId", "==", product.id)))
+          .then(snap => snap.docs.forEach(doc => {
             const d = doc.data();
             if (d.date < startDate || d.date > endDate) return;
-            addSales(d.date, d.channel, d.salesAmount || 0, d.quantity || 0);
-          });
-        } catch (err) {
-          console.error("統合売上取得エラー:", err);
-        }
-      }
-
-      // daily_viewsから再生数を取得
-      for (const product of validProducts) {
-        try {
-          const viewsQuery = query(
-            collection(db, "daily_views"),
-            where("productId", "==", product.id),
-          );
-          const viewsSnap = await getDocs(viewsQuery);
-          viewsSnap.forEach((doc) => {
+            if (d.mall === "amazon") addSales(d.date, "Amazon", d.sales || 0, d.quantity || 0);
+            else if (d.mall === "qoo10") addSales(d.date, "Qoo10", d.sales || 0, d.quantity || 0);
+            else if (d.mall === "rakuten") addSales(d.date, "楽天", d.sales || 0, d.quantity || 0);
+          })).catch(() => {}),
+        getDocs(query(collection(db, "unified_daily_sales"), where("productId", "==", product.id)))
+          .then(snap => snap.docs.forEach(doc => {
             const d = doc.data();
-            if (d.date < startDate || d.date > endDate) return;
-            ensureDate(d.date);
-            allSalesData[d.date].totalViews = (allSalesData[d.date].totalViews || 0) + (d.views || 0);
-          });
-        } catch (err) {
-          console.error("再生数取得エラー:", err);
-        }
-      }
+            if (d.date >= startDate && d.date <= endDate) {
+              addSales(d.date, d.channel, d.salesAmount || 0, d.quantity || 0);
+            }
+          })).catch(() => {}),
+        getDocs(query(collection(db, "daily_views"), where("productId", "==", product.id)))
+          .then(snap => snap.docs.forEach(doc => {
+            const d = doc.data();
+            if (d.date >= startDate && d.date <= endDate) {
+              ensureDate(d.date);
+              allSalesData[d.date].totalViews = (allSalesData[d.date].totalViews || 0) + (d.views || 0);
+            }
+          })).catch(() => {}),
+      ]);
 
-      // startDate〜endDateの全日付を生成し、データがない日は0埋め
-      const allDates: string[] = [];
+      await Promise.all(queries);
+
+      // startDate〜endDateの全日付を0埋め
       const cur = new Date(startDate);
       const end = new Date(endDate);
       while (cur <= end) {
-        allDates.push(cur.toISOString().split("T")[0]);
+        ensureDate(cur.toISOString().split("T")[0]);
         cur.setDate(cur.getDate() + 1);
       }
-      for (const date of allDates) {
-        ensureDate(date);
-      }
 
-      // 配列に変換してソート
       const salesArray = Object.entries(allSalesData)
-        .map(([date, data]) => ({
-          date,
-          ...data,
-        } as ProductSalesData))
+        .map(([date, data]) => ({ date, ...data } as ProductSalesData))
         .sort((a, b) => a.date.localeCompare(b.date));
 
       setProductSalesData(salesArray);
