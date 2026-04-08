@@ -8415,12 +8415,20 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
 } | null> {
   const axios = (await import('axios')).default;
 
+  // appsecret_proof を生成（Meta APIのセキュリティ要件）
+  const crypto = await import('crypto');
+  const generateAppSecretProof = (token: string): string => {
+    return crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(token).digest('hex');
+  };
+
   // EAAトークン（Facebook Graph API）の場合
   if (accessToken.startsWith("EAA")) {
     try {
+      const proof = generateAppSecretProof(accessToken);
+
       // Facebook Pageに紐付くInstagram Business Accountを取得
       const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
-        params: { fields: 'id,name,instagram_business_account', access_token: accessToken },
+        params: { fields: 'id,name,instagram_business_account', access_token: accessToken, appsecret_proof: proof },
       });
       const pages = pagesRes.data?.data || [];
       console.log("Facebook Pages:", JSON.stringify(pages.map((p: any) => ({ id: p.id, name: p.name, ig: p.instagram_business_account?.id }))));
@@ -8431,7 +8439,7 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
         if (igAccountId) {
           // Instagram Business Account の詳細を取得
           const igRes = await axios.get(`https://graph.facebook.com/v21.0/${igAccountId}`, {
-            params: { fields: 'id,username,name,profile_picture_url', access_token: accessToken },
+            params: { fields: 'id,username,name,profile_picture_url', access_token: accessToken, appsecret_proof: proof },
           });
           const ig = igRes.data;
           console.log("Instagram Business Account:", JSON.stringify(ig));
