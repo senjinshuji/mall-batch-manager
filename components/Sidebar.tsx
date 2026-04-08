@@ -30,7 +30,7 @@ const menuItems = [
     name: "アカウントリスト",
     href: "/external-data",
     icon: Users,
-    adminOnly: false,
+    adminOnly: true,
   },
   {
     name: "フラグ登録",
@@ -42,7 +42,7 @@ const menuItems = [
     name: "媒体設定",
     href: "/settings",
     icon: Settings,
-    adminOnly: false,
+    adminOnly: true,
   },
   {
     name: "マスター機能",

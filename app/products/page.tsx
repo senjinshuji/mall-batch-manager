@@ -1857,23 +1857,24 @@ export default function ProductsPage() {
             </span>
           )}
         </div>
-        <button
-          onClick={() => setIsAdding(true)}
-          disabled={isAdding}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-          新規登録
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setIsAdding(true)}
+            disabled={isAdding}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+            新規登録
+          </button>
+        )}
       </div>
 
       <p className="text-gray-600 mb-6">
-        商品名と各モールでの商品コードを紐付けて登録します。
-        各モールの商品コードはプルダウンから選択できます。
+        {isAdmin ? "商品名と各モールでの商品コードを紐付けて登録します。各モールの商品コードはプルダウンから選択できます。" : "売上データのCSV入稿ができます。"}
       </p>
 
-      {/* CSV入稿セクション */}
-      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+      {/* CSV入稿セクション（admin only） */}
+      {isAdmin && <div className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-lg font-semibold mb-4">CSV一括登録</h2>
         <div className="flex flex-wrap gap-4 items-center">
           <button
@@ -1918,7 +1919,7 @@ export default function ProductsPage() {
         <p className="mt-4 text-sm text-gray-500">
           CSVフォーマット: 商品名, Amazon商品コード, 楽天商品コード, Qoo10商品コード
         </p>
-      </div>
+      </div>}
 
       {/* 統合CSV売上入稿セクション（admin or unified形式のクライアント） */}
       {(isAdmin && unifiedClients.length > 0) || user?.salesFormat === "unified" ? (
@@ -1982,8 +1983,8 @@ export default function ProductsPage() {
         </div>
       ) : null}
 
-      {/* 再生数CSV入稿セクション */}
-      {isRealDataUser && (
+      {/* 再生数CSV入稿セクション（admin only） */}
+      {isAdmin && (
         <div className="bg-white rounded-lg shadow-md p-6 mb-6 border-l-4 border-pink-400">
           <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
             <FileSpreadsheet className="w-5 h-5 text-pink-500" />
@@ -2144,8 +2145,8 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {/* 新規登録フォーム */}
-      {isAdding && (
+      {/* 新規登録フォーム（admin only） */}
+      {isAdmin && isAdding && (
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <h2 className="text-lg font-semibold mb-4">新規商品登録</h2>
           <div className="space-y-4">
@@ -2382,24 +2383,14 @@ export default function ProductsPage() {
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
                   商品名
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  SKU名
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  ブランド名
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  <span className="text-orange-600">Amazon</span>
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  <span className="text-red-600">楽天</span>
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  <span className="text-blue-600">Qoo10</span>
-                </th>
-                <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
-                  操作
-                </th>
+                {isAdmin && <>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">SKU名</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">ブランド名</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-orange-600">Amazon</span></th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-red-600">楽天</span></th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-blue-600">Qoo10</span></th>
+                  <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">操作</th>
+                </>}
                 <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
                   売上入稿
                 </th>
@@ -2415,7 +2406,7 @@ export default function ProductsPage() {
               ) : (
                 products.map((product) => (
                   <tr key={product.id} className="hover:bg-gray-50">
-                    {editingId === product.id ? (
+                    {isAdmin && editingId === product.id ? (
                       <>
                         <td className="px-4 py-3">
                           <input
@@ -2521,81 +2512,40 @@ export default function ProductsPage() {
                         <td className="px-4 py-3 font-medium text-gray-900">
                           {product.productName}
                         </td>
-                        <td className="px-4 py-3 text-gray-600 text-sm">
-                          {product.skuName || "-"}
-                        </td>
-                        <td className="px-4 py-3 text-gray-600 text-sm">
-                          {product.brandName || "-"}
-                        </td>
-                        <td className="px-4 py-3">
-                          {product.amazonCode ? (
-                            <div>
-                              <span className="text-sm font-mono text-orange-600">
-                                {product.amazonCode}
-                              </span>
-                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
-                                {getProductNameByCode(
-                                  product.amazonCode,
-                                  amazonProducts
-                                )}
-                              </p>
+                        {isAdmin && <>
+                          <td className="px-4 py-3 text-gray-600 text-sm">{product.skuName || "-"}</td>
+                          <td className="px-4 py-3 text-gray-600 text-sm">{product.brandName || "-"}</td>
+                          <td className="px-4 py-3">
+                            {product.amazonCode ? (
+                              <div>
+                                <span className="text-sm font-mono text-orange-600">{product.amazonCode}</span>
+                                <p className="text-xs text-gray-500 truncate max-w-[200px]">{getProductNameByCode(product.amazonCode, amazonProducts)}</p>
+                              </div>
+                            ) : <span className="text-gray-400">-</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            {product.rakutenCode ? (
+                              <div>
+                                <span className="text-sm font-mono text-red-600">{product.rakutenCode}</span>
+                                <p className="text-xs text-gray-500 truncate max-w-[200px]">{getProductNameByCode(product.rakutenCode, rakutenProducts)}</p>
+                              </div>
+                            ) : <span className="text-gray-400">-</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            {product.qoo10Code ? (
+                              <div>
+                                <span className="text-sm font-mono text-blue-600">{product.qoo10Code}</span>
+                                <p className="text-xs text-gray-500 truncate max-w-[200px]">{getProductNameByCode(product.qoo10Code, qoo10Products)}</p>
+                              </div>
+                            ) : <span className="text-gray-400">-</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-center gap-2">
+                              <button onClick={() => handleStartEdit(product)} className="p-1 text-blue-600 hover:bg-blue-100 rounded" title="編集"><Edit2 className="w-5 h-5" /></button>
+                              <button onClick={() => handleDeleteProduct(product.id)} className="p-1 text-red-600 hover:bg-red-100 rounded" title="削除"><Trash2 className="w-5 h-5" /></button>
                             </div>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {product.rakutenCode ? (
-                            <div>
-                              <span className="text-sm font-mono text-red-600">
-                                {product.rakutenCode}
-                              </span>
-                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
-                                {getProductNameByCode(
-                                  product.rakutenCode,
-                                  rakutenProducts
-                                )}
-                              </p>
-                            </div>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {product.qoo10Code ? (
-                            <div>
-                              <span className="text-sm font-mono text-blue-600">
-                                {product.qoo10Code}
-                              </span>
-                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
-                                {getProductNameByCode(
-                                  product.qoo10Code,
-                                  qoo10Products
-                                )}
-                              </p>
-                            </div>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-center gap-2">
-                            <button
-                              onClick={() => handleStartEdit(product)}
-                              className="p-1 text-blue-600 hover:bg-blue-100 rounded"
-                              title="編集"
-                            >
-                              <Edit2 className="w-5 h-5" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteProduct(product.id)}
-                              className="p-1 text-red-600 hover:bg-red-100 rounded"
-                              title="削除"
-                            >
-                              <Trash2 className="w-5 h-5" />
-                            </button>
-                          </div>
-                        </td>
+                          </td>
+                        </>}
                         <td className="px-4 py-3 text-center">
                           <div className="flex justify-center gap-1">
                             <button

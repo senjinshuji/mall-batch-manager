@@ -431,7 +431,9 @@ export default function DashboardPage() {
           // 1. まずamazon_daily_salesコレクションからproductIdで取得（CSV入稿データ）
           const amazonDailySalesQuery = query(
             collection(db, "amazon_daily_sales"),
-            where("productId", "==", product.id)
+            where("productId", "==", product.id),
+            where("date", ">=", startDate),
+            where("date", "<=", endDate)
           );
           const amazonDailySalesSnapshot = await getDocs(amazonDailySalesQuery);
           console.log(`[Amazon売上取得] amazon_daily_salesクエリ結果: ${amazonDailySalesSnapshot.size}件`);
@@ -512,6 +514,8 @@ export default function DashboardPage() {
           const rakutenDailySalesQuery = query(
             collection(db, "rakuten_daily_sales"),
             where("productId", "==", product.id),
+            where("date", ">=", startDate),
+            where("date", "<=", endDate),
           );
           const rakutenDailySalesSnapshot = await getDocs(rakutenDailySalesQuery);
           if (!rakutenDailySalesSnapshot.empty) {
@@ -557,6 +561,8 @@ export default function DashboardPage() {
           const unifiedQuery = query(
             collection(db, "unified_daily_sales"),
             where("productId", "==", product.id),
+            where("date", ">=", startDate),
+            where("date", "<=", endDate),
           );
           const unifiedSnap = await getDocs(unifiedQuery);
           unifiedSnap.forEach((doc) => {
@@ -575,6 +581,8 @@ export default function DashboardPage() {
           const viewsQuery = query(
             collection(db, "daily_views"),
             where("productId", "==", product.id),
+            where("date", ">=", startDate),
+            where("date", "<=", endDate),
           );
           const viewsSnap = await getDocs(viewsQuery);
           viewsSnap.forEach((doc) => {
