@@ -7,7 +7,7 @@ import {
   MallProduct,
 } from "@/lib/mockData";
 import { db } from "@/lib/firebase";
-import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from "firebase/firestore";
+import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, where, writeBatch, Timestamp } from "firebase/firestore";
 import { useAuth } from "@/lib/auth-context";
 
 const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
@@ -40,6 +40,7 @@ const demoRegisteredProducts: RegisteredProduct[] = [
 type NewProduct = {
   productName: string;
   skuName: string;
+  brandName: string;
   amazonCode: string;
   rakutenCode: string;
   qoo10Code: string;
@@ -55,7 +56,7 @@ type Qoo10Product = {
 };
 
 export default function ProductsPage() {
-  const { isRealDataUser, isAuthLoading, allowedProductIds } = useAuth();
+  const { isRealDataUser, isAuthLoading, allowedProductIds, isAdmin, user } = useAuth();
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -64,6 +65,7 @@ export default function ProductsPage() {
   const [newProduct, setNewProduct] = useState<NewProduct>({
     productName: "",
     skuName: "",
+    brandName: "",
     amazonCode: "",
     rakutenCode: "",
     qoo10Code: "",
@@ -71,6 +73,7 @@ export default function ProductsPage() {
   const [editProduct, setEditProduct] = useState<NewProduct>({
     productName: "",
     skuName: "",
+    brandName: "",
     amazonCode: "",
     rakutenCode: "",
     qoo10Code: "",
@@ -118,6 +121,14 @@ export default function ProductsPage() {
   const [qoo10SalesSuccess, setQoo10SalesSuccess] = useState<string | null>(null);
   const qoo10SalesFileRef = useRef<HTMLInputElement>(null);
 
+  // 統合CSV入稿用ステート
+  const [showUnifiedImport, setShowUnifiedImport] = useState(false);
+  const [unifiedUploading, setUnifiedUploading] = useState(false);
+  const [unifiedError, setUnifiedError] = useState<string | null>(null);
+  const [unifiedSuccess, setUnifiedSuccess] = useState<string | null>(null);
+  const unifiedFileRef = useRef<HTMLInputElement>(null);
+  const [unifiedClients, setUnifiedClients] = useState<{ id: string; name: string; allowedProductIds: string[]; extraChannels: string[] }[]>([]);
+
   // Firestoreから商品一覧を取得（実データユーザーのみ）
   useEffect(() => {
     // 認証ロード中は何もしない
@@ -141,6 +152,26 @@ export default function ProductsPage() {
     fetchRakutenProducts();
     fetchQoo10Products();
   }, [isRealDataUser, isAuthLoading]);
+
+  // admin用: 統合CSV形式のクライアント情報を取得
+  useEffect(() => {
+    if (!isAdmin) return;
+    const fetchUnifiedClients = async () => {
+      try {
+        const q2 = query(collection(db, "client_accounts"), where("salesFormat", "==", "unified"));
+        const snap = await getDocs(q2);
+        setUnifiedClients(snap.docs.map((d) => ({
+          id: d.id,
+          name: d.data().name || "",
+          allowedProductIds: d.data().allowedProductIds || [],
+          extraChannels: d.data().extraChannels || [],
+        })));
+      } catch (err) {
+        console.error("統合クライアント取得エラー:", err);
+      }
+    };
+    fetchUnifiedClients();
+  }, [isAdmin]);
 
   const fetchProducts = async () => {
     setIsLoading(true);
@@ -353,6 +384,7 @@ export default function ProductsPage() {
       setNewProduct({
         productName: "",
         skuName: "",
+        brandName: "",
         amazonCode: "",
         rakutenCode: "",
         qoo10Code: "",
@@ -388,6 +420,7 @@ export default function ProductsPage() {
     setEditProduct({
       productName: product.productName,
       skuName: product.skuName || "",
+      brandName: product.brandName || "",
       amazonCode: product.amazonCode,
       rakutenCode: product.rakutenCode,
       qoo10Code: product.qoo10Code,
@@ -1192,6 +1225,138 @@ export default function ProductsPage() {
     reader.readAsText(file, "UTF-8");
   }, [selectedProductForQoo10Sales]);
 
+  // 統合CSV入稿ハンドラ
+  const handleUnifiedCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setUnifiedUploading(true);
+    setUnifiedError(null);
+    setUnifiedSuccess(null);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const lines = text.split(/\r?\n/).filter((l) => l.trim());
+
+        if (lines.length < 2) {
+          setUnifiedError("データがありません");
+          setUnifiedUploading(false);
+          return;
+        }
+
+        // ヘッダー解析
+        const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
+        const dateIdx = header.findIndex((h) => h === "order_date" || h === "date" || h === "日付");
+        const storeIdx = header.findIndex((h) => h === "store_name" || h === "store" || h === "チャネル" || h === "モール");
+        const brandIdx = header.findIndex((h) => h === "brand" || h === "ブランド");
+        const qtyIdx = header.findIndex((h) => h === "quantity" || h === "数量");
+        const salesIdx = header.findIndex((h) => h === "sales_amount" || h === "売上" || h === "売上額");
+
+        if (dateIdx === -1 || storeIdx === -1 || brandIdx === -1 || qtyIdx === -1 || salesIdx === -1) {
+          setUnifiedError("CSVヘッダーが不正です。必要な列: order_date, store_name, brand, quantity, sales_amount");
+          setUnifiedUploading(false);
+          return;
+        }
+
+        // ブランド名→{productId, productName}マッピングを構築（大文字小文字不問）
+        // brandName優先、未設定なら商品名でもマッチ
+        const brandMap = new Map<string, { productId: string; productName: string }>();
+        products.forEach((p) => {
+          if (p.brandName) {
+            brandMap.set(p.brandName.toLowerCase(), { productId: p.id, productName: p.productName });
+          }
+          // 商品名でもマッチ可能に（brandNameが優先）
+          if (!brandMap.has(p.productName.toLowerCase())) {
+            brandMap.set(p.productName.toLowerCase(), { productId: p.id, productName: p.productName });
+          }
+        });
+
+        // データパース
+        const unmatchedBrands = new Set<string>();
+        const matchedProducts = new Set<string>();
+        let savedCount = 0;
+
+        const rows: { date: string; channel: string; productId: string; productName: string; quantity: number; salesAmount: number }[] = [];
+
+        for (let i = 1; i < lines.length; i++) {
+          const values = lines[i].split(",").map((v) => v.trim());
+          if (values.length < Math.max(dateIdx, storeIdx, brandIdx, qtyIdx, salesIdx) + 1) continue;
+
+          const date = values[dateIdx];
+          const store = values[storeIdx];
+          const brand = values[brandIdx];
+          const quantity = parseInt(values[qtyIdx]) || 0;
+          const salesAmount = parseInt(values[salesIdx]) || 0;
+
+          const matched = brandMap.get(brand.toLowerCase());
+          if (!matched) {
+            unmatchedBrands.add(brand);
+            continue;
+          }
+
+          matchedProducts.add(matched.productName);
+          rows.push({ date, channel: store, productId: matched.productId, productName: matched.productName, quantity, salesAmount });
+        }
+
+        if (rows.length === 0) {
+          const msg = unmatchedBrands.size > 0
+            ? `マッチするブランド名がありません。未マッチ: ${Array.from(unmatchedBrands).join(", ")}。商品のブランド名を設定してください。`
+            : "有効なデータがありません";
+          setUnifiedError(msg);
+          setUnifiedUploading(false);
+          return;
+        }
+
+        // Firestoreにバッチ書き込み（500件ずつ）
+        const batchSize = 400;
+        for (let i = 0; i < rows.length; i += batchSize) {
+          const batch = writeBatch(db);
+          const chunk = rows.slice(i, i + batchSize);
+
+          for (const row of chunk) {
+            const docRef = doc(collection(db, "unified_daily_sales"));
+            batch.set(docRef, {
+              productId: row.productId,
+              date: row.date,
+              channel: row.channel,
+              productName: row.productName,
+              quantity: row.quantity,
+              salesAmount: row.salesAmount,
+              createdAt: Timestamp.now(),
+            });
+          }
+
+          await batch.commit();
+          savedCount += chunk.length;
+        }
+
+        let msg = `${savedCount}件のデータを保存しました（${Array.from(matchedProducts).join(", ")}）`;
+        if (unmatchedBrands.size > 0) {
+          msg += `\n未マッチのブランド: ${Array.from(unmatchedBrands).join(", ")}`;
+        }
+        setUnifiedSuccess(msg);
+      } catch (err: unknown) {
+        console.error("統合CSVパースエラー:", err);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setUnifiedError(`エラー: ${errMsg}`);
+      } finally {
+        setUnifiedUploading(false);
+        if (unifiedFileRef.current) {
+          unifiedFileRef.current.value = "";
+        }
+      }
+    };
+
+    reader.onerror = () => {
+      setUnifiedError("ファイルの読み込みに失敗しました");
+      setUnifiedUploading(false);
+    };
+
+    reader.readAsText(file, "UTF-8");
+  }, [products]);
+
   // カスタムドロップダウンコンポーネント
   const ProductCodeDropdown = ({
     value,
@@ -1418,6 +1583,68 @@ export default function ProductsPage() {
         </p>
       </div>
 
+      {/* 統合CSV売上入稿セクション（admin or unified形式のクライアント） */}
+      {(isAdmin && unifiedClients.length > 0) || user?.salesFormat === "unified" ? (
+        <div className="bg-white rounded-lg shadow-md p-6 mb-6 border-l-4 border-purple-500">
+          <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5 text-purple-600" />
+            統合CSV売上入稿
+          </h2>
+          <p className="text-sm text-gray-500 mb-4">
+            1つのCSVに全チャネル・全ブランドの売上データをまとめて入稿できます。
+            {isAdmin && unifiedClients.length > 0 && (
+              <span className="ml-1 text-purple-600">
+                対象クライアント: {unifiedClients.map((c) => c.name).join(", ")}
+              </span>
+            )}
+          </p>
+
+          <div className="flex flex-wrap gap-4 items-center">
+            <div>
+              <input
+                type="file"
+                ref={unifiedFileRef}
+                accept=".csv"
+                onChange={handleUnifiedCsvImport}
+                className="hidden"
+                id="unified-csv-upload"
+                disabled={unifiedUploading}
+              />
+              <label
+                htmlFor="unified-csv-upload"
+                className={`flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors cursor-pointer ${unifiedUploading ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                {unifiedUploading ? (
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Upload className="w-5 h-5" />
+                )}
+                {unifiedUploading ? "アップロード中..." : "統合CSVアップロード"}
+              </label>
+            </div>
+          </div>
+
+          {unifiedError && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              {unifiedError}
+            </div>
+          )}
+
+          {unifiedSuccess && (
+            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+              {unifiedSuccess}
+            </div>
+          )}
+
+          <div className="mt-4 bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+            <p className="font-medium mb-1">CSVフォーマット:</p>
+            <p className="text-xs font-mono">order_date, store_name, brand, quantity, sales_amount</p>
+            <p className="text-xs mt-1 text-gray-400">store_name: Amazon, 楽天, Qoo10, 自社サイト, アインズ&トルペ 等</p>
+            <p className="text-xs text-gray-400">brand: 商品に設定した「ブランド名」と一致させてください</p>
+          </div>
+        </div>
+      ) : null}
+
       {/* 新規登録フォーム */}
       {isAdding && (
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
@@ -1449,6 +1676,20 @@ export default function ProductsPage() {
                     setNewProduct({ ...newProduct, skuName: e.target.value })
                   }
                   placeholder="例: 500ml / 詰替用（複数SKUをまとめる場合に入力）"
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  ブランド名（統合CSV用）
+                </label>
+                <input
+                  type="text"
+                  value={newProduct.brandName}
+                  onChange={(e) =>
+                    setNewProduct({ ...newProduct, brandName: e.target.value })
+                  }
+                  placeholder="例: unu（CSVのbrand列と一致させる）"
                   className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
@@ -1618,6 +1859,7 @@ export default function ProductsPage() {
                   setNewProduct({
                     productName: "",
                     skuName: "",
+                    brandName: "",
                     amazonCode: "",
                     rakutenCode: "",
                     qoo10Code: "",
@@ -1643,6 +1885,9 @@ export default function ProductsPage() {
                 </th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
                   SKU名
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                  ブランド名
                 </th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
                   <span className="text-orange-600">Amazon</span>
@@ -1698,6 +1943,20 @@ export default function ProductsPage() {
                             }
                             className="w-full px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500"
                             placeholder="SKU名"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            type="text"
+                            value={editProduct.brandName}
+                            onChange={(e) =>
+                              setEditProduct({
+                                ...editProduct,
+                                brandName: e.target.value,
+                              })
+                            }
+                            className="w-full px-2 py-1 border rounded focus:ring-2 focus:ring-blue-500"
+                            placeholder="ブランド名"
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -1765,6 +2024,9 @@ export default function ProductsPage() {
                         </td>
                         <td className="px-4 py-3 text-gray-600 text-sm">
                           {product.skuName || "-"}
+                        </td>
+                        <td className="px-4 py-3 text-gray-600 text-sm">
+                          {product.brandName || "-"}
                         </td>
                         <td className="px-4 py-3">
                           {product.amazonCode ? (

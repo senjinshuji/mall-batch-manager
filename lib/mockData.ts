@@ -176,6 +176,7 @@ export type RegisteredProduct = {
   id: string;
   productName: string;
   skuName?: string; // SKU名（オプション）- 複数SKUを1商品としてまとめる場合に使用
+  brandName?: string; // 統合CSV入稿時のブランド名マッチング用
   amazonCode: string;
   rakutenCode: string;
   qoo10Code: string;
