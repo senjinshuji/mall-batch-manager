@@ -8407,12 +8407,52 @@ app.post("/qoo10/import-sales-csv/:productId", async (req: Request, res: Respons
 const INSTAGRAM_APP_ID = "1516539189822981";
 const INSTAGRAM_APP_SECRET = "aac5fafe7447eaf19cd6c50def3f3e4c";
 
-// Instagram Graph APIでユーザー情報を取得
+// Instagram ユーザー情報を取得（Facebook Graph API経由）
+// EAAトークン（Facebook Graph API）の場合: /me/accounts → instagram_business_account
+// IGQVトークン（Instagram Basic Display API）の場合: graph.instagram.com/me
 async function fetchInstagramUserInfo(accessToken: string): Promise<{
   id: string; username: string; name: string; profilePictureUrl: string;
 } | null> {
+  const axios = (await import('axios')).default;
+
+  // EAAトークン（Facebook Graph API）の場合
+  if (accessToken.startsWith("EAA")) {
+    try {
+      // Facebook Pageに紐付くInstagram Business Accountを取得
+      const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+        params: { fields: 'id,name,instagram_business_account', access_token: accessToken },
+      });
+      const pages = pagesRes.data?.data || [];
+      console.log("Facebook Pages:", JSON.stringify(pages.map((p: any) => ({ id: p.id, name: p.name, ig: p.instagram_business_account?.id }))));
+
+      // Instagram Business Accountがある最初のページを探す
+      for (const page of pages) {
+        const igAccountId = page.instagram_business_account?.id;
+        if (igAccountId) {
+          // Instagram Business Account の詳細を取得
+          const igRes = await axios.get(`https://graph.facebook.com/v21.0/${igAccountId}`, {
+            params: { fields: 'id,username,name,profile_picture_url', access_token: accessToken },
+          });
+          const ig = igRes.data;
+          console.log("Instagram Business Account:", JSON.stringify(ig));
+          return {
+            id: ig.id || "",
+            username: ig.username || "",
+            name: ig.name || ig.username || "",
+            profilePictureUrl: ig.profile_picture_url || "",
+          };
+        }
+      }
+      console.log("No Instagram Business Account found on any Facebook Page");
+      return null;
+    } catch (error: any) {
+      console.error("Instagram UserInfo error (Facebook API):", error?.response?.data || error?.message);
+      return null;
+    }
+  }
+
+  // IGQVトークン（Instagram Basic Display API）の場合
   try {
-    const axios = (await import('axios')).default;
     const response = await axios.get('https://graph.instagram.com/me', {
       params: { fields: 'id,username,name,profile_picture_url', access_token: accessToken },
     });
@@ -8424,17 +8464,43 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
       profilePictureUrl: data.profile_picture_url || "",
     };
   } catch (error: any) {
-    console.error("Instagram UserInfo error:", error?.response?.data || error?.message);
+    console.error("Instagram UserInfo error (Basic Display API):", error?.response?.data || error?.message);
     return null;
   }
 }
 
-// 短期トークンを長期トークンに交換
+// トークンを長期トークンに交換
+// EAAトークン: Facebook Graph API（graph.facebook.com/oauth/access_token）
+// IGQVトークン: Instagram Basic Display API（graph.instagram.com/access_token）
 async function exchangeInstagramLongLivedToken(shortLivedToken: string): Promise<{
   accessToken: string; expiresIn: number;
 } | null> {
+  const axios = (await import('axios')).default;
+
+  if (shortLivedToken.startsWith("EAA")) {
+    try {
+      const response = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+        params: {
+          grant_type: 'fb_exchange_token',
+          client_id: INSTAGRAM_APP_ID,
+          client_secret: INSTAGRAM_APP_SECRET,
+          fb_exchange_token: shortLivedToken,
+        },
+      });
+      console.log("Facebook long-lived token exchange success");
+      return {
+        accessToken: response.data.access_token,
+        expiresIn: response.data.expires_in || 5184000,
+      };
+    } catch (error: any) {
+      console.error("Facebook long-lived token exchange error:", error?.response?.data || error?.message);
+      // 既に長期トークンの可能性があるのでそのまま返す
+      return { accessToken: shortLivedToken, expiresIn: 5184000 };
+    }
+  }
+
+  // IGQVトークンの場合
   try {
-    const axios = (await import('axios')).default;
     const response = await axios.get('https://graph.instagram.com/access_token', {
       params: {
         grant_type: 'ig_exchange_token',
@@ -8444,7 +8510,7 @@ async function exchangeInstagramLongLivedToken(shortLivedToken: string): Promise
     });
     return {
       accessToken: response.data.access_token,
-      expiresIn: response.data.expires_in || 5184000, // デフォルト60日
+      expiresIn: response.data.expires_in || 5184000,
     };
   } catch (error: any) {
     console.error("Instagram long-lived token exchange error:", error?.response?.data || error?.message);
