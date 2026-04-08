@@ -76,6 +76,8 @@ interface AccountSummary {
   engagementRate: number;
 }
 
+type Platform = "tiktok" | "instagram";
+
 interface VideoData {
   videoId: string;
   title: string;
@@ -89,6 +91,10 @@ interface VideoData {
   retention1s: number | null;
   retention2s: number | null;
   fullVideoWatchedRate: number | null;
+  // Instagram固有
+  reach?: number;
+  saved?: number;
+  reelsAvgWatchTime?: number;
   accountId?: string;
   accountName?: string;
 }
@@ -128,6 +134,7 @@ function formatNumber(num: number): string {
 }
 
 export default function VideoAnalyticsPage() {
+  const [platform, setPlatform] = useState<Platform>("tiktok");
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
@@ -214,8 +221,12 @@ export default function VideoAnalyticsPage() {
 
     try {
       // 1. アカウント取得
+      const accountsCol = platform === "tiktok" ? "tiktok_accounts" : "instagram_accounts";
+      const videosCol = platform === "tiktok" ? "tiktok_videos" : "instagram_videos";
+      const snapshotsCol = platform === "tiktok" ? "tiktok_video_daily_snapshots" : "instagram_video_daily_snapshots";
+
       const accountsSnapshot = await getDocs(
-        query(collection(db, "tiktok_accounts"), where("productId", "==", selectedProductId))
+        query(collection(db, accountsCol), where("productId", "==", selectedProductId))
       );
       const accounts = accountsSnapshot.docs
         .filter((doc) => doc.data().hidden !== true)
@@ -226,9 +237,10 @@ export default function VideoAnalyticsPage() {
 
       const accountsMap = new Map<string, { name: string; avatar: string }>();
       for (const acc of accounts) {
+        const a = acc as any;
         accountsMap.set(acc.id, {
-          name: (acc as any).tiktokUserName || "Unknown",
-          avatar: (acc as any).tiktokAvatarUrl || "",
+          name: platform === "tiktok" ? (a.tiktokUserName || "Unknown") : (a.instagramUserName || "Unknown"),
+          avatar: platform === "tiktok" ? (a.tiktokAvatarUrl || "") : (a.instagramAvatarUrl || ""),
         });
       }
 
@@ -236,10 +248,32 @@ export default function VideoAnalyticsPage() {
       const videosAll: VideoData[] = [];
       for (const [accountId, accountInfo] of Array.from(accountsMap)) {
         const videosSnapshot = await getDocs(
-          query(collection(db, "tiktok_videos"), where("accountId", "==", accountId))
+          query(collection(db, videosCol), where("accountId", "==", accountId))
         );
         for (const doc of videosSnapshot.docs) {
           const d = doc.data();
+          if (platform === "instagram") {
+            videosAll.push({
+              videoId: d.videoId || doc.id,
+              title: d.caption || "",
+              coverImageUrl: d.thumbnailUrl || "",
+              shareUrl: d.permalink || "",
+              createTime: typeof d.timestamp === "string" ? d.timestamp : d.timestamp?.toDate?.()?.toISOString() || null,
+              viewCount: d.reach || 0,
+              likeCount: d.likeCount || 0,
+              commentCount: d.commentCount || 0,
+              shareCount: d.shares || 0,
+              retention1s: null,
+              retention2s: null,
+              fullVideoWatchedRate: null,
+              reach: d.reach || 0,
+              saved: d.saved || 0,
+              reelsAvgWatchTime: d.reelsAvgWatchTime || 0,
+              accountId,
+              accountName: accountInfo.name,
+            });
+            continue;
+          }
           videosAll.push({
             videoId: d.videoId || doc.id,
             title: d.title || "",
@@ -291,7 +325,7 @@ export default function VideoAnalyticsPage() {
       // productIdのみでクエリし、日付はクライアント側でフィルタ（複合インデックス不要）
       const snapshotsSnapshot = await getDocs(
         query(
-          collection(db, "tiktok_video_daily_snapshots"),
+          collection(db, snapshotsCol),
           where("productId", "==", selectedProductId)
         )
       );
@@ -434,7 +468,7 @@ export default function VideoAnalyticsPage() {
     if (selectedProductId) {
       fetchAnalyticsData();
     }
-  }, [selectedProductId, startDate, endDate]);
+  }, [selectedProductId, startDate, endDate, platform]);
 
   // イベントフラグ
   const [eventFlags, setEventFlags] = useState<EventFlag[]>([]);
@@ -479,6 +513,7 @@ export default function VideoAnalyticsPage() {
 
   // 動画詳細を開く
   const handleVideoClick = async (video: VideoData) => {
+    const snapshotsCol = platform === "tiktok" ? "tiktok_video_daily_snapshots" : "instagram_video_daily_snapshots";
     setSelectedVideo(video);
     setIsLoadingVideoDetail(true);
     setShowMallSales(false);
@@ -495,7 +530,7 @@ export default function VideoAnalyticsPage() {
       // この動画のスナップショットを取得
       const snapshotsSnapshot = await getDocs(
         query(
-          collection(db, "tiktok_video_daily_snapshots"),
+          collection(db, snapshotsCol),
           where("videoId", "==", video.videoId)
         )
       );
@@ -699,11 +734,18 @@ export default function VideoAnalyticsPage() {
   return (
     <div className="space-y-6">
       {/* ページヘッダー */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-800">動画分析</h1>
-        <p className="text-gray-600 mt-1">
-          TikTokアカウントごとのパフォーマンスを分析
-        </p>
+      <div className="flex items-center gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800">動画分析</h1>
+          <p className="text-gray-600 mt-1">
+            {platform === "tiktok" ? "TikTok" : "Instagram"}アカウントごとのパフォーマンスを分析
+          </p>
+        </div>
+        <select value={platform} onChange={e => { setPlatform(e.target.value as Platform); setSelectedProductId(""); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium bg-white focus:ring-2 focus:ring-blue-500">
+          <option value="tiktok">TikTok</option>
+          <option value="instagram">Instagram</option>
+        </select>
       </div>
 
       {/* フィルター */}
@@ -1306,30 +1348,37 @@ export default function VideoAnalyticsPage() {
                           <Eye size={12} /> 再生数 <SortIcon field="viewCount" />
                         </span>
                       </th>
-                      <th
-                        className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSort("retention1s")}
-                      >
-                        <span className="flex items-center justify-center gap-1">
-                          1秒維持 <SortIcon field="retention1s" />
-                        </span>
-                      </th>
-                      <th
-                        className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSort("retention2s")}
-                      >
-                        <span className="flex items-center justify-center gap-1">
-                          2秒維持 <SortIcon field="retention2s" />
-                        </span>
-                      </th>
-                      <th
-                        className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSort("fullVideoWatchedRate")}
-                      >
-                        <span className="flex items-center justify-center gap-1">
-                          完了率 <SortIcon field="fullVideoWatchedRate" />
-                        </span>
-                      </th>
+                      {platform === "tiktok" ? (
+                        <>
+                          <th className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleSort("retention1s")}>
+                            <span className="flex items-center justify-center gap-1">1秒維持 <SortIcon field="retention1s" /></span>
+                          </th>
+                          <th className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleSort("retention2s")}>
+                            <span className="flex items-center justify-center gap-1">2秒維持 <SortIcon field="retention2s" /></span>
+                          </th>
+                          <th className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleSort("fullVideoWatchedRate")}>
+                            <span className="flex items-center justify-center gap-1">完了率 <SortIcon field="fullVideoWatchedRate" /></span>
+                          </th>
+                        </>
+                      ) : (
+                        <>
+                          <th className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleSort("reach" as any)}>
+                            <span className="flex items-center justify-center gap-1">リーチ</span>
+                          </th>
+                          <th className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleSort("reelsAvgWatchTime" as any)}>
+                            <span className="flex items-center justify-center gap-1">平均視聴</span>
+                          </th>
+                          <th className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleSort("saved" as any)}>
+                            <span className="flex items-center justify-center gap-1">保存</span>
+                          </th>
+                        </>
+                      )}
                       <th
                         className="text-center py-3 px-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-gray-100"
                         onClick={() => handleSort("engagementRate")}
@@ -1425,20 +1474,37 @@ export default function VideoAnalyticsPage() {
                         <td className="text-right py-2 px-2 text-sm font-medium text-gray-800">
                           {formatNumber(video.viewCount)}
                         </td>
-                        <td className="text-center py-2 px-2 text-sm text-gray-700">
-                          {video.retention1s !== null ? `${video.retention1s.toFixed(1)}%` : "-"}
-                        </td>
-                        <td className="text-center py-2 px-2 text-sm text-gray-700">
-                          {video.retention2s !== null ? `${video.retention2s.toFixed(1)}%` : "-"}
-                        </td>
-                        <td className="text-center py-2 px-2 text-sm text-gray-700">
-                          {video.fullVideoWatchedRate !== null && video.fullVideoWatchedRate !== undefined
-                            ? `${video.fullVideoWatchedRate.toFixed(1)}%`
-                            : "-"}
-                        </td>
+                        {platform === "tiktok" ? (
+                          <>
+                            <td className="text-center py-2 px-2 text-sm text-gray-700">
+                              {video.retention1s !== null ? `${video.retention1s.toFixed(1)}%` : "-"}
+                            </td>
+                            <td className="text-center py-2 px-2 text-sm text-gray-700">
+                              {video.retention2s !== null ? `${video.retention2s.toFixed(1)}%` : "-"}
+                            </td>
+                            <td className="text-center py-2 px-2 text-sm text-gray-700">
+                              {video.fullVideoWatchedRate !== null && video.fullVideoWatchedRate !== undefined
+                                ? `${video.fullVideoWatchedRate.toFixed(1)}%` : "-"}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="text-center py-2 px-2 text-sm text-gray-700">
+                              {formatNumber(video.reach || 0)}
+                            </td>
+                            <td className="text-center py-2 px-2 text-sm text-gray-700">
+                              {video.reelsAvgWatchTime ? `${(video.reelsAvgWatchTime / 1000).toFixed(1)}s` : "-"}
+                            </td>
+                            <td className="text-center py-2 px-2 text-sm text-gray-700">
+                              {video.saved || 0}
+                            </td>
+                          </>
+                        )}
                         <td className="text-center py-2 px-2 text-sm text-gray-700">
                           {video.viewCount > 0
-                            ? `${(((video.likeCount + video.commentCount + video.shareCount) / video.viewCount) * 100).toFixed(2)}%`
+                            ? platform === "instagram"
+                              ? `${(((video.likeCount + video.commentCount + video.shareCount + (video.saved || 0)) / video.viewCount) * 100).toFixed(2)}%`
+                              : `${(((video.likeCount + video.commentCount + video.shareCount) / video.viewCount) * 100).toFixed(2)}%`
                             : "-"}
                         </td>
                         <td className="text-right py-2 px-2 text-sm text-gray-700">

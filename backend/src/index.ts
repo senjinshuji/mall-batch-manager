@@ -4318,6 +4318,88 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
       bqVideosInserted,
     });
 
+    // Step 4: Instagram動画同期
+    console.log("Step 4: Syncing Instagram videos...");
+    const igAccountsSnapshot = await db.collection("instagram_accounts").get();
+    let igVideoSyncSuccess = 0;
+    let igVideoSyncError = 0;
+    let igTotalSnapshots = 0;
+
+    if (!igAccountsSnapshot.empty) {
+      for (const igAccountDoc of igAccountsSnapshot.docs) {
+        const igAccount = igAccountDoc.data();
+        const igAccountId = igAccountDoc.id;
+
+        if (!igAccount.accessToken) {
+          console.warn(`Skipping Instagram account ${igAccountId}: No access token`);
+          continue;
+        }
+
+        try {
+          // IG Business Account ID を取得
+          const igBiz = await getInstagramBusinessAccountId(igAccount.accessToken);
+          if (!igBiz) {
+            console.warn(`Skipping Instagram account ${igAccountId}: No IG Business Account found`);
+            igVideoSyncError++;
+            continue;
+          }
+
+          // 動画一覧+インサイト取得
+          const igVideos = await fetchAllInstagramVideos(igBiz.pageToken, igBiz.igAccountId);
+
+          // Firestoreに保存
+          await saveInstagramVideosToFirestore(igAccountId, igAccount.productId, igVideos);
+
+          // アカウントの最終同期日時を更新
+          await db.collection("instagram_accounts").doc(igAccountId).update({
+            lastVideoSyncAt: Timestamp.now(),
+            totalVideos: igVideos.length,
+          });
+
+          // 日次スナップショット保存
+          const igBatch = db.batch();
+          for (const video of igVideos) {
+            const snapshotId = `${video.videoId}_${today}`;
+            const snapshotRef = db.collection("instagram_video_daily_snapshots").doc(snapshotId);
+            igBatch.set(snapshotRef, {
+              videoId: video.videoId,
+              accountId: igAccountId,
+              productId: igAccount.productId,
+              date: today,
+              reach: video.reach || 0,
+              likeCount: video.likeCount || 0,
+              commentCount: video.commentCount || 0,
+              shares: video.shares || 0,
+              saved: video.saved || 0,
+              reelsVideoViewTotalTime: video.reelsVideoViewTotalTime || 0,
+              reelsAvgWatchTime: video.reelsAvgWatchTime || 0,
+              savedAt: new Date(),
+            }, { merge: true });
+            igTotalSnapshots++;
+          }
+          await igBatch.commit();
+
+          igVideoSyncSuccess++;
+          console.log(`Instagram: Synced account ${igAccount.instagramUserName || igAccountId}: ${igVideos.length} videos`);
+        } catch (igErr: any) {
+          console.error(`Error syncing Instagram account ${igAccountId}:`, igErr?.message);
+          igVideoSyncError++;
+        }
+
+        // レート制限対策
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    batchLog.steps.push({
+      step: "instagram_sync",
+      success: igVideoSyncSuccess,
+      error: igVideoSyncError,
+      totalAccounts: igAccountsSnapshot.size,
+      totalSnapshots: igTotalSnapshots,
+      date: today,
+    });
+
     // 完了
     const duration = Date.now() - startTime;
     batchLog.status = "completed";
@@ -8962,6 +9044,178 @@ app.delete("/instagram/accounts/:accountId", async (req: Request, res: Response)
     res.status(500).json({ success: false, message: "削除に失敗しました", error: error?.message });
   }
 });
+
+// Instagram動画一覧+インサイト取得
+async function fetchAllInstagramVideos(
+  accessToken: string,
+  igBusinessAccountId: string
+): Promise<any[]> {
+  const axios = (await import('axios')).default;
+  const crypto = await import('crypto');
+  const generateProof = (token: string) => crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(token).digest('hex');
+
+  const allVideos: any[] = [];
+  let nextUrl: string | null = `https://graph.facebook.com/v21.0/${igBusinessAccountId}/media`;
+  const fields = 'id,caption,media_type,thumbnail_url,permalink,timestamp,like_count,comments_count,media_product_type';
+
+  // メディア一覧を取得（ページネーション）
+  while (nextUrl) {
+    try {
+      const proof = generateProof(accessToken);
+      const isFirstPage: boolean = nextUrl!.includes('graph.facebook.com/v21.0/');
+      const response: any = isFirstPage
+        ? await axios.get(nextUrl!, { params: { fields, limit: 50, access_token: accessToken, appsecret_proof: proof } })
+        : await axios.get(nextUrl!);
+
+      const data: any = response.data;
+      const mediaItems: any[] = data?.data || [];
+
+      for (const item of mediaItems) {
+        // VIDEO/REELS のみ対象
+        if (item.media_type !== 'VIDEO') continue;
+
+        // インサイト取得
+        let insights: Record<string, number> = {};
+        try {
+          const insightProof = generateProof(accessToken);
+          const insightRes = await axios.get(`https://graph.facebook.com/v21.0/${item.id}/insights`, {
+            params: {
+              metric: 'reach,saved,shares,total_interactions,likes,comments,ig_reels_video_view_total_time,ig_reels_avg_watch_time',
+              access_token: accessToken,
+              appsecret_proof: insightProof,
+            },
+          });
+          for (const m of insightRes.data?.data || []) {
+            insights[m.name] = m.values?.[0]?.value || 0;
+          }
+        } catch (insightErr: any) {
+          console.error(`Instagram insight error for ${item.id}:`, insightErr?.response?.data?.error?.message || insightErr?.message);
+        }
+
+        allVideos.push({
+          videoId: item.id,
+          caption: item.caption || "",
+          mediaType: item.media_type,
+          mediaProductType: item.media_product_type || "",
+          thumbnailUrl: item.thumbnail_url || "",
+          permalink: item.permalink || "",
+          timestamp: item.timestamp || null,
+          likeCount: item.like_count || 0,
+          commentCount: item.comments_count || 0,
+          reach: insights.reach || 0,
+          saved: insights.saved || 0,
+          shares: insights.shares || 0,
+          totalInteractions: insights.total_interactions || 0,
+          reelsVideoViewTotalTime: insights.ig_reels_video_view_total_time || 0,
+          reelsAvgWatchTime: insights.ig_reels_avg_watch_time || 0,
+        });
+
+        // レート制限対策
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      console.log(`Instagram: Fetched ${mediaItems.length} media items (${allVideos.length} videos total)`);
+
+      // ページネーション
+      nextUrl = data?.paging?.next || null;
+    } catch (error: any) {
+      console.error('Error fetching Instagram media:', error?.response?.data || error?.message);
+      nextUrl = null;
+    }
+  }
+
+  return allVideos;
+}
+
+// Instagram動画をFirestoreに保存
+async function saveInstagramVideosToFirestore(
+  accountId: string,
+  productId: string,
+  videos: any[]
+): Promise<{ created: number; updated: number }> {
+  let created = 0;
+  let updated = 0;
+  const batch = db.batch();
+  let batchCount = 0;
+
+  for (const video of videos) {
+    const docRef = db.collection("instagram_videos").doc(video.videoId);
+    const existingDoc = await docRef.get();
+
+    const videoData = {
+      videoId: video.videoId,
+      accountId,
+      productId,
+      caption: video.caption,
+      thumbnailUrl: video.thumbnailUrl,
+      permalink: video.permalink,
+      mediaType: video.mediaType,
+      mediaProductType: video.mediaProductType,
+      timestamp: video.timestamp ? new Date(video.timestamp) : null,
+      reach: video.reach,
+      likeCount: video.likeCount,
+      commentCount: video.commentCount,
+      shares: video.shares,
+      saved: video.saved,
+      totalInteractions: video.totalInteractions,
+      reelsVideoViewTotalTime: video.reelsVideoViewTotalTime,
+      reelsAvgWatchTime: video.reelsAvgWatchTime,
+      lastFetchedAt: Timestamp.now(),
+    };
+
+    if (existingDoc.exists) {
+      batch.update(docRef, {
+        reach: videoData.reach,
+        likeCount: videoData.likeCount,
+        commentCount: videoData.commentCount,
+        shares: videoData.shares,
+        saved: videoData.saved,
+        totalInteractions: videoData.totalInteractions,
+        reelsVideoViewTotalTime: videoData.reelsVideoViewTotalTime,
+        reelsAvgWatchTime: videoData.reelsAvgWatchTime,
+        thumbnailUrl: videoData.thumbnailUrl,
+        lastFetchedAt: videoData.lastFetchedAt,
+      });
+      updated++;
+    } else {
+      batch.set(docRef, { ...videoData, createdAt: Timestamp.now() });
+      created++;
+    }
+
+    batchCount++;
+    if (batchCount >= 500) {
+      await batch.commit();
+      batchCount = 0;
+    }
+  }
+
+  if (batchCount > 0) await batch.commit();
+  return { created, updated };
+}
+
+// Instagram用のIG Business Account IDを取得するヘルパー
+async function getInstagramBusinessAccountId(accessToken: string): Promise<{
+  igAccountId: string; pageToken: string;
+} | null> {
+  const axios = (await import('axios')).default;
+  const crypto = await import('crypto');
+  const proof = crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(accessToken).digest('hex');
+
+  try {
+    const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+      params: { fields: 'id,name,access_token,instagram_business_account', access_token: accessToken, appsecret_proof: proof },
+    });
+    for (const page of pagesRes.data?.data || []) {
+      if (page.instagram_business_account?.id) {
+        return { igAccountId: page.instagram_business_account.id, pageToken: page.access_token || accessToken };
+      }
+    }
+    return null;
+  } catch (error: any) {
+    console.error("Error getting IG Business Account:", error?.response?.data || error?.message);
+    return null;
+  }
+}
 
 // ==================== End Instagram ====================
 
