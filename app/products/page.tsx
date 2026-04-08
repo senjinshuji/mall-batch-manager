@@ -2039,93 +2039,94 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {/* チャネル別売上CSV入稿 */}
-      {isRealDataUser && (
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6 border-l-4 border-blue-400">
-          <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
-            <FileSpreadsheet className="w-5 h-5 text-blue-500" />
-            チャネル別売上CSV入稿
-          </h2>
-          <p className="text-sm text-gray-500 mb-4">
-            各販売チャネルの売上データをCSVで入稿します。
-          </p>
+      {/* チャネル別売上CSV入稿モーダル */}
+      {selectedProductForChannelSales && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-blue-500" />
+                  その他チャネル売上入稿
+                </h2>
+                <button
+                  onClick={() => {
+                    setSelectedProductForChannelSales(null);
+                    setChannelSalesError(null);
+                    setChannelSalesSuccess(null);
+                    setSelectedChannel("");
+                  }}
+                  className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
-          <div className="flex flex-wrap gap-4 items-end">
-            {/* 商品選択 */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">商品</label>
-              <select
-                value={selectedProductForChannelSales || ""}
-                onChange={(e) => setSelectedProductForChannelSales(e.target.value || null)}
-                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm min-w-[160px]"
-              >
-                <option value="">商品を選択...</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.productName}{p.skuName ? `（${p.skuName}）` : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
+              <p className="text-sm text-gray-600 mb-4">
+                商品: <span className="font-medium">{products.find(p => p.id === selectedProductForChannelSales)?.productName}</span>
+              </p>
 
-            {/* チャネル選択 */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">チャネル</label>
-              <select
-                value={selectedChannel}
-                onChange={(e) => setSelectedChannel(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm min-w-[160px]"
-              >
-                <option value="">チャネルを選択...</option>
-                <optgroup label="オンライン">
-                  {SALES_CHANNELS.online.map(ch => (
-                    <option key={ch.key} value={ch.key}>{ch.label}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="店舗">
-                  {SALES_CHANNELS.store.map(ch => (
-                    <option key={ch.key} value={ch.key}>{ch.label}</option>
-                  ))}
-                </optgroup>
-              </select>
-            </div>
+              <div className="space-y-4">
+                {/* チャネル選択 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">チャネル</label>
+                  <select
+                    value={selectedChannel}
+                    onChange={(e) => setSelectedChannel(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+                  >
+                    <option value="">チャネルを選択...</option>
+                    <optgroup label="オンライン">
+                      {SALES_CHANNELS.online.map(ch => (
+                        <option key={ch.key} value={ch.key}>{ch.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="店舗">
+                      {SALES_CHANNELS.store.map(ch => (
+                        <option key={ch.key} value={ch.key}>{ch.label}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
 
-            {/* アップロード */}
-            <div>
-              <input
-                type="file"
-                ref={channelSalesFileRef}
-                accept=".csv"
-                onChange={handleChannelSalesCsvImport}
-                className="hidden"
-                id="channel-sales-csv-upload"
-                disabled={channelSalesUploading || !selectedProductForChannelSales || !selectedChannel}
-              />
-              <label
-                htmlFor="channel-sales-csv-upload"
-                className={`flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors cursor-pointer text-sm ${(channelSalesUploading || !selectedProductForChannelSales || !selectedChannel) ? "opacity-50 cursor-not-allowed" : ""}`}
-              >
-                {channelSalesUploading ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Upload className="w-4 h-4" />
+                {/* アップロード */}
+                <div>
+                  <input
+                    type="file"
+                    ref={channelSalesFileRef}
+                    accept=".csv"
+                    onChange={handleChannelSalesCsvImport}
+                    className="hidden"
+                    id="channel-sales-csv-upload"
+                    disabled={channelSalesUploading || !selectedChannel}
+                  />
+                  <label
+                    htmlFor="channel-sales-csv-upload"
+                    className={`flex items-center justify-center gap-2 w-full px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors cursor-pointer ${(channelSalesUploading || !selectedChannel) ? "opacity-50 cursor-not-allowed" : ""}`}
+                  >
+                    {channelSalesUploading ? (
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Upload className="w-5 h-5" />
+                    )}
+                    {channelSalesUploading ? "アップロード中..." : "CSVアップロード"}
+                  </label>
+                </div>
+
+                {channelSalesError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{channelSalesError}</div>
                 )}
-                {channelSalesUploading ? "アップロード中..." : "CSVアップロード"}
-              </label>
+                {channelSalesSuccess && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{channelSalesSuccess}</div>
+                )}
+
+                <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+                  <p className="font-medium mb-1">CSVフォーマット:</p>
+                  <p className="text-xs font-mono">日付, 売上, 数量</p>
+                  <p className="text-xs mt-1 text-gray-400">日付: YYYY/MM/DD, M/D 等対応。ヘッダー行に「日付」「売上」を含めてください。</p>
+                </div>
+              </div>
             </div>
-          </div>
-
-          {channelSalesError && (
-            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{channelSalesError}</div>
-          )}
-          {channelSalesSuccess && (
-            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{channelSalesSuccess}</div>
-          )}
-
-          <div className="mt-4 bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-            <p className="font-medium mb-1">CSVフォーマット:</p>
-            <p className="text-xs font-mono">日付, 売上, 数量</p>
-            <p className="text-xs mt-1 text-gray-400">日付: YYYY/MM/DD, YYYY-MM-DD, M/D いずれも対応。売上・数量は数値。ヘッダー行に「日付」「売上」を含めてください。</p>
           </div>
         </div>
       )}
@@ -2604,6 +2605,17 @@ export default function ProductsPage() {
                               title="Qoo10売上入稿"
                             >
                               <FileSpreadsheet className="w-5 h-5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setSelectedProductForChannelSales(product.id);
+                                setChannelSalesError(null);
+                                setChannelSalesSuccess(null);
+                              }}
+                              className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                              title="その他チャネル売上入稿"
+                            >
+                              <Plus className="w-4 h-4" />
                             </button>
                           </div>
                         </td>
