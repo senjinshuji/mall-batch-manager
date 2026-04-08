@@ -1035,9 +1035,27 @@ export default function ProductsPage() {
           return;
         }
 
+        // 「日付」を含むヘッダー行を見つける
+        let headerIdx = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes("日付")) { headerIdx = i; break; }
+        }
+
+        // 日付正規化（M/D → YYYY-MM-DD）
+        const normalizeDate = (d: string): string => {
+          const cleaned = d.trim();
+          if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(cleaned)) return cleaned.replace(/\//g, "-");
+          const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+          if (mdMatch) {
+            const year = new Date().getFullYear();
+            return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
+          }
+          return cleaned.replace(/\//g, "-");
+        };
+
         const parsedData = [];
 
-        for (let i = 1; i < lines.length; i++) {
+        for (let i = headerIdx + 1; i < lines.length; i++) {
           const line = lines[i];
           const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
 
@@ -1046,7 +1064,7 @@ export default function ProductsPage() {
           }
 
           parsedData.push({
-            date: values[0],
+            date: normalizeDate(values[0]),
             productManagementCode: values[1] || "",
             productCode: values[2] || "",
             salesAmount: values[3] || "0",
@@ -1162,9 +1180,26 @@ export default function ProductsPage() {
           return;
         }
 
+        // ヘッダー行検出
+        let qoo10HeaderIdx = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes("日付") || lines[i].toLowerCase().includes("date")) { qoo10HeaderIdx = i; break; }
+        }
+
+        const normQoo10Date = (d: string): string => {
+          const cleaned = d.trim();
+          if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(cleaned)) return cleaned.replace(/\//g, "-");
+          const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+          if (mdMatch) {
+            const year = new Date().getFullYear();
+            return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
+          }
+          return cleaned.replace(/\//g, "-");
+        };
+
         const parsedData = [];
 
-        for (let i = 1; i < lines.length; i++) {
+        for (let i = qoo10HeaderIdx + 1; i < lines.length; i++) {
           const line = lines[i];
           const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
 
@@ -1173,7 +1208,7 @@ export default function ProductsPage() {
           }
 
           parsedData.push({
-            date: values[0].replace(/\//g, "-"),
+            date: normQoo10Date(values[0]),
             sales: values[1] || "0",
             units: values[2] || "0",
           });
