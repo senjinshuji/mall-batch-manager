@@ -1260,20 +1260,25 @@ export default function ProductsPage() {
           return;
         }
 
-        // ブランド名→商品IDマッピングを構築
-        const brandMap = new Map<string, string>();
+        // ブランド名→{productId, productName}マッピングを構築（大文字小文字不問）
+        // brandName優先、未設定なら商品名でもマッチ
+        const brandMap = new Map<string, { productId: string; productName: string }>();
         products.forEach((p) => {
           if (p.brandName) {
-            brandMap.set(p.brandName.toLowerCase(), p.id);
+            brandMap.set(p.brandName.toLowerCase(), { productId: p.id, productName: p.productName });
+          }
+          // 商品名でもマッチ可能に（brandNameが優先）
+          if (!brandMap.has(p.productName.toLowerCase())) {
+            brandMap.set(p.productName.toLowerCase(), { productId: p.id, productName: p.productName });
           }
         });
 
         // データパース
         const unmatchedBrands = new Set<string>();
+        const matchedProducts = new Set<string>();
         let savedCount = 0;
 
-        // 既存データを削除してから一括書き込み（日付範囲内）
-        const rows: { date: string; channel: string; brandName: string; productId: string; quantity: number; salesAmount: number }[] = [];
+        const rows: { date: string; channel: string; productId: string; productName: string; quantity: number; salesAmount: number }[] = [];
 
         for (let i = 1; i < lines.length; i++) {
           const values = lines[i].split(",").map((v) => v.trim());
@@ -1285,13 +1290,14 @@ export default function ProductsPage() {
           const quantity = parseInt(values[qtyIdx]) || 0;
           const salesAmount = parseInt(values[salesIdx]) || 0;
 
-          const productId = brandMap.get(brand.toLowerCase());
-          if (!productId) {
+          const matched = brandMap.get(brand.toLowerCase());
+          if (!matched) {
             unmatchedBrands.add(brand);
             continue;
           }
 
-          rows.push({ date, channel: store, brandName: brand, productId, quantity, salesAmount });
+          matchedProducts.add(matched.productName);
+          rows.push({ date, channel: store, productId: matched.productId, productName: matched.productName, quantity, salesAmount });
         }
 
         if (rows.length === 0) {
@@ -1303,8 +1309,8 @@ export default function ProductsPage() {
           return;
         }
 
-        // Firestoreにバッチ書き込み
-        const batchSize = 500;
+        // Firestoreにバッチ書き込み（500件ずつ）
+        const batchSize = 400;
         for (let i = 0; i < rows.length; i += batchSize) {
           const batch = writeBatch(db);
           const chunk = rows.slice(i, i + batchSize);
@@ -1315,7 +1321,7 @@ export default function ProductsPage() {
               productId: row.productId,
               date: row.date,
               channel: row.channel,
-              brandName: row.brandName,
+              productName: row.productName,
               quantity: row.quantity,
               salesAmount: row.salesAmount,
               createdAt: Timestamp.now(),
@@ -1326,14 +1332,15 @@ export default function ProductsPage() {
           savedCount += chunk.length;
         }
 
-        let msg = `${savedCount}件のデータを保存しました`;
+        let msg = `${savedCount}件のデータを保存しました（${Array.from(matchedProducts).join(", ")}）`;
         if (unmatchedBrands.size > 0) {
-          msg += `（未マッチのブランド: ${Array.from(unmatchedBrands).join(", ")}）`;
+          msg += `\n未マッチのブランド: ${Array.from(unmatchedBrands).join(", ")}`;
         }
         setUnifiedSuccess(msg);
-      } catch (err) {
+      } catch (err: unknown) {
         console.error("統合CSVパースエラー:", err);
-        setUnifiedError("CSVファイルの解析に失敗しました");
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setUnifiedError(`エラー: ${errMsg}`);
       } finally {
         setUnifiedUploading(false);
         if (unifiedFileRef.current) {
