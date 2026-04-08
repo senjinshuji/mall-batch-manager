@@ -1675,11 +1675,10 @@ export default function DashboardPage() {
             </div>
           )
         ) : (
-          <div className="h-72 flex items-center justify-center text-gray-400">
+          <div className="h-72 flex items-center justify-center text-gray-500">
             <div className="text-center">
-              <Package className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-              <p className="text-lg font-medium">商品が選択されていません</p>
-              <p className="text-sm mt-1">上のドロップダウンから商品を選択してください</p>
+              <p>商品が選択されていません</p>
+              <p className="text-sm mt-2">上のドロップダウンから商品を選択してください</p>
             </div>
           </div>
         )}
