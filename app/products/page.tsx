@@ -2603,14 +2603,6 @@ export default function ProductsPage() {
 
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-4">
-                  <button
-                    onClick={handleDownloadAmazonSalesTemplate}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    テンプレートDL
-                  </button>
-
                   <div>
                     <input
                       type="file"
@@ -2648,13 +2640,9 @@ export default function ProductsPage() {
                 )}
 
                 <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
-                  <p className="text-xs break-words">
-                    日付, 注文商品の売上額, 注文商品の売上額 - B2B, 注文された商品点数, 注文点数 - B2B,
-                    注文品目総数, 注文品目総数 - B2B, ページビュー - 合計, ページビュー - 合計 - B2B,
-                    セッション数 - 合計, セッション数 - 合計 - B2B, おすすめ出品の獲得率, おすすめ出品の獲得率 - B2B,
-                    ユニットセッション率, ユニットセッション率 - B2B, 平均出品数, 親商品の平均数
-                  </p>
+                  <p className="font-medium mb-1">対応フォーマット:</p>
+                  <p className="text-xs text-gray-500">A列に日付、ヘッダー行に「注文商品の売上額」を含むCSV</p>
+                  <p className="text-xs text-gray-500">Amazon セラーセントラルのビジネスレポートCSVをそのままアップロードできます</p>
                 </div>
               </div>
             </div>
@@ -2690,14 +2678,6 @@ export default function ProductsPage() {
 
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-4">
-                  <button
-                    onClick={handleDownloadRakutenSalesTemplate}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    テンプレートDL
-                  </button>
-
                   <div>
                     <input
                       type="file"
@@ -2735,13 +2715,9 @@ export default function ProductsPage() {
                 )}
 
                 <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
-                  <p className="text-xs break-words">
-                    日付, 商品管理番号, 商品番号, 売上, 売上件数, 売上個数, アクセス人数, ユニークユーザー数,
-                    転換率, 客単価, 総購入件数, 新規購入件数, リピート購入件数, 未購入アクセス人数,
-                    レビュー投稿数, レビュー総合評価（点）, 総レビュー数, 滞在時間（秒）, 直帰数, 離脱数,
-                    離脱率, お気に入り登録ユーザ数, お気に入り総ユーザ数, 在庫数
-                  </p>
+                  <p className="font-medium mb-1">対応フォーマット:</p>
+                  <p className="text-xs text-gray-500">ヘッダー行に「日付」を含むCSV（楽天RMSのアクセス流入分析CSVそのまま対応）</p>
+                  <p className="text-xs text-gray-500">日付は M/D, YYYY/MM/DD, YYYY/M/D いずれも対応</p>
                 </div>
               </div>
             </div>
@@ -2777,14 +2753,6 @@ export default function ProductsPage() {
 
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-4">
-                  <button
-                    onClick={handleDownloadQoo10SalesTemplate}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    テンプレートDL
-                  </button>
-
                   <div>
                     <input
                       type="file"
@@ -2822,10 +2790,9 @@ export default function ProductsPage() {
                 )}
 
                 <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
-                  <p className="text-xs break-words">
-                    日付, 売上, 売上個数
-                  </p>
+                  <p className="font-medium mb-1">対応フォーマット:</p>
+                  <p className="text-xs text-gray-500">ヘッダー行に「日付」を含む3列CSV（日付, 売上, 個数）</p>
+                  <p className="text-xs text-gray-500">日付は M/D, YYYY/MM/DD, YYYY/M/D いずれも対応</p>
                 </div>
               </div>
             </div>
