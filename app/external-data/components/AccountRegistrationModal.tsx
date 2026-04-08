@@ -24,8 +24,8 @@ type AccountRegistrationModalProps = {
 };
 
 // プラットフォーム別CSVヘッダー
-const TIKTOK_CSV_HEADERS = ["商材名", "アカウント名", "オープンID", "アクセストークン", "リフレッシュトークン", "端末", "メアド", "PW", "運用者", "プロフィールURL"];
-const INSTAGRAM_CSV_HEADERS = ["商材名", "アカウント名", "アクセストークン", "端末", "メアド", "PW", "運用者", "プロフィールURL"];
+const TIKTOK_CSV_HEADERS = ["商材名", "プロフィールURL", "アカウント名", "オープンID", "アクセストークン", "リフレッシュトークン", "端末", "メアド", "PW", "運用者"];
+const INSTAGRAM_CSV_HEADERS = ["商材名", "プロフィールURL", "アカウント名", "アクセストークン", "端末", "メアド", "PW", "運用者"];
 
 export default function AccountRegistrationModal({ isOpen, platform, onClose, onRegistered }: AccountRegistrationModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>("manual");
@@ -103,8 +103,8 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
     const bom = "\uFEFF";
     const header = csvHeaders.join(",");
     const sample = platform === "tiktok"
-      ? "ハッコウパンダ,さちか,-000wvn5sYx...,act.XXXXX...,rft.XXXXX...,A40,user@example.com,Pass123!,田中A,https://www.tiktok.com/@username"
-      : "UNU,千聖,IGQV...,A40,user@example.com,Pass123!,田中A,https://www.instagram.com/username";
+      ? "ハッコウパンダ,https://www.tiktok.com/@username,さちか,-000wvn5sYx...,act.XXXXX...,rft.XXXXX...,A40,user@example.com,Pass123!,田中A"
+      : "UNU,https://www.instagram.com/username,千聖,IGQV...,A40,user@example.com,Pass123!,田中A";
     const blob = new Blob([bom + header + "\n" + sample + "\n"], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -139,13 +139,14 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
         return result;
       });
 
-      // バリデーション
+      // バリデーション（新列順: 商材名, プロフィールURL, アカウント名, ...）
       const errors: string[] = [];
-      const atCol = platform === "tiktok" ? 3 : 2; // アクセストークンの列
+      const atCol = platform === "tiktok" ? 4 : 3; // アクセストークンの列
       rows.forEach((row, i) => {
         const rowNum = i + 2;
         if (!row[0]) errors.push(`${rowNum}行目: 商材名が空です`);
-        if (platform === "tiktok" && !row[2]) errors.push(`${rowNum}行目: オープンIDが空です`);
+        if (!row[1]) errors.push(`${rowNum}行目: プロフィールURLが空です`);
+        if (platform === "tiktok" && !row[3]) errors.push(`${rowNum}行目: オープンIDが空です`);
         if (!row[atCol]) errors.push(`${rowNum}行目: アクセストークンが空です`);
       });
 
@@ -157,12 +158,16 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
 
   // 手動登録
   const handleManualSubmit = async () => {
-    if (platform === "tiktok" && (!selectedProductId || !openId || !accessToken)) {
-      setResult({ type: "error", message: "商品、Open ID、Access Tokenは必須です" });
+    if (!selectedProductId || !profileUrl) {
+      setResult({ type: "error", message: "商品とプロフィールURLは必須です" });
       return;
     }
-    if (platform === "instagram" && (!selectedProductId || !accessToken)) {
-      setResult({ type: "error", message: "商品とAccess Tokenは必須です" });
+    if (platform === "tiktok" && (!openId || !accessToken)) {
+      setResult({ type: "error", message: "Open IDとAccess Tokenは必須です" });
+      return;
+    }
+    if (platform === "instagram" && !accessToken) {
+      setResult({ type: "error", message: "Access Tokenは必須です" });
       return;
     }
 
@@ -268,21 +273,22 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
         }
         cols.push(current.trim());
 
+        // 新列順: 商材名, プロフィールURL, アカウント名, ...
         if (platform === "tiktok") {
           return {
             productId: productNameToId[cols[0]] || "",
-            userName: cols[1] || "", openId: cols[2] || "",
-            accessToken: cols[3] || "", refreshToken: cols[4] || "",
-            device: cols[5] || "", email: cols[6] || "",
-            password: cols[7] || "", operator: cols[8] || "", profileUrl: cols[9] || "",
+            profileUrl: cols[1] || "", userName: cols[2] || "",
+            openId: cols[3] || "", accessToken: cols[4] || "",
+            refreshToken: cols[5] || "", device: cols[6] || "",
+            email: cols[7] || "", password: cols[8] || "", operator: cols[9] || "",
           };
         }
         // Instagram
         return {
           productId: productNameToId[cols[0]] || "",
-          userName: cols[1] || "", accessToken: cols[2] || "",
-          device: cols[3] || "", email: cols[4] || "",
-          password: cols[5] || "", operator: cols[6] || "", profileUrl: cols[7] || "",
+          profileUrl: cols[1] || "", userName: cols[2] || "",
+          accessToken: cols[3] || "", device: cols[4] || "",
+          email: cols[5] || "", password: cols[6] || "", operator: cols[7] || "",
         };
       }).filter(a => a.productId && a.accessToken);
 
@@ -395,9 +401,15 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
           {activeTab === "manual" && (
             <>
               <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">プロフィールURL *</label>
+                <input type="text" value={profileUrl} onChange={e => setProfileUrl(e.target.value)}
+                  placeholder={platform === "tiktok" ? "例: https://www.tiktok.com/@username" : "例: https://www.instagram.com/username"}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">アカウント名</label>
                 <input type="text" value={accountName} onChange={e => setAccountName(e.target.value)}
-                  placeholder="空欄の場合はAPIから自動取得"
+                  placeholder="空欄の場合は自動取得"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
               </div>
               {platform === "tiktok" && (
@@ -411,7 +423,7 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Access Token *</label>
                 <input type="text" value={accessToken} onChange={e => setAccessToken(e.target.value)}
-                  placeholder={platform === "tiktok" ? "act.XXXXX..." : "IGQV..."}
+                  placeholder={platform === "tiktok" ? "act.XXXXX..." : "EAA..."}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
               </div>
               {platform === "tiktok" && (
@@ -560,12 +572,6 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">パスワード</label>
                   <input type="text" value={password} onChange={e => setPassword(e.target.value)} placeholder="例: Pass123!"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-                </div>
-                <div className="col-span-2">
-                  <label className="block text-xs font-medium text-gray-600 mb-1">プロフィールURL</label>
-                  <input type="text" value={profileUrl} onChange={e => setProfileUrl(e.target.value)}
-                    placeholder={platform === "tiktok" ? "例: https://www.tiktok.com/@username" : "例: https://www.instagram.com/username"}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
                 </div>
               </div>
