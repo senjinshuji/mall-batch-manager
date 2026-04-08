@@ -651,6 +651,26 @@ export default function ProductsPage() {
           return;
         }
 
+        // ダブルクォートで囲まれたCSVを正しく分割
+        const parseCSVLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+              result.push(current.trim().replace(/^["']|["']$/g, ""));
+              current = "";
+            } else {
+              current += char;
+            }
+          }
+          result.push(current.trim().replace(/^["']|["']$/g, ""));
+          return result;
+        };
+
         // 「注文商品の売上額」を含む行をヘッダーとして検出（1-2行目を優先検索）
         let headerLineIndex = 0;
         let salesColOverride: number | undefined;
@@ -696,26 +716,6 @@ export default function ProductsPage() {
           // 数値以外の文字が含まれていたら0
           if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return "0";
           return cleaned || "0";
-        };
-
-        // ダブルクォートで囲まれたCSVを正しく分割
-        const parseCSVLine = (line: string): string[] => {
-          const result: string[] = [];
-          let current = "";
-          let inQuotes = false;
-          for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            if (char === '"') {
-              inQuotes = !inQuotes;
-            } else if (char === ',' && !inQuotes) {
-              result.push(current.trim().replace(/^["']|["']$/g, ""));
-              current = "";
-            } else {
-              current += char;
-            }
-          }
-          result.push(current.trim().replace(/^["']|["']$/g, ""));
-          return result;
         };
 
         const headers = parseCSVLine(headerLine).map(normalizeHeader);
