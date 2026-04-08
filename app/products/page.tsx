@@ -623,21 +623,14 @@ export default function ProductsPage() {
           return;
         }
 
-        // 空行をスキップして実際のヘッダー行を見つける
+        // 「日付」を含むヘッダー行を見つける
         let headerLineIndex = 0;
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          // カンマだけの行（空行）をスキップ
-          const nonEmptyValues = line.split(",").filter(v => v.trim().replace(/^["']|["']$/g, "").length > 0);
-          if (nonEmptyValues.length > 0) {
-            // 日付形式かヘッダー名かを判定
-            const firstValue = nonEmptyValues[0].trim().replace(/^["']|["']$/g, "");
-            if (!/^\d{4}[/-]\d{2}[/-]\d{2}$/.test(firstValue)) {
-              // 日付形式でなければヘッダー行
-              headerLineIndex = i;
-              console.log("[CSVパース] ヘッダー行発見: 行", i, "内容:", line.substring(0, 100));
-              break;
-            }
+          if (line.includes("日付") || line.toLowerCase().includes("date")) {
+            headerLineIndex = i;
+            console.log("[CSVパース] ヘッダー行発見: 行", i, "内容:", line.substring(0, 100));
+            break;
           }
         }
 
@@ -758,9 +751,22 @@ export default function ProductsPage() {
             continue;
           }
 
-          // 日付を正規化（YYYY/MM/DD → YYYY-MM-DD）
+          // 日付を正規化（YYYY/MM/DD → YYYY-MM-DD, M/D → 今年のYYYY-MM-DD）
           const normalizeDate = (d: string): string => {
-            return d.replace(/\//g, "-");
+            const cleaned = d.trim();
+            // YYYY/MM/DD or YYYY-MM-DD
+            if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(cleaned)) {
+              return cleaned.replace(/\//g, "-");
+            }
+            // M/D or MM/DD（年なし） → 今年を補完
+            const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+            if (mdMatch) {
+              const year = new Date().getFullYear();
+              const month = mdMatch[1].padStart(2, "0");
+              const day = mdMatch[2].padStart(2, "0");
+              return `${year}-${month}-${day}`;
+            }
+            return cleaned.replace(/\//g, "-");
           };
 
           if (isSimpleFormat) {
