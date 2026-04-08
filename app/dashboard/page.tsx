@@ -85,6 +85,7 @@ interface ProductSalesData {
   ownSiteQuantity: number;
   ainsTolpeSales: number;
   ainsTolpeQuantity: number;
+  totalViews: number;
   [key: string]: number | string;
 }
 
@@ -425,7 +426,7 @@ export default function DashboardPage() {
 
     setProductLoading(true);
     try {
-      const allSalesData: { [date: string]: { amazonSales: number; amazonQuantity: number; qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number; ownSiteSales: number; ownSiteQuantity: number; ainsTolpeSales: number; ainsTolpeQuantity: number } } = {};
+      const allSalesData: { [date: string]: { amazonSales: number; amazonQuantity: number; qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number; ownSiteSales: number; ownSiteQuantity: number; ainsTolpeSales: number; ainsTolpeQuantity: number; totalViews: number } } = {};
 
       console.log("fetchMultipleProductSales対象商品:", validProducts.map(p => ({ id: p.id, name: p.productName, amazon: p.amazonCode, qoo10: p.qoo10Code, rakuten: p.rakutenCode })));
 
@@ -452,7 +453,7 @@ export default function DashboardPage() {
               if (data.date >= startDate && data.date <= endDate) {
                 amazonDataFound = true;
                 if (!allSalesData[data.date]) {
-                  allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+                  allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
                 }
                 allSalesData[data.date].amazonSales += data.salesAmount || 0;
                 allSalesData[data.date].amazonQuantity += data.orderedUnits || 0;
@@ -476,7 +477,7 @@ export default function DashboardPage() {
                 // mall === "amazon" かつ 日付範囲内をフィルタ
                 if (data.mall === "amazon" && data.date >= startDate && data.date <= endDate) {
                   if (!allSalesData[data.date]) {
-                    allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+                    allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
                   }
                   allSalesData[data.date].amazonSales += data.sales || 0;
                   allSalesData[data.date].amazonQuantity += data.quantity || 0;
@@ -498,7 +499,7 @@ export default function DashboardPage() {
             if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
               for (const item of cacheData.dailySales) {
                 if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
                 }
                 allSalesData[item.date].qoo10Sales += item.qoo10Sales || 0;
                 allSalesData[item.date].qoo10Quantity += item.qoo10Quantity || 0;
@@ -512,7 +513,7 @@ export default function DashboardPage() {
               if (qoo10Data.success && qoo10Data.dailySales) {
                 for (const item of qoo10Data.dailySales) {
                   if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
                   }
                   allSalesData[item.date].qoo10Sales += item.sales;
                   allSalesData[item.date].qoo10Quantity += item.quantity;
@@ -534,7 +535,7 @@ export default function DashboardPage() {
             if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
               for (const item of cacheData.dailySales) {
                 if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
                 }
                 allSalesData[item.date].rakutenSales += item.rakutenSales || 0;
                 allSalesData[item.date].rakutenQuantity += item.rakutenQuantity || 0;
@@ -548,7 +549,7 @@ export default function DashboardPage() {
               if (rakutenData.success && rakutenData.dailySales) {
                 for (const item of rakutenData.dailySales) {
                   if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
                   }
                   allSalesData[item.date].rakutenSales += item.sales;
                   allSalesData[item.date].rakutenQuantity += item.quantity;
@@ -573,7 +574,7 @@ export default function DashboardPage() {
             const d = doc.data();
             if (d.date < startDate || d.date > endDate) return;
             if (!allSalesData[d.date]) {
-              allSalesData[d.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+              allSalesData[d.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
             }
             const channel = d.channel as string;
             if (channel === "Amazon") {
@@ -598,6 +599,27 @@ export default function DashboardPage() {
         }
       }
 
+      // daily_viewsから再生数を取得
+      for (const product of validProducts) {
+        try {
+          const viewsQuery = query(
+            collection(db, "daily_views"),
+            where("productId", "==", product.id),
+          );
+          const viewsSnap = await getDocs(viewsQuery);
+          viewsSnap.forEach((doc) => {
+            const d = doc.data();
+            if (d.date < startDate || d.date > endDate) return;
+            if (!allSalesData[d.date]) {
+              allSalesData[d.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
+            }
+            allSalesData[d.date].totalViews += d.views || 0;
+          });
+        } catch (err) {
+          console.error("再生数取得エラー:", err);
+        }
+      }
+
       // 配列に変換してソート
       const salesArray = Object.entries(allSalesData)
         .map(([date, data]) => ({
@@ -612,6 +634,7 @@ export default function DashboardPage() {
           ownSiteQuantity: data.ownSiteQuantity,
           ainsTolpeSales: data.ainsTolpeSales,
           ainsTolpeQuantity: data.ainsTolpeQuantity,
+          totalViews: data.totalViews,
         }))
         .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -1394,7 +1417,7 @@ export default function DashboardPage() {
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
                   data={productSalesData}
-                  margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                  margin={{ top: 20, right: 60, left: 20, bottom: 5 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                   <XAxis
@@ -1410,6 +1433,7 @@ export default function DashboardPage() {
                     height={50}
                   />
                   <YAxis
+                    yAxisId="sales"
                     tick={{ fill: "#6b7280", fontSize: 12 }}
                     tickFormatter={(value) =>
                       `¥${(value / 10000).toFixed(0)}万`
@@ -1419,12 +1443,30 @@ export default function DashboardPage() {
                     scale="linear"
                     padding={{ top: 20 }}
                   />
+                  {productSalesData.some(d => d.totalViews > 0) && (
+                    <YAxis
+                      yAxisId="views"
+                      orientation="right"
+                      tick={{ fill: "#F472B6", fontSize: 12 }}
+                      tickFormatter={(value) =>
+                        value >= 10000 ? `${(value / 10000).toFixed(0)}万` : value.toLocaleString()
+                      }
+                      domain={[0, 'dataMax']}
+                      type="number"
+                      scale="linear"
+                      padding={{ top: 20 }}
+                    />
+                  )}
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (active && payload && payload.length) {
-                        const amazonVal = payload.find((p: any) => p.dataKey === 'amazonSales')?.value as number || 0;
-                        const rakutenVal = payload.find((p: any) => p.dataKey === 'rakutenSales')?.value as number || 0;
-                        const qoo10Val = payload.find((p: any) => p.dataKey === 'qoo10Sales')?.value as number || 0;
+                        const getVal = (key: string) => (payload.find((p: any) => p.dataKey === key)?.value as number) || 0;
+                        const amazonVal = getVal('amazonSales');
+                        const rakutenVal = getVal('rakutenSales');
+                        const qoo10Val = getVal('qoo10Sales');
+                        const ownSiteVal = getVal('ownSiteSales');
+                        const ainsTolpeVal = getVal('ainsTolpeSales');
+                        const viewsVal = getVal('totalViews');
                         return (
                           <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
                             <p className="font-semibold text-gray-700 mb-2">{label}</p>
@@ -1443,6 +1485,21 @@ export default function DashboardPage() {
                                 Qoo10: {formatCurrency(qoo10Val)}
                               </p>
                             )}
+                            {ownSiteVal > 0 && (
+                              <p style={{ color: MALL_COLORS.ownSite }} className="text-sm">
+                                自社サイト: {formatCurrency(ownSiteVal)}
+                              </p>
+                            )}
+                            {ainsTolpeVal > 0 && (
+                              <p style={{ color: MALL_COLORS.ainsTolpe }} className="text-sm">
+                                アインズ&トルペ: {formatCurrency(ainsTolpeVal)}
+                              </p>
+                            )}
+                            {viewsVal > 0 && (
+                              <p style={{ color: "#F472B6" }} className="text-sm">
+                                再生数: {viewsVal.toLocaleString()}回
+                              </p>
+                            )}
                           </div>
                         );
                       }
@@ -1452,6 +1509,7 @@ export default function DashboardPage() {
                   {/* Amazon売上（積み上げ） */}
                   {selectedMalls.amazon && (
                     <Bar
+                      yAxisId="sales"
                       dataKey="amazonSales"
                       stackId="productSales"
                       fill={MALL_COLORS.amazon}
@@ -1461,6 +1519,7 @@ export default function DashboardPage() {
                   {/* 楽天売上（積み上げ） */}
                   {selectedMalls.rakuten && (
                     <Bar
+                      yAxisId="sales"
                       dataKey="rakutenSales"
                       stackId="productSales"
                       fill={MALL_COLORS.rakuten}
@@ -1470,6 +1529,7 @@ export default function DashboardPage() {
                   {/* Qoo10売上（積み上げ） */}
                   {selectedMalls.qoo10 && (
                     <Bar
+                      yAxisId="sales"
                       dataKey="qoo10Sales"
                       stackId="productSales"
                       fill={MALL_COLORS.qoo10}
@@ -1479,6 +1539,7 @@ export default function DashboardPage() {
                   {/* 自社サイト売上（積み上げ） */}
                   {productSalesData.some(d => d.ownSiteSales > 0) && (
                     <Bar
+                      yAxisId="sales"
                       dataKey="ownSiteSales"
                       stackId="productSales"
                       fill={MALL_COLORS.ownSite}
@@ -1488,11 +1549,24 @@ export default function DashboardPage() {
                   {/* アインズ&トルペ売上（積み上げ） */}
                   {productSalesData.some(d => d.ainsTolpeSales > 0) && (
                     <Bar
+                      yAxisId="sales"
                       dataKey="ainsTolpeSales"
                       stackId="productSales"
                       fill={MALL_COLORS.ainsTolpe}
                       barSize={30}
                       radius={[4, 4, 0, 0]}
+                    />
+                  )}
+                  {/* 再生数（折れ線グラフ・右軸） */}
+                  {productSalesData.some(d => d.totalViews > 0) && (
+                    <Line
+                      yAxisId="views"
+                      type="monotone"
+                      dataKey="totalViews"
+                      stroke="#F472B6"
+                      strokeWidth={2}
+                      dot={{ r: 3, fill: "#F472B6" }}
+                      activeDot={{ r: 5 }}
                     />
                   )}
                 </ComposedChart>
@@ -1528,6 +1602,12 @@ export default function DashboardPage() {
                   <div className="flex items-center gap-1">
                     <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.ainsTolpe }} />
                     <span>アインズ&トルペ</span>
+                  </div>
+                )}
+                {productSalesData.some(d => d.totalViews > 0) && (
+                  <div className="flex items-center gap-1">
+                    <div className="w-6 h-0.5 rounded" style={{ backgroundColor: "#F472B6" }} />
+                    <span>再生数</span>
                   </div>
                 )}
               </div>
