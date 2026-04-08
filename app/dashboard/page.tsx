@@ -11,7 +11,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X } from "lucide-react";
+import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X, Eye } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, query, orderBy, onSnapshot, Timestamp, getDocs, where } from "firebase/firestore";
 import { formatCurrency } from "@/lib/mockData";
@@ -101,42 +101,10 @@ interface EventFlag {
   mall?: string;
 }
 
-// デモ用のフラグデータ
-const demoFlags: EventFlag[] = [
-  { id: "demo-1", name: "セール開始", date: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0], description: "ブラックフライデーセール開始" },
-  { id: "demo-2", name: "広告開始", date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString().split("T")[0], description: "TikTok広告キャンペーン開始" },
-];
-
-// デモ用のダミーデータ
-const generateDemoData = (): SalesData[] => {
-  const data: SalesData[] = [];
-  const today = new Date();
-  for (let i = 30; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
-    const dateStr = date.toISOString().split("T")[0];
-    data.push({
-      id: `demo-${i}`,
-      date: dateStr,
-      amazon: Math.floor(Math.random() * 50000) + 10000,
-      rakuten: Math.floor(Math.random() * 40000) + 8000,
-      qoo10: Math.floor(Math.random() * 30000) + 5000,
-      amazonAd: Math.floor(Math.random() * 5000) + 1000,
-      rakutenAd: Math.floor(Math.random() * 4000) + 800,
-      qoo10Ad: Math.floor(Math.random() * 3000) + 500,
-      xAd: Math.floor(Math.random() * 2000) + 300,
-      tiktokAd: Math.floor(Math.random() * 2500) + 400,
-    });
-  }
-  return data;
-};
-
-// デモ用の商品データ
-const demoProducts: RegisteredProduct[] = [
-  { id: "demo-1", productName: "デモ商品A", skuName: "1本", amazonCode: "DEMO-A", rakutenCode: "DEMO-A", qoo10Code: "" },
-  { id: "demo-2", productName: "デモ商品A", skuName: "3本セット", amazonCode: "DEMO-A2", rakutenCode: "DEMO-A2", qoo10Code: "" },
-  { id: "demo-3", productName: "デモ商品B", amazonCode: "DEMO-B", rakutenCode: "DEMO-B", qoo10Code: "" },
-];
+// デモ用データ（空）
+const demoFlags: EventFlag[] = [];
+const demoProducts: RegisteredProduct[] = [];
+const generateDemoData = (): SalesData[] => [];
 
 export default function DashboardPage() {
   const { isRealDataUser, isAuthLoading, allowedProductIds } = useAuth();
@@ -773,13 +741,23 @@ export default function DashboardPage() {
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [salesData, startDate, endDate]);
 
+  // フラグを媒体選択でフィルタリング
+  const filteredFlags = useMemo(() => {
+    return eventFlags.filter((flag) => {
+      if (flag.mall === "Amazon" && !selectedMalls.amazon) return false;
+      if (flag.mall === "楽天" && !selectedMalls.rakuten) return false;
+      if (flag.mall === "Qoo10" && !selectedMalls.qoo10) return false;
+      return true;
+    });
+  }, [eventFlags, selectedMalls]);
+
   // グラフ用データ（広告費合計を追加 + フラグ日付も含める）
   const chartData = useMemo(() => {
     // 既存データの日付セット
     const existingDates = new Set(filteredData.map(d => d.date));
 
     // フラグの日付で、既存データにない日付を追加
-    const flagDates = eventFlags
+    const flagDates = filteredFlags
       .filter(flag => flag.date >= startDate && flag.date <= endDate && !existingDates.has(flag.date))
       .map(flag => ({
         id: `flag-${flag.id}`,
@@ -811,7 +789,7 @@ export default function DashboardPage() {
         totalAd,
       };
     });
-  }, [filteredData, showAdCost, eventFlags, startDate, endDate, selectedMalls]);
+  }, [filteredData, showAdCost, filteredFlags, startDate, endDate, selectedMalls]);
 
   // 合計売上を計算（商品選択時はproductSalesDataを使用、チェックボックスで媒体選択）
   const totalSales = useMemo(() => {
@@ -865,6 +843,14 @@ export default function DashboardPage() {
       return sum + dayTotal;
     }, 0);
   }, [filteredData, showExternalAd, selectedProduct]);
+
+  // 合計再生数
+  const totalViews = useMemo(() => {
+    if (selectedProduct && productSalesData.length > 0) {
+      return productSalesData.reduce((sum, day) => sum + (day.totalViews || 0), 0);
+    }
+    return 0;
+  }, [selectedProduct, productSalesData]);
 
   // 広告費が1つでも選択されているか
   const isAnyAdSelected = showAdCost.amazon || showAdCost.rakuten || showAdCost.qoo10;
@@ -1362,7 +1348,7 @@ export default function DashboardPage() {
       )}
 
       {/* KPIカード */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow-sm p-3 text-white">
           <div className="flex items-center gap-2">
             <div className="p-2 bg-white/20 rounded-lg">
@@ -1374,6 +1360,19 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+        {totalViews > 0 && (
+          <div className="bg-gradient-to-r from-pink-400 to-pink-500 rounded-lg shadow-sm p-3 text-white">
+            <div className="flex items-center gap-2">
+              <div className="p-2 bg-white/20 rounded-lg">
+                <Eye size={18} />
+              </div>
+              <div>
+                <p className="text-pink-100 text-xs">合計再生数</p>
+                <p className="text-lg font-bold">{totalViews.toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-lg shadow-sm p-3 text-white">
           <div className="flex items-center gap-2">
             <div className="p-2 bg-white/20 rounded-lg">
@@ -1425,7 +1424,7 @@ export default function DashboardPage() {
           ) : (
             <div className="h-72 relative">
               {/* フラグマーカー（グラフの上に重ねて表示） */}
-              {showFlags && eventFlags
+              {showFlags && filteredFlags
                 .filter(flag => {
                   const end = flag.endDate || flag.date;
                   return flag.date <= endDate && end >= startDate;
@@ -1685,7 +1684,7 @@ export default function DashboardPage() {
         ) : (
           <div className="h-72 relative">
             {/* フラグマーカー（グラフの上に重ねて表示） */}
-            {showFlags && eventFlags
+            {showFlags && filteredFlags
               .filter(flag => {
                 const end = flag.endDate || flag.date;
                 return flag.date <= endDate && end >= startDate;
@@ -1883,7 +1882,7 @@ export default function DashboardPage() {
         )}
 
         {/* フラグリスト（グラフ下に表示） */}
-        {showFlags && eventFlags.filter(flag => {
+        {showFlags && filteredFlags.filter(flag => {
           const end = flag.endDate || flag.date;
           return flag.date <= endDate && end >= startDate;
         }).length > 0 && (
@@ -1893,7 +1892,7 @@ export default function DashboardPage() {
               期間内のイベント
             </h3>
             <div className="flex flex-wrap gap-2">
-              {eventFlags
+              {filteredFlags
                 .filter(flag => {
                   const end = flag.endDate || flag.date;
                   return flag.date <= endDate && end >= startDate;

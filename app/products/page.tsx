@@ -12,30 +12,11 @@ import { useAuth } from "@/lib/auth-context";
 
 const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
-// デモ用のモール商品データ
-const demoAmazonProducts: MallProduct[] = [
-  { code: "DEMO-AMZ-001", name: "デモAmazon商品A" },
-  { code: "DEMO-AMZ-002", name: "デモAmazon商品B" },
-  { code: "DEMO-AMZ-003", name: "デモAmazon商品C" },
-];
-
-const demoRakutenProducts: MallProduct[] = [
-  { code: "DEMO-RKT-001", name: "デモ楽天商品A" },
-  { code: "DEMO-RKT-002", name: "デモ楽天商品B" },
-  { code: "DEMO-RKT-003", name: "デモ楽天商品C" },
-];
-
-const demoQoo10Products: MallProduct[] = [
-  { code: "DEMO-Q10-001", name: "デモQoo10商品A" },
-  { code: "DEMO-Q10-002", name: "デモQoo10商品B" },
-  { code: "DEMO-Q10-003", name: "デモQoo10商品C" },
-];
-
-// デモ用の登録済み商品
-const demoRegisteredProducts: RegisteredProduct[] = [
-  { id: "demo-1", productName: "デモ商品A", amazonCode: "DEMO-AMZ-001", rakutenCode: "DEMO-RKT-001", qoo10Code: "DEMO-Q10-001" },
-  { id: "demo-2", productName: "デモ商品B", amazonCode: "DEMO-AMZ-002", rakutenCode: "", qoo10Code: "DEMO-Q10-002" },
-];
+// デモ用データ（空）
+const demoAmazonProducts: MallProduct[] = [];
+const demoRakutenProducts: MallProduct[] = [];
+const demoQoo10Products: MallProduct[] = [];
+const demoRegisteredProducts: RegisteredProduct[] = [];
 
 type NewProduct = {
   productName: string;

@@ -25,11 +25,8 @@ type RegisteredProduct = {
   skuName?: string;
 };
 
-// デモ用のフラグデータ
-const demoFlags: EventFlag[] = [
-  { id: "demo-1", name: "楽天スーパーSALE", date: "2025-12-04", endDate: "2025-12-11", description: "楽天スーパーSALE", scope: "global", mall: "楽天" },
-  { id: "demo-2", name: "新商品発売", date: "2025-11-15", description: "オーガニックシャンプー新発売", scope: "product" },
-];
+// デモ用データ（空）
+const demoFlags: EventFlag[] = [];
 
 // 2026年の媒体セールプリセット
 const SALE_PRESETS: Omit<EventFlag, "id">[] = [
