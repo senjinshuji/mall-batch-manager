@@ -1032,7 +1032,7 @@ export default function DashboardPage() {
                     onClick={() => handleProductSelect("")}
                     className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${selectedProduct === "" ? "bg-blue-100 font-medium" : ""}`}
                   >
-                    ダミー商品
+                    すべて
                   </button>
                   {uniqueProductNames.map((productName) => {
                     const hasMultipleSku = registeredProducts.filter(p => p.productName === productName && p.skuName).length > 1;
