@@ -392,7 +392,7 @@ export default function DashboardPage() {
     await fetchMultipleProductSales([product]);
   };
 
-  // 複数商品の売上データを取得して合算（Firestoreのみ・並列実行）
+  // 複数商品の売上データを取得して合算（Firestoreのみ）
   const fetchMultipleProductSales = async (products: RegisteredProduct[]) => {
     if (!isRealDataUser) {
       setProductSalesData([]);
@@ -406,66 +406,112 @@ export default function DashboardPage() {
     }
 
     setProductLoading(true);
+
+    // Step 1: 全コレクションから生データを並列取得（QuerySnapshotの配列を返す）
+    type RawRow = { date: string; channel: string; sales: number; qty: number; views?: number };
+    const rawRows: RawRow[] = [];
+
+    const safeQuery = async (colName: string, productId: string) => {
+      try {
+        return await getDocs(query(collection(db, colName), where("productId", "==", productId)));
+      } catch {
+        return null;
+      }
+    };
+
     try {
+      // 全商品×全コレクションのクエリを作成
+      const allPromises: Promise<void>[] = [];
+
+      for (const product of validProducts) {
+        // amazon_daily_sales
+        allPromises.push(
+          safeQuery("amazon_daily_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= startDate && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: "Amazon", sales: d.salesAmount || 0, qty: d.orderedUnits || 0 });
+              }
+            });
+          })
+        );
+
+        // rakuten_daily_sales
+        allPromises.push(
+          safeQuery("rakuten_daily_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= startDate && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: "楽天", sales: d.salesAmount || 0, qty: d.salesCount || d.orderedUnits || 0 });
+              }
+            });
+          })
+        );
+
+        // product_sales（旧形式）
+        allPromises.push(
+          safeQuery("product_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= startDate && d.date <= endDate) {
+                const ch = d.mall === "amazon" ? "Amazon" : d.mall === "qoo10" ? "Qoo10" : d.mall === "rakuten" ? "楽天" : null;
+                if (ch) rawRows.push({ date: d.date, channel: ch, sales: d.sales || 0, qty: d.quantity || 0 });
+              }
+            });
+          })
+        );
+
+        // unified_daily_sales
+        allPromises.push(
+          safeQuery("unified_daily_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= startDate && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: d.channel, sales: d.salesAmount || 0, qty: d.quantity || 0 });
+              }
+            });
+          })
+        );
+
+        // daily_views
+        allPromises.push(
+          safeQuery("daily_views", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= startDate && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: "__views__", sales: 0, qty: 0, views: d.views || 0 });
+              }
+            });
+          })
+        );
+      }
+
+      // 全クエリを並列実行して待つ
+      await Promise.allSettled(allPromises);
+
+      // Step 2: rawRowsを集計
       const allSalesData: { [date: string]: Record<string, number> } = {};
-      const ensureDate = (date: string) => {
-        if (!allSalesData[date]) allSalesData[date] = { totalViews: 0 };
-      };
-      const addSales = (date: string, channel: string, sales: number, qty: number) => {
-        ensureDate(date);
-        allSalesData[date][`${channel}_sales`] = (allSalesData[date][`${channel}_sales`] || 0) + sales;
-        allSalesData[date][`${channel}_qty`] = (allSalesData[date][`${channel}_qty`] || 0) + qty;
-      };
 
-      // 全コレクションを並列で取得（バックエンドAPI呼び出しなし）
-      const queries = validProducts.flatMap(product => [
-        getDocs(query(collection(db, "amazon_daily_sales"), where("productId", "==", product.id)))
-          .then(snap => snap.docs.forEach(doc => {
-            const d = doc.data();
-            if (d.date >= startDate && d.date <= endDate) {
-              addSales(d.date, "Amazon", d.salesAmount || 0, d.orderedUnits || 0);
-            }
-          })).catch(() => {}),
-        getDocs(query(collection(db, "rakuten_daily_sales"), where("productId", "==", product.id)))
-          .then(snap => snap.docs.forEach(doc => {
-            const d = doc.data();
-            if (d.date >= startDate && d.date <= endDate) {
-              addSales(d.date, "楽天", d.salesAmount || 0, d.salesCount || d.orderedUnits || 0);
-            }
-          })).catch(() => {}),
-        getDocs(query(collection(db, "product_sales"), where("productId", "==", product.id)))
-          .then(snap => snap.docs.forEach(doc => {
-            const d = doc.data();
-            if (d.date < startDate || d.date > endDate) return;
-            if (d.mall === "amazon") addSales(d.date, "Amazon", d.sales || 0, d.quantity || 0);
-            else if (d.mall === "qoo10") addSales(d.date, "Qoo10", d.sales || 0, d.quantity || 0);
-            else if (d.mall === "rakuten") addSales(d.date, "楽天", d.sales || 0, d.quantity || 0);
-          })).catch(() => {}),
-        getDocs(query(collection(db, "unified_daily_sales"), where("productId", "==", product.id)))
-          .then(snap => snap.docs.forEach(doc => {
-            const d = doc.data();
-            if (d.date >= startDate && d.date <= endDate) {
-              addSales(d.date, d.channel, d.salesAmount || 0, d.quantity || 0);
-            }
-          })).catch(() => {}),
-        getDocs(query(collection(db, "daily_views"), where("productId", "==", product.id)))
-          .then(snap => snap.docs.forEach(doc => {
-            const d = doc.data();
-            if (d.date >= startDate && d.date <= endDate) {
-              ensureDate(d.date);
-              allSalesData[d.date].totalViews = (allSalesData[d.date].totalViews || 0) + (d.views || 0);
-            }
-          })).catch(() => {}),
-      ]);
-
-      await Promise.all(queries);
-
-      // startDate〜endDateの全日付を0埋め
+      // startDate〜endDateの全日付を先に作成
       const cur = new Date(startDate);
       const end = new Date(endDate);
       while (cur <= end) {
-        ensureDate(cur.toISOString().split("T")[0]);
+        const dateStr = cur.toISOString().split("T")[0];
+        allSalesData[dateStr] = { totalViews: 0 };
         cur.setDate(cur.getDate() + 1);
+      }
+
+      // 生データを集計
+      for (const row of rawRows) {
+        if (!allSalesData[row.date]) allSalesData[row.date] = { totalViews: 0 };
+        if (row.channel === "__views__") {
+          allSalesData[row.date].totalViews = (allSalesData[row.date].totalViews || 0) + (row.views || 0);
+        } else {
+          const salesKey = `${row.channel}_sales`;
+          const qtyKey = `${row.channel}_qty`;
+          allSalesData[row.date][salesKey] = (allSalesData[row.date][salesKey] || 0) + row.sales;
+          allSalesData[row.date][qtyKey] = (allSalesData[row.date][qtyKey] || 0) + row.qty;
+        }
       }
 
       const salesArray = Object.entries(allSalesData)
