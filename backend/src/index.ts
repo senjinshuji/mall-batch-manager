@@ -8402,6 +8402,408 @@ app.post("/qoo10/import-sales-csv/:productId", async (req: Request, res: Respons
 
 // ==================== End Qoo10売上データ手動入稿 ====================
 
+// ==================== Instagram アカウント管理 ====================
+
+const INSTAGRAM_APP_ID = "1516539189822981";
+const INSTAGRAM_APP_SECRET = "aac5fafe7447eaf19cd6c50def3f3e4c";
+
+// Instagram Graph APIでユーザー情報を取得
+async function fetchInstagramUserInfo(accessToken: string): Promise<{
+  id: string; username: string; name: string; profilePictureUrl: string;
+} | null> {
+  try {
+    const axios = (await import('axios')).default;
+    const response = await axios.get('https://graph.instagram.com/me', {
+      params: { fields: 'id,username,name,profile_picture_url', access_token: accessToken },
+    });
+    const data = response.data;
+    return {
+      id: data.id || "",
+      username: data.username || "",
+      name: data.name || data.username || "",
+      profilePictureUrl: data.profile_picture_url || "",
+    };
+  } catch (error: any) {
+    console.error("Instagram UserInfo error:", error?.response?.data || error?.message);
+    return null;
+  }
+}
+
+// 短期トークンを長期トークンに交換
+async function exchangeInstagramLongLivedToken(shortLivedToken: string): Promise<{
+  accessToken: string; expiresIn: number;
+} | null> {
+  try {
+    const axios = (await import('axios')).default;
+    const response = await axios.get('https://graph.instagram.com/access_token', {
+      params: {
+        grant_type: 'ig_exchange_token',
+        client_secret: INSTAGRAM_APP_SECRET,
+        access_token: shortLivedToken,
+      },
+    });
+    return {
+      accessToken: response.data.access_token,
+      expiresIn: response.data.expires_in || 5184000, // デフォルト60日
+    };
+  } catch (error: any) {
+    console.error("Instagram long-lived token exchange error:", error?.response?.data || error?.message);
+    return null;
+  }
+}
+
+// 全Instagramアカウント一覧取得
+app.get("/instagram/all-accounts", async (req: Request, res: Response) => {
+  try {
+    const productsSnapshot = await db.collection("registered_products").get();
+    const productMap: Record<string, string> = {};
+    productsSnapshot.docs.forEach(doc => { productMap[doc.id] = doc.data().productName || ""; });
+
+    const snapshot = await db.collection("instagram_accounts").get();
+    const accounts = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        productId: data.productId || "",
+        productName: productMap[data.productId] || "",
+        userName: data.instagramUserName || "",
+        accountId: data.instagramAccountId || "",
+        avatarUrl: data.instagramAvatarUrl || "",
+        device: data.device || "",
+        email: data.email || "",
+        password: data.password || "",
+        profileUrl: data.profileUrl || "",
+        operator: data.operator || "",
+        accessToken: data.accessToken || "",
+        accessTokenExpiresAt: data.accessTokenExpiresAt?.toDate?.() || null,
+        connectedAt: data.connectedAt?.toDate?.() || null,
+        updatedAt: data.updatedAt?.toDate?.() || null,
+      };
+    });
+
+    res.json({ success: true, accounts, count: accounts.length });
+  } catch (error: any) {
+    console.error("Error fetching Instagram accounts:", error);
+    res.status(500).json({ success: false, message: "Instagramアカウント一覧の取得に失敗しました", error: error?.message });
+  }
+});
+
+// Instagramアカウント手動登録
+app.post("/instagram/accounts/register", async (req: Request, res: Response) => {
+  try {
+    const { productId, accessToken, userName, device, email, password, operator, profileUrl } = req.body;
+
+    if (!productId || !accessToken) {
+      return res.status(400).json({ success: false, message: "productIdとaccessTokenは必須です" });
+    }
+
+    // 長期トークンに交換を試みる
+    let currentToken = accessToken;
+    let expiresAt: any = null;
+    const longLived = await exchangeInstagramLongLivedToken(accessToken);
+    if (longLived) {
+      currentToken = longLived.accessToken;
+      expiresAt = Timestamp.fromMillis(Date.now() + longLived.expiresIn * 1000);
+      console.log("Instagram: Exchanged to long-lived token");
+    }
+
+    // ユーザー情報取得
+    let displayName = userName || "Unknown";
+    let avatarUrl = "";
+    let accountId = "";
+    const userInfo = await fetchInstagramUserInfo(currentToken);
+    if (userInfo) {
+      displayName = userInfo.name || userInfo.username || displayName;
+      avatarUrl = userInfo.profilePictureUrl;
+      accountId = userInfo.username;
+    }
+
+    // profileUrlからアカウントID抽出（APIで取れなかった場合のフォールバック）
+    if (!accountId && profileUrl) {
+      const match = profileUrl.match(/instagram\.com\/([^/?]+)/);
+      if (match) accountId = match[1];
+    }
+
+    // 追加フィールド
+    const extraFields: Record<string, unknown> = {};
+    if (device) extraFields.device = device;
+    if (email) extraFields.email = email;
+    if (password) extraFields.password = password;
+    if (operator) extraFields.operator = operator;
+    if (profileUrl) extraFields.profileUrl = profileUrl;
+
+    // 重複チェック
+    const existingSnapshot = await db.collection("instagram_accounts")
+      .where("productId", "==", productId)
+      .where("instagramAccountId", "==", accountId)
+      .get();
+
+    if (!existingSnapshot.empty && accountId) {
+      const existingDoc = existingSnapshot.docs[0];
+      await existingDoc.ref.update({
+        accessToken: currentToken,
+        instagramUserName: displayName,
+        instagramAvatarUrl: avatarUrl,
+        updatedAt: Timestamp.now(),
+        ...(expiresAt ? { accessTokenExpiresAt: expiresAt } : {}),
+        ...extraFields,
+      });
+      return res.json({ success: true, message: "既存アカウントを更新しました", accountId: existingDoc.id, updated: true, profile: { displayName, avatarUrl } });
+    }
+
+    // 新規登録
+    const accountDoc = await db.collection("instagram_accounts").add({
+      productId,
+      instagramUserName: displayName,
+      instagramAccountId: accountId,
+      instagramAvatarUrl: avatarUrl,
+      accessToken: currentToken,
+      ...(expiresAt ? { accessTokenExpiresAt: expiresAt } : {}),
+      connectedAt: Timestamp.now(),
+      registeredManually: true,
+      ...extraFields,
+    });
+
+    res.json({ success: true, message: "Instagramアカウントを登録しました", accountId: accountDoc.id, updated: false, profile: { displayName, avatarUrl } });
+  } catch (error: any) {
+    console.error("Error registering Instagram account:", error);
+    res.status(500).json({ success: false, message: "Instagramアカウントの登録に失敗しました", error: error?.message });
+  }
+});
+
+// Instagram CSV一括登録
+app.post("/instagram/accounts/bulk-register-v2", async (req: Request, res: Response) => {
+  try {
+    const { accounts } = req.body;
+    if (!accounts || !Array.isArray(accounts)) {
+      return res.status(400).json({ success: false, message: "accounts配列は必須です" });
+    }
+
+    let registered = 0;
+    let updated = 0;
+    let failed = 0;
+
+    for (const account of accounts) {
+      const { productId, accessToken, userName, device, email, password, operator, profileUrl } = account;
+      if (!productId || !accessToken) { failed++; continue; }
+
+      try {
+        // 長期トークンに交換
+        let currentToken = accessToken;
+        let expiresAt: any = null;
+        const longLived = await exchangeInstagramLongLivedToken(accessToken);
+        if (longLived) {
+          currentToken = longLived.accessToken;
+          expiresAt = Timestamp.fromMillis(Date.now() + longLived.expiresIn * 1000);
+        }
+
+        // ユーザー情報取得
+        let displayName = userName || "Unknown";
+        let avatarUrl = "";
+        let accountId = "";
+        const userInfo = await fetchInstagramUserInfo(currentToken);
+        if (userInfo) {
+          displayName = userInfo.name || userInfo.username || displayName;
+          avatarUrl = userInfo.profilePictureUrl;
+          accountId = userInfo.username;
+        }
+        if (!accountId && profileUrl) {
+          const match = profileUrl.match(/instagram\.com\/([^/?]+)/);
+          if (match) accountId = match[1];
+        }
+
+        const extraFields: Record<string, unknown> = {};
+        if (device) extraFields.device = device;
+        if (email) extraFields.email = email;
+        if (password) extraFields.password = password;
+        if (operator) extraFields.operator = operator;
+        if (profileUrl) extraFields.profileUrl = profileUrl;
+
+        // 重複チェック
+        const existing = accountId ? await db.collection("instagram_accounts")
+          .where("productId", "==", productId).where("instagramAccountId", "==", accountId).get() : { empty: true } as any;
+
+        if (!existing.empty) {
+          await existing.docs[0].ref.update({
+            accessToken: currentToken, instagramUserName: displayName, instagramAvatarUrl: avatarUrl,
+            updatedAt: Timestamp.now(), ...(expiresAt ? { accessTokenExpiresAt: expiresAt } : {}), ...extraFields,
+          });
+          updated++;
+        } else {
+          await db.collection("instagram_accounts").add({
+            productId, instagramUserName: displayName, instagramAccountId: accountId, instagramAvatarUrl: avatarUrl,
+            accessToken: currentToken, ...(expiresAt ? { accessTokenExpiresAt: expiresAt } : {}),
+            connectedAt: Timestamp.now(), registeredManually: true, ...extraFields,
+          });
+          registered++;
+        }
+      } catch (err) {
+        console.error(`Error registering Instagram account:`, err);
+        failed++;
+      }
+    }
+
+    res.json({ success: true, message: `${registered + updated}件処理（新規: ${registered}, 更新: ${updated}, 失敗: ${failed}）`, registered, updated, failed });
+  } catch (error: any) {
+    console.error("Error bulk registering Instagram accounts:", error);
+    res.status(500).json({ success: false, message: "一括登録に失敗しました", error: error?.message });
+  }
+});
+
+// Instagram認証コードでアカウント登録
+app.post("/instagram/accounts/auth-code", async (req: Request, res: Response) => {
+  try {
+    const { authCode, productId, redirectUri, device, email, password, operator } = req.body;
+    if (!authCode || !productId || !redirectUri) {
+      return res.status(400).json({ success: false, message: "authCode, productId, redirectUriは必須です" });
+    }
+
+    const axios = (await import('axios')).default;
+
+    // 認証コードで短期トークンを取得
+    const tokenResponse = await axios.post('https://api.instagram.com/oauth/access_token',
+      new URLSearchParams({
+        client_id: INSTAGRAM_APP_ID,
+        client_secret: INSTAGRAM_APP_SECRET,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+        code: authCode,
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const shortToken = tokenResponse.data.access_token;
+    const userId = tokenResponse.data.user_id;
+
+    // 長期トークンに交換
+    let currentToken = shortToken;
+    let expiresAt: any = null;
+    const longLived = await exchangeInstagramLongLivedToken(shortToken);
+    if (longLived) {
+      currentToken = longLived.accessToken;
+      expiresAt = Timestamp.fromMillis(Date.now() + longLived.expiresIn * 1000);
+    }
+
+    // ユーザー情報取得
+    let displayName = "Unknown";
+    let avatarUrl = "";
+    let accountId = "";
+    const userInfo = await fetchInstagramUserInfo(currentToken);
+    if (userInfo) {
+      displayName = userInfo.name || userInfo.username;
+      avatarUrl = userInfo.profilePictureUrl;
+      accountId = userInfo.username;
+    }
+
+    const extraFields: Record<string, unknown> = {};
+    if (device) extraFields.device = device;
+    if (email) extraFields.email = email;
+    if (password) extraFields.password = password;
+    if (operator) extraFields.operator = operator;
+
+    // 重複チェック
+    const existing = accountId ? await db.collection("instagram_accounts")
+      .where("productId", "==", productId).where("instagramAccountId", "==", accountId).get() : { empty: true } as any;
+
+    if (!existing.empty) {
+      await existing.docs[0].ref.update({
+        accessToken: currentToken, instagramUserName: displayName, instagramAvatarUrl: avatarUrl,
+        updatedAt: Timestamp.now(), ...(expiresAt ? { accessTokenExpiresAt: expiresAt } : {}), ...extraFields,
+      });
+      return res.json({ success: true, message: "既存アカウントを更新しました", updated: true, profile: { displayName, avatarUrl } });
+    }
+
+    await db.collection("instagram_accounts").add({
+      productId, instagramUserName: displayName, instagramAccountId: accountId, instagramAvatarUrl: avatarUrl,
+      accessToken: currentToken, ...(expiresAt ? { accessTokenExpiresAt: expiresAt } : {}),
+      connectedAt: Timestamp.now(), ...extraFields,
+    });
+
+    res.json({ success: true, message: "Instagramアカウントを登録しました", updated: false, profile: { displayName, avatarUrl } });
+  } catch (error: any) {
+    console.error("Error registering Instagram account by auth code:", error?.response?.data || error);
+    res.status(500).json({ success: false, message: "認証コードによる登録に失敗しました", error: error?.response?.data?.error_message || error?.message });
+  }
+});
+
+// Instagramトークンリフレッシュ
+app.post("/instagram/accounts/:accountId/refresh", async (req: Request, res: Response) => {
+  try {
+    const accountId = req.params.accountId;
+    const accountDoc = await db.collection("instagram_accounts").doc(accountId).get();
+    if (!accountDoc.exists) {
+      return res.status(404).json({ success: false, message: "Account not found" });
+    }
+
+    const currentToken = accountDoc.data()!.accessToken;
+    if (!currentToken) {
+      return res.status(400).json({ success: false, message: "アクセストークンが登録されていません" });
+    }
+
+    const axios = (await import('axios')).default;
+    const response = await axios.get('https://graph.instagram.com/refresh_access_token', {
+      params: { grant_type: 'ig_refresh_token', access_token: currentToken },
+    });
+
+    const newToken = response.data.access_token;
+    const expiresIn = response.data.expires_in || 5184000;
+
+    await db.collection("instagram_accounts").doc(accountId).update({
+      accessToken: newToken,
+      accessTokenExpiresAt: Timestamp.fromMillis(Date.now() + expiresIn * 1000),
+      updatedAt: Timestamp.now(),
+    });
+
+    res.json({ success: true, message: "トークンをリフレッシュしました", accessTokenExpiresAt: new Date(Date.now() + expiresIn * 1000).toISOString() });
+  } catch (error: any) {
+    console.error("Error refreshing Instagram token:", error?.response?.data || error);
+    res.status(500).json({ success: false, message: "トークンのリフレッシュに失敗しました", error: error?.message });
+  }
+});
+
+// Instagramアカウント更新
+app.put("/instagram/accounts/:accountId/tokens", async (req: Request, res: Response) => {
+  try {
+    const accountId = req.params.accountId;
+    const { accessToken, device, email, password, operator, profileUrl } = req.body;
+
+    const updateData: Record<string, unknown> = { updatedAt: Timestamp.now() };
+    if (accessToken) updateData.accessToken = accessToken;
+    if (device !== undefined) updateData.device = device;
+    if (email !== undefined) updateData.email = email;
+    if (password !== undefined) updateData.password = password;
+    if (operator !== undefined) updateData.operator = operator;
+    if (profileUrl !== undefined) {
+      updateData.profileUrl = profileUrl;
+      const match = profileUrl.match(/instagram\.com\/([^/?]+)/);
+      if (match) updateData.instagramAccountId = match[1];
+    }
+
+    if (Object.keys(updateData).length <= 1) {
+      return res.status(400).json({ success: false, message: "更新するフィールドがありません" });
+    }
+
+    await db.collection("instagram_accounts").doc(accountId).update(updateData);
+    res.json({ success: true, message: "更新しました" });
+  } catch (error: any) {
+    console.error("Error updating Instagram account:", error);
+    res.status(500).json({ success: false, message: "更新に失敗しました", error: error?.message });
+  }
+});
+
+// Instagramアカウント削除
+app.delete("/instagram/accounts/:accountId", async (req: Request, res: Response) => {
+  try {
+    await db.collection("instagram_accounts").doc(req.params.accountId).delete();
+    res.json({ success: true, message: "Instagramアカウントを削除しました" });
+  } catch (error: any) {
+    console.error("Error deleting Instagram account:", error);
+    res.status(500).json({ success: false, message: "削除に失敗しました", error: error?.message });
+  }
+});
+
+// ==================== End Instagram ====================
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/`);

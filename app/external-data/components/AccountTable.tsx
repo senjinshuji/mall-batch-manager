@@ -5,98 +5,68 @@ import { Trash2, RefreshCw, ExternalLink, Search, ChevronUp, ChevronDown, Edit2,
 
 const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
-type TikTokAccount = {
+type Platform = "tiktok" | "instagram";
+
+// 共通アカウント型
+type AccountData = {
   id: string;
   productId: string;
   productName: string;
-  tiktokUserId: string;
-  tiktokUserName: string;
-  tiktokAccountId: string;
-  tiktokAvatarUrl: string;
+  userName: string;
+  accountId: string;
+  avatarUrl: string;
   device: string;
   email: string;
   password: string;
   profileUrl: string;
   operator: string;
   accessToken: string;
-  refreshToken: string;
-  followerCount: number | null;
-  likeCount: number | null;
+  refreshToken?: string;
+  tiktokUserId?: string;
   accessTokenExpiresAt: string | null;
-  refreshTokenExpiresAt: string | null;
   connectedAt: string | null;
   updatedAt: string | null;
 };
 
-type SortKey = "tiktokUserName" | "productName" | "operator" | "accessTokenExpiresAt" | "connectedAt";
+type SortKey = "userName" | "productName" | "operator" | "accessTokenExpiresAt";
 type SortOrder = "asc" | "desc";
 
 type AccountTableProps = {
-  accounts: TikTokAccount[];
+  accounts: AccountData[];
   isLoading: boolean;
+  platform: Platform;
   onRefreshToken: (accountId: string) => Promise<void>;
   onDelete: (accountId: string, accountName: string) => Promise<void>;
   onUpdated: () => void;
 };
 
 // URLからアカウントIDを抽出
-function extractAccountIdFromUrl(url: string): string {
-  const match = url.match(/@([^/?]+)/);
+function extractAccountId(url: string, platform: Platform): string {
+  if (platform === "tiktok") {
+    const match = url.match(/@([^/?]+)/);
+    return match ? match[1] : "";
+  }
+  const match = url.match(/instagram\.com\/([^/?]+)/);
   return match ? match[1] : "";
 }
 
-// トークン有効期限のバッジ表示
+// トークン有効期限バッジ
 function TokenExpiryBadge({ expiresAt }: { expiresAt: string | null }) {
-  if (!expiresAt) {
-    return <span className="text-xs text-gray-400">未設定</span>;
-  }
-
+  if (!expiresAt) return <span className="text-xs text-gray-400">未設定</span>;
   const now = new Date();
   const expiry = new Date(expiresAt);
   const diffMs = expiry.getTime() - now.getTime();
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffMs <= 0) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-        期限切れ
-      </span>
-    );
-  }
-
-  if (diffHours < 24) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-        残り{diffHours}時間
-      </span>
-    );
-  }
-
-  if (diffDays < 7) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-        残り{diffDays}日
-      </span>
-    );
-  }
-
-  return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-      有効（残り{diffDays}日）
-    </span>
-  );
-}
-
-// トークンを省略表示
-function TruncatedToken({ token }: { token: string }) {
-  if (!token) return <span className="text-gray-400">-</span>;
-  const display = token.length > 20 ? token.substring(0, 16) + "..." : token;
-  return <span className="font-mono text-xs text-gray-500" title={token}>{display}</span>;
+  if (diffMs <= 0) return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">期限切れ</span>;
+  if (diffHours < 24) return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">残り{diffHours}時間</span>;
+  if (diffDays < 7) return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">残り{diffDays}日</span>;
+  return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">有効（残り{diffDays}日）</span>;
 }
 
 // 編集モーダル
-function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onClose: () => void; onSaved: () => void }) {
+function EditModal({ account, platform, onClose, onSaved }: { account: AccountData; platform: Platform; onClose: () => void; onSaved: () => void }) {
   const [openId, setOpenId] = useState(account.tiktokUserId || "");
   const [accessToken, setAccessToken] = useState(account.accessToken || "");
   const [refreshToken, setRefreshToken] = useState(account.refreshToken || "");
@@ -112,11 +82,12 @@ function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onCl
     setIsSaving(true);
     setResult(null);
     try {
-      // 全フィールドをまとめて更新
       const updateData: Record<string, string> = {};
-      if (openId !== account.tiktokUserId) updateData.tiktokUserId = openId;
       if (accessToken !== account.accessToken) updateData.accessToken = accessToken;
-      if (refreshToken !== account.refreshToken) updateData.refreshToken = refreshToken;
+      if (platform === "tiktok") {
+        if (refreshToken !== (account.refreshToken || "")) updateData.refreshToken = refreshToken;
+        if (openId !== (account.tiktokUserId || "")) updateData.tiktokUserId = openId;
+      }
       if (device !== account.device) updateData.device = device;
       if (email !== account.email) updateData.email = email;
       if (password !== (account.password || "")) updateData.password = password;
@@ -124,7 +95,7 @@ function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onCl
       if (profileUrl !== account.profileUrl) updateData.profileUrl = profileUrl;
 
       if (Object.keys(updateData).length > 0) {
-        const res = await fetch(`${BACKEND_URL}/tiktok/accounts/${account.id}/tokens`, {
+        const res = await fetch(`${BACKEND_URL}/${platform}/accounts/${account.id}/tokens`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(updateData),
@@ -136,7 +107,6 @@ function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onCl
           return;
         }
       }
-
       setResult({ type: "success", message: "更新しました" });
       onSaved();
     } catch (error) {
@@ -151,15 +121,15 @@ function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onCl
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-5 border-b">
           <div className="flex items-center gap-3">
-            {account.tiktokAvatarUrl ? (
-              <img src={account.tiktokAvatarUrl} alt="" className="w-10 h-10 rounded-full" />
+            {account.avatarUrl ? (
+              <img src={account.avatarUrl} alt="" className="w-10 h-10 rounded-full" />
             ) : (
               <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-500">
-                {account.tiktokUserName.charAt(0)}
+                {account.userName.charAt(0)}
               </div>
             )}
             <div>
-              <h2 className="text-lg font-bold">{account.tiktokUserName}</h2>
+              <h2 className="text-lg font-bold">{account.userName}</h2>
               <p className="text-xs text-gray-500">{account.productName}</p>
             </div>
           </div>
@@ -173,12 +143,14 @@ function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onCl
             </div>
           )}
 
-          {/* オープンID */}
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">オープンID</label>
-            <input type="text" value={openId} onChange={e => setOpenId(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-          </div>
+          {/* オープンID（TikTokのみ） */}
+          {platform === "tiktok" && (
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">オープンID</label>
+              <input type="text" value={openId} onChange={e => setOpenId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+            </div>
+          )}
 
           {/* トークン */}
           <div>
@@ -186,17 +158,17 @@ function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onCl
             <input type="text" value={accessToken} onChange={e => setAccessToken(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Refresh Token</label>
-            <input type="text" value={refreshToken} onChange={e => setRefreshToken(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-          </div>
+          {platform === "tiktok" && (
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Refresh Token</label>
+              <input type="text" value={refreshToken} onChange={e => setRefreshToken(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+            </div>
+          )}
           <div className="flex gap-4 text-xs text-gray-500">
             <div><span className="font-medium">AT期限: </span><TokenExpiryBadge expiresAt={account.accessTokenExpiresAt} /></div>
-            <div><span className="font-medium">RT期限: </span><TokenExpiryBadge expiresAt={account.refreshTokenExpiresAt} /></div>
           </div>
 
-          {/* その他 */}
           <div className="border-t pt-4">
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -240,20 +212,20 @@ function EditModal({ account, onClose, onSaved }: { account: TikTokAccount; onCl
   );
 }
 
-export default function AccountTable({ accounts, isLoading, onRefreshToken, onDelete, onUpdated }: AccountTableProps) {
+export default function AccountTable({ accounts, isLoading, platform, onRefreshToken, onDelete, onUpdated }: AccountTableProps) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("tiktokUserName");
+  const [sortKey, setSortKey] = useState<SortKey>("userName");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [editingAccount, setEditingAccount] = useState<TikTokAccount | null>(null);
+  const [editingAccount, setEditingAccount] = useState<AccountData | null>(null);
 
   const filteredAccounts = accounts.filter(account => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
-      account.tiktokUserName.toLowerCase().includes(q) ||
-      account.tiktokAccountId.toLowerCase().includes(q) ||
+      account.userName.toLowerCase().includes(q) ||
+      account.accountId.toLowerCase().includes(q) ||
       account.productName.toLowerCase().includes(q) ||
       account.operator.toLowerCase().includes(q) ||
       account.email.toLowerCase().includes(q)
@@ -282,10 +254,10 @@ export default function AccountTable({ accounts, isLoading, onRefreshToken, onDe
     try { await onRefreshToken(accountId); } finally { setRefreshingId(null); }
   };
 
-  const handleDelete = async (account: TikTokAccount) => {
-    if (!confirm(`${account.tiktokUserName} を削除しますか？`)) return;
+  const handleDelete = async (account: AccountData) => {
+    if (!confirm(`${account.userName} を削除しますか？`)) return;
     setDeletingId(account.id);
-    try { await onDelete(account.id, account.tiktokUserName); } finally { setDeletingId(null); }
+    try { await onDelete(account.id, account.userName); } finally { setDeletingId(null); }
   };
 
   if (isLoading) {
@@ -315,8 +287,8 @@ export default function AccountTable({ accounts, isLoading, onRefreshToken, onDe
             <thead>
               <tr className="bg-gray-50 border-b">
                 <th className="text-left px-3 py-3 font-medium text-gray-600 cursor-pointer hover:bg-gray-100 whitespace-nowrap"
-                  onClick={() => handleSort("tiktokUserName")}>
-                  <span className="flex items-center gap-1">アカウント名 <SortIcon columnKey="tiktokUserName" /></span>
+                  onClick={() => handleSort("userName")}>
+                  <span className="flex items-center gap-1">アカウント名 <SortIcon columnKey="userName" /></span>
                 </th>
                 <th className="text-left px-3 py-3 font-medium text-gray-600 whitespace-nowrap">アカウントID</th>
                 <th className="text-left px-3 py-3 font-medium text-gray-600 cursor-pointer hover:bg-gray-100 whitespace-nowrap"
@@ -347,20 +319,19 @@ export default function AccountTable({ accounts, isLoading, onRefreshToken, onDe
                 </tr>
               ) : (
                 sortedAccounts.map(account => {
-                  // URLからアカウントID抽出
-                  const displayAccountId = account.tiktokAccountId || extractAccountIdFromUrl(account.profileUrl);
+                  const displayAccountId = account.accountId || extractAccountId(account.profileUrl, platform);
                   return (
                     <tr key={account.id} className="border-b hover:bg-gray-50 transition-colors">
                       <td className="px-3 py-3 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          {account.tiktokAvatarUrl ? (
-                            <img src={account.tiktokAvatarUrl} alt={account.tiktokUserName} className="w-8 h-8 rounded-full object-cover" />
+                          {account.avatarUrl ? (
+                            <img src={account.avatarUrl} alt={account.userName} className="w-8 h-8 rounded-full object-cover" />
                           ) : (
                             <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs">
-                              {account.tiktokUserName.charAt(0)}
+                              {account.userName.charAt(0)}
                             </div>
                           )}
-                          <span className="font-medium">{account.tiktokUserName}</span>
+                          <span className="font-medium">{account.userName}</span>
                         </div>
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap text-gray-600">
@@ -408,7 +379,7 @@ export default function AccountTable({ accounts, isLoading, onRefreshToken, onDe
       </div>
 
       {editingAccount && (
-        <EditModal account={editingAccount} onClose={() => setEditingAccount(null)}
+        <EditModal account={editingAccount} platform={platform} onClose={() => setEditingAccount(null)}
           onSaved={() => { setEditingAccount(null); onUpdated(); }} />
       )}
     </>
