@@ -120,8 +120,7 @@ export default function DashboardPage() {
   const [selectedFlag, setSelectedFlag] = useState<EventFlag | null>(null);
   const [loading, setLoading] = useState(true);
   const [productLoading, setProductLoading] = useState(false);
-  const [syncLoading, setSyncLoading] = useState(false);
-  const [amazonSyncLoading, setAmazonSyncLoading] = useState(false);
+  const fetchGenRef = useRef(0); // フェッチ世代カウンター
   const [error, setError] = useState<string | null>(null);
 
   const today = new Date();
@@ -405,6 +404,7 @@ export default function DashboardPage() {
       return;
     }
 
+    const thisGen = ++fetchGenRef.current;
     setProductLoading(true);
 
     // Step 1: 全コレクションから生データを並列取得（QuerySnapshotの配列を返す）
@@ -518,12 +518,14 @@ export default function DashboardPage() {
         .map(([date, data]) => ({ date, ...data } as ProductSalesData))
         .sort((a, b) => a.date.localeCompare(b.date));
 
+      // 古いフェッチの結果は破棄
+      if (thisGen !== fetchGenRef.current) return;
       setProductSalesData(salesArray);
     } catch (err) {
       console.error("商品別売上取得エラー:", err);
-      setProductSalesData([]);
+      if (thisGen === fetchGenRef.current) setProductSalesData([]);
     } finally {
-      setProductLoading(false);
+      if (thisGen === fetchGenRef.current) setProductLoading(false);
     }
   };
 
