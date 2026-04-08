@@ -8477,6 +8477,50 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
   }
 }
 
+// Instagram プロフィールURLからOGPで名前・アイコンを取得
+async function fetchInstagramProfileFromOGP(profileUrl: string): Promise<{
+  username: string; name: string; profilePictureUrl: string;
+} | null> {
+  try {
+    const axios = (await import('axios')).default;
+    const response = await axios.get(profileUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      timeout: 10000,
+    });
+    const html = response.data as string;
+
+    // og:image からアイコンURL
+    const ogImageMatch = html.match(/og:image"[^>]*content="([^"]+)"/);
+    const profilePictureUrl = ogImageMatch ? ogImageMatch[1].replace(/&amp;/g, '&') : "";
+
+    // og:title から名前（「名前 (@username)」形式）
+    const ogTitleMatch = html.match(/og:title"[^>]*content="([^"]+)"/);
+    let name = "";
+    let username = "";
+    if (ogTitleMatch) {
+      const decoded = ogTitleMatch[1].replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
+      // 「名前 (@username) • Instagram...」パターン
+      const nameMatch = decoded.match(/^(.+?)\s*\(@?(\w+)\)/);
+      if (nameMatch) {
+        name = nameMatch[1].trim();
+        username = nameMatch[2];
+      }
+    }
+
+    // URLからusernameフォールバック
+    if (!username) {
+      const urlMatch = profileUrl.match(/instagram\.com\/([^/?]+)/);
+      if (urlMatch) username = urlMatch[1];
+    }
+
+    console.log(`Instagram OGP: name="${name}", username="${username}", avatar=${profilePictureUrl ? "found" : "none"}`);
+    return { username, name: name || username, profilePictureUrl };
+  } catch (error: any) {
+    console.error("Instagram OGP fetch error:", error?.message);
+    return null;
+  }
+}
+
 // トークンを長期トークンに交換
 // EAAトークン: Facebook Graph API（graph.facebook.com/oauth/access_token）
 // IGQVトークン: Instagram Basic Display API（graph.instagram.com/access_token）
@@ -8581,7 +8625,7 @@ app.post("/instagram/accounts/register", async (req: Request, res: Response) => 
       console.log("Instagram: Exchanged to long-lived token");
     }
 
-    // ユーザー情報取得
+    // ユーザー情報取得（API → OGPフォールバック）
     let displayName = userName || "Unknown";
     let avatarUrl = "";
     let accountId = "";
@@ -8592,7 +8636,17 @@ app.post("/instagram/accounts/register", async (req: Request, res: Response) => 
       accountId = userInfo.username;
     }
 
-    // profileUrlからアカウントID抽出（APIで取れなかった場合のフォールバック）
+    // APIで取れなかった場合、profileUrlからOGPで取得
+    if ((!accountId || displayName === "Unknown" || !avatarUrl) && profileUrl) {
+      const ogpInfo = await fetchInstagramProfileFromOGP(profileUrl);
+      if (ogpInfo) {
+        if (!accountId) accountId = ogpInfo.username;
+        if (displayName === "Unknown" || displayName === userName) displayName = ogpInfo.name || displayName;
+        if (!avatarUrl) avatarUrl = ogpInfo.profilePictureUrl;
+      }
+    }
+
+    // profileUrlからアカウントID抽出（最終フォールバック）
     if (!accountId && profileUrl) {
       const match = profileUrl.match(/instagram\.com\/([^/?]+)/);
       if (match) accountId = match[1];
