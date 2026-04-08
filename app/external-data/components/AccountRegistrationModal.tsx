@@ -171,20 +171,31 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
         if (allRows[i].some(cell => cell.includes("商材名"))) { headerIdx = i; break; }
       }
 
-      const rows = allRows.slice(headerIdx + 1);
+      // 空行・必須フィールドが全て空の行をスキップ
+      const rows = allRows.slice(headerIdx + 1).filter(row => {
+        // 商材名またはアクセストークンがある行のみ対象
+        return row[0] || row[platform === "tiktok" ? 4 : 3];
+      });
 
       // バリデーション（新列順: 商材名, プロフィールURL, アカウント名, ...）
       const errors: string[] = [];
-      const atCol = platform === "tiktok" ? 4 : 3; // アクセストークンの列
+      const atCol = platform === "tiktok" ? 4 : 3;
       rows.forEach((row, i) => {
-        const rowNum = headerIdx + i + 2;
+        const rowNum = i + 1;
         if (!row[0]) errors.push(`${rowNum}行目: 商材名が空です`);
         if (!row[1]) errors.push(`${rowNum}行目: プロフィールURLが空です`);
         if (platform === "tiktok" && !row[3]) errors.push(`${rowNum}行目: オープンIDが空です`);
         if (!row[atCol]) errors.push(`${rowNum}行目: アクセストークンが空です`);
       });
 
-      setCsvErrors(errors);
+      // エラーが多すぎる場合は先頭のみ表示
+      if (errors.length > 20) {
+        const truncated = errors.slice(0, 20);
+        truncated.push(`...他 ${errors.length - 20} 件のエラー`);
+        setCsvErrors(truncated);
+      } else {
+        setCsvErrors(errors);
+      }
       setCsvPreview(rows.slice(0, 5));
     };
     reader.readAsText(file, "utf-8");
@@ -318,7 +329,9 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
       for (let i = 0; i < allRows.length; i++) {
         if (allRows[i].some(cell => cell.includes("商材名"))) { headerIdx = i; break; }
       }
-      const dataRows = allRows.slice(headerIdx + 1);
+      const dataRows = allRows.slice(headerIdx + 1).filter(row => {
+        return row[0] || row[platform === "tiktok" ? 4 : 3];
+      });
 
       const productNameToId: Record<string, string> = {};
       products.forEach(p => { productNameToId[p.productName] = p.id; });
