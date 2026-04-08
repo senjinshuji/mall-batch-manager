@@ -8426,9 +8426,9 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
     try {
       const proof = generateAppSecretProof(accessToken);
 
-      // Facebook Pageに紐付くInstagram Business Accountを取得
+      // Facebook Pageに紐付くInstagram Business Accountを取得（Page Access Token付き）
       const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
-        params: { fields: 'id,name,instagram_business_account', access_token: accessToken, appsecret_proof: proof },
+        params: { fields: 'id,name,access_token,instagram_business_account', access_token: accessToken, appsecret_proof: proof },
       });
       const pages = pagesRes.data?.data || [];
       console.log("Facebook Pages:", JSON.stringify(pages.map((p: any) => ({ id: p.id, name: p.name, ig: p.instagram_business_account?.id }))));
@@ -8437,9 +8437,11 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
       for (const page of pages) {
         const igAccountId = page.instagram_business_account?.id;
         if (igAccountId) {
-          // Instagram Business Account の詳細を取得
+          // Page Access Tokenを使ってInstagram Business Accountの詳細を取得
+          const pageToken = page.access_token || accessToken;
+          const pageProof = generateAppSecretProof(pageToken);
           const igRes = await axios.get(`https://graph.facebook.com/v21.0/${igAccountId}`, {
-            params: { fields: 'id,username,name,profile_picture_url', access_token: accessToken, appsecret_proof: proof },
+            params: { fields: 'id,username,name,profile_picture_url,followers_count,media_count', access_token: pageToken, appsecret_proof: pageProof },
           });
           const ig = igRes.data;
           console.log("Instagram Business Account:", JSON.stringify(ig));
@@ -8477,34 +8479,65 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
   }
 }
 
-// Instagram プロフィールURLからOGPで名前・アイコンを取得
+// Instagram プロフィールURLからOGPで名前・アイコンを取得（Playwright使用）
 async function fetchInstagramProfileFromOGP(profileUrl: string): Promise<{
   username: string; name: string; profilePictureUrl: string;
 } | null> {
   try {
-    const axios = (await import('axios')).default;
-    const response = await axios.get(profileUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      timeout: 10000,
-    });
-    const html = response.data as string;
+    // Playwrightでページを取得（Instagramはサーバーからの直接アクセスをブロックするため）
+    let html = "";
+    try {
+      const browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      html = await page.content();
+      await browser.close();
+    } catch (browserErr: any) {
+      console.error("Playwright fetch failed, falling back to axios:", browserErr?.message);
+      const axios = (await import('axios')).default;
+      const response = await axios.get(profileUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+        timeout: 10000,
+      });
+      html = response.data as string;
+    }
+
+    // HTMLエンティティをデコードするヘルパー
+    const decodeHtmlEntities = (str: string): string => {
+      return str
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+        .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec)))
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"');
+    };
 
     // og:image からアイコンURL
     const ogImageMatch = html.match(/og:image"[^>]*content="([^"]+)"/);
-    const profilePictureUrl = ogImageMatch ? ogImageMatch[1].replace(/&amp;/g, '&') : "";
+    const rawImageUrl = ogImageMatch ? decodeHtmlEntities(ogImageMatch[1]) : "";
+    // デフォルトアイコン（rsrc.php）はスキップ
+    const profilePictureUrl = rawImageUrl.includes("cdninstagram.com/v/") ? rawImageUrl : "";
 
-    // og:title から名前（「名前 (@username)」形式）
+    // og:title から名前
     const ogTitleMatch = html.match(/og:title"[^>]*content="([^"]+)"/);
     let name = "";
     let username = "";
     if (ogTitleMatch) {
-      const decoded = ogTitleMatch[1].replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
-      // 「名前 (@username) • Instagram...」パターン
-      const nameMatch = decoded.match(/^(.+?)\s*\(@?(\w+)\)/);
+      const decoded = decodeHtmlEntities(ogTitleMatch[1]);
+      console.log("Instagram OGP title decoded:", decoded.substring(0, 80));
+      // 「名前 (@username) • Instagram...」パターン（絵文字対応）
+      const nameMatch = decoded.match(/^(.+?)\s*\(\s*@?([a-zA-Z0-9._]+)\s*\)/);
       if (nameMatch) {
         name = nameMatch[1].trim();
         username = nameMatch[2];
       }
+    }
+
+    // og:description からフォロワー数など（デバッグ用）
+    const ogDescMatch = html.match(/og:description"[^>]*content="([^"]+)"/);
+    if (ogDescMatch) {
+      console.log("Instagram OGP desc:", decodeHtmlEntities(ogDescMatch[1]).substring(0, 80));
     }
 
     // URLからusernameフォールバック
