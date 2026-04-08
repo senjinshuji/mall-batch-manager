@@ -9268,13 +9268,15 @@ app.get("/auth/instagram/login", async (req: Request, res: Response) => {
       expiresAt: Timestamp.fromMillis(Date.now() + 10 * 60 * 1000),
     });
 
-    const scope = 'pages_show_list,pages_read_engagement,instagram_basic,instagram_manage_insights';
-    const authUrl = `https://www.facebook.com/v21.0/dialog/oauth` +
+    // Instagram Business Login（Instagramアカウントで直接ログイン）
+    const scope = 'instagram_business_basic,instagram_business_manage_insights';
+    const authUrl = `https://www.instagram.com/oauth/authorize` +
       `?client_id=${INSTAGRAM_APP_ID}` +
       `&redirect_uri=${encodeURIComponent(INSTAGRAM_REDIRECT_URI)}` +
       `&scope=${encodeURIComponent(scope)}` +
-      `&state=${encodeURIComponent(state)}` +
-      `&response_type=code`;
+      `&response_type=code` +
+      `&enable_fb_login=0` +
+      `&state=${encodeURIComponent(state)}`;
 
     console.log(`Instagram OAuth: Redirecting for productId=${productId}`);
     res.redirect(authUrl);
@@ -9311,54 +9313,66 @@ app.get("/auth/instagram/callback", async (req: Request, res: Response) => {
     await db.collection("instagram_oauth_states").doc(stateData.csrfToken).delete();
 
     const axios = (await import('axios')).default;
-    const crypto = await import('crypto');
-    const generateProof = (token: string) => crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(token).digest('hex');
 
-    // コード→短期トークン
-    const tokenRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
-      params: { client_id: INSTAGRAM_APP_ID, client_secret: INSTAGRAM_APP_SECRET, redirect_uri: INSTAGRAM_REDIRECT_URI, code },
-    });
+    // Instagram Business Login: コード→短期トークン（POST）
+    const tokenRes = await axios.post('https://api.instagram.com/oauth/access_token',
+      new URLSearchParams({
+        client_id: INSTAGRAM_APP_ID,
+        client_secret: INSTAGRAM_APP_SECRET,
+        grant_type: 'authorization_code',
+        redirect_uri: INSTAGRAM_REDIRECT_URI,
+        code,
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
     const shortToken = tokenRes.data.access_token;
+    const igUserId = tokenRes.data.user_id;
     if (!shortToken) {
+      console.error("Instagram token exchange failed:", tokenRes.data);
       return res.redirect(`${FRONTEND_URL}/external-data?igError=token_error`);
     }
+    console.log(`Instagram OAuth: Got short-lived token for user ${igUserId}`);
 
-    // 短期→長期トークン
+    // 短期→長期トークン（Instagram Graph API）
     let longToken = shortToken;
     let expiresIn = 5184000;
     try {
-      const longRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
-        params: { grant_type: 'fb_exchange_token', client_id: INSTAGRAM_APP_ID, client_secret: INSTAGRAM_APP_SECRET, fb_exchange_token: shortToken },
+      const longRes = await axios.get('https://graph.instagram.com/access_token', {
+        params: { grant_type: 'ig_exchange_token', client_secret: INSTAGRAM_APP_SECRET, access_token: shortToken },
       });
       longToken = longRes.data.access_token || shortToken;
       expiresIn = longRes.data.expires_in || 5184000;
+      console.log("Instagram OAuth: Exchanged to long-lived token");
     } catch (longErr: any) {
       console.error("Long-lived token exchange failed:", longErr?.response?.data);
     }
 
-    const proof = generateProof(longToken);
-
-    // Page Token + IG Business Account
-    const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
-      params: { fields: 'id,name,access_token,instagram_business_account', access_token: longToken, appsecret_proof: proof },
-    });
-
+    // ユーザー情報取得（Instagram Graph API）
     let displayName = "Unknown";
     let avatarUrl = "";
     let accountId = "";
 
-    for (const page of pagesRes.data?.data || []) {
-      const igId = page.instagram_business_account?.id;
-      if (igId) {
-        const pageToken = page.access_token || longToken;
-        const pageProof = generateProof(pageToken);
-        const igRes = await axios.get(`https://graph.facebook.com/v21.0/${igId}`, {
-          params: { fields: 'id,username,name,profile_picture_url', access_token: pageToken, appsecret_proof: pageProof },
-        });
-        displayName = igRes.data.name || igRes.data.username || "Unknown";
-        avatarUrl = igRes.data.profile_picture_url || "";
-        accountId = igRes.data.username || "";
-        break;
+    try {
+      const meRes = await axios.get('https://graph.instagram.com/me', {
+        params: { fields: 'user_id,username,name,profile_picture_url,account_type', access_token: longToken },
+      });
+      const me = meRes.data;
+      displayName = me.name || me.username || "Unknown";
+      avatarUrl = me.profile_picture_url || "";
+      accountId = me.username || "";
+      console.log(`Instagram OAuth: User info - ${displayName} (@${accountId})`);
+    } catch (meErr: any) {
+      console.error("Instagram user info failed:", meErr?.response?.data);
+      // igUserIdがあればフォールバック
+      if (igUserId) {
+        try {
+          const userRes = await axios.get(`https://graph.instagram.com/${igUserId}`, {
+            params: { fields: 'username,name,profile_picture_url', access_token: longToken },
+          });
+          displayName = userRes.data.name || userRes.data.username || "Unknown";
+          avatarUrl = userRes.data.profile_picture_url || "";
+          accountId = userRes.data.username || "";
+        } catch (e) { /* フォールバックも失敗 */ }
       }
     }
 
