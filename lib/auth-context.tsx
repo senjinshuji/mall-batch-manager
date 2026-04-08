@@ -6,11 +6,15 @@ import { collection, getDocs, query, where } from "firebase/firestore";
 
 type UserRole = "admin" | "client" | "demo";
 
+type SalesFormat = "standard" | "unified";
+
 type User = {
   loginId: string;
   isRealDataUser: boolean;
   role: UserRole;
   allowedProductIds?: string[];
+  salesFormat?: SalesFormat;
+  extraChannels?: string[];
   accountId?: string;
 };
 
@@ -72,6 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           isRealDataUser: true,
           role: "client",
           allowedProductIds: data.allowedProductIds || [],
+          salesFormat: data.salesFormat || "standard",
+          extraChannels: data.extraChannels || [],
           accountId: doc.id,
         };
         setUser(newUser);

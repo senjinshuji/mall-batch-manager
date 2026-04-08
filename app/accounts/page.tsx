@@ -17,12 +17,19 @@ import {
 } from "firebase/firestore";
 import { UserCog, Plus, Trash2, Edit2, X, Check, Eye, EyeOff } from "lucide-react";
 
+type SalesFormat = "standard" | "unified";
+
+const DEFAULT_CHANNELS = ["Amazon", "楽天", "Qoo10"];
+const EXTRA_CHANNEL_OPTIONS = ["自社サイト", "アインズ&トルペ"];
+
 interface ClientAccount {
   id: string;
   loginId: string;
   password: string;
   name: string;
   allowedProductIds: string[];
+  salesFormat: SalesFormat;
+  extraChannels: string[];
   createdAt?: Timestamp;
 }
 
@@ -40,7 +47,8 @@ export default function AccountsPage() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [formData, setFormData] = useState({ loginId: "", password: "", name: "" });
+  const [formData, setFormData] = useState({ loginId: "", password: "", name: "", salesFormat: "standard" as SalesFormat });
+  const [selectedExtraChannels, setSelectedExtraChannels] = useState<Set<string>>(new Set());
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [visiblePasswords, setVisiblePasswords] = useState<Set<string>>(new Set());
@@ -70,6 +78,8 @@ export default function AccountsPage() {
             password: d.data().password || "",
             name: d.data().name || "",
             allowedProductIds: d.data().allowedProductIds || [],
+            salesFormat: d.data().salesFormat || "standard",
+            extraChannels: d.data().extraChannels || [],
             createdAt: d.data().createdAt,
           }))
         );
@@ -92,15 +102,17 @@ export default function AccountsPage() {
   }, [isAdmin]);
 
   const resetForm = () => {
-    setFormData({ loginId: "", password: "", name: "" });
+    setFormData({ loginId: "", password: "", name: "", salesFormat: "standard" });
     setSelectedProductIds(new Set());
+    setSelectedExtraChannels(new Set());
     setEditingId(null);
     setShowForm(false);
   };
 
   const startEdit = (account: ClientAccount) => {
-    setFormData({ loginId: account.loginId, password: account.password, name: account.name });
+    setFormData({ loginId: account.loginId, password: account.password, name: account.name, salesFormat: account.salesFormat });
     setSelectedProductIds(new Set(account.allowedProductIds));
+    setSelectedExtraChannels(new Set(account.extraChannels));
     setEditingId(account.id);
     setShowForm(true);
   };
@@ -127,6 +139,8 @@ export default function AccountsPage() {
         password: formData.password,
         name: formData.name,
         allowedProductIds: Array.from(selectedProductIds),
+        salesFormat: formData.salesFormat,
+        extraChannels: Array.from(selectedExtraChannels),
       };
 
       if (editingId) {
@@ -239,6 +253,47 @@ export default function AccountsPage() {
             </div>
           </div>
 
+          {/* 売上入稿フォーマット */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1">売上入稿フォーマット</label>
+              <select
+                value={formData.salesFormat}
+                onChange={(e) => setFormData({ ...formData, salesFormat: e.target.value as SalesFormat })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              >
+                <option value="standard">標準（モール別CSV）</option>
+                <option value="unified">統合（1つのCSVに全チャネル）</option>
+              </select>
+            </div>
+            {formData.salesFormat === "unified" && (
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">
+                  追加チャネル（標準: {DEFAULT_CHANNELS.join(", ")}）
+                </label>
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {EXTRA_CHANNEL_OPTIONS.map((ch) => (
+                    <label key={ch} className="flex items-center gap-1.5 px-3 py-1.5 border rounded-lg hover:bg-gray-50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedExtraChannels.has(ch)}
+                        onChange={() => {
+                          setSelectedExtraChannels((prev) => {
+                            const next = new Set(prev);
+                            next.has(ch) ? next.delete(ch) : next.add(ch);
+                            return next;
+                          });
+                        }}
+                        className="w-4 h-4 text-blue-600 rounded border-gray-300"
+                      />
+                      <span className="text-sm text-gray-700">{ch}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* 商品選択 */}
           <div className="mb-4">
             <label className="block text-sm font-medium text-gray-600 mb-2">
@@ -327,6 +382,18 @@ export default function AccountsPage() {
                         {visiblePasswords.has(account.id) ? <EyeOff size={14} /> : <Eye size={14} />}
                       </button>
                     </div>
+                  </div>
+                  {/* 入稿フォーマット */}
+                  <div className="mb-2">
+                    <span className="text-xs text-gray-400">入稿形式:</span>
+                    <span className={`ml-1 px-2 py-0.5 text-xs rounded ${account.salesFormat === "unified" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600"}`}>
+                      {account.salesFormat === "unified" ? "統合CSV" : "標準（モール別）"}
+                    </span>
+                    {account.extraChannels.length > 0 && (
+                      <span className="ml-2 text-xs text-gray-500">
+                        + {account.extraChannels.join(", ")}
+                      </span>
+                    )}
                   </div>
                   {/* 割り当て商品 */}
                   <div>

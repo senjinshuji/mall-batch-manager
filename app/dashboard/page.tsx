@@ -44,10 +44,21 @@ interface SalesData {
 }
 
 // モールのテーマカラー
-const MALL_COLORS = {
+const MALL_COLORS: Record<string, string> = {
   amazon: "#FF9900",
   rakuten: "#BF0000",
   qoo10: "#3266CC",
+  ownSite: "#10B981",
+  ainsTolpe: "#8B5CF6",
+};
+
+// チャネル名の日本語表示
+const CHANNEL_LABELS: Record<string, string> = {
+  amazon: "Amazon",
+  rakuten: "楽天",
+  qoo10: "Qoo10",
+  ownSite: "自社サイト",
+  ainsTolpe: "アインズ&トルペ",
 };
 
 // 広告費の色
@@ -70,6 +81,11 @@ interface ProductSalesData {
   qoo10Quantity: number;
   rakutenSales: number;
   rakutenQuantity: number;
+  ownSiteSales: number;
+  ownSiteQuantity: number;
+  ainsTolpeSales: number;
+  ainsTolpeQuantity: number;
+  [key: string]: number | string;
 }
 
 // イベントフラグの型
@@ -409,7 +425,7 @@ export default function DashboardPage() {
 
     setProductLoading(true);
     try {
-      const allSalesData: { [date: string]: { amazonSales: number; amazonQuantity: number; qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number } } = {};
+      const allSalesData: { [date: string]: { amazonSales: number; amazonQuantity: number; qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number; ownSiteSales: number; ownSiteQuantity: number; ainsTolpeSales: number; ainsTolpeQuantity: number } } = {};
 
       console.log("fetchMultipleProductSales対象商品:", validProducts.map(p => ({ id: p.id, name: p.productName, amazon: p.amazonCode, qoo10: p.qoo10Code, rakuten: p.rakutenCode })));
 
@@ -436,7 +452,7 @@ export default function DashboardPage() {
               if (data.date >= startDate && data.date <= endDate) {
                 amazonDataFound = true;
                 if (!allSalesData[data.date]) {
-                  allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                  allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
                 }
                 allSalesData[data.date].amazonSales += data.salesAmount || 0;
                 allSalesData[data.date].amazonQuantity += data.orderedUnits || 0;
@@ -460,7 +476,7 @@ export default function DashboardPage() {
                 // mall === "amazon" かつ 日付範囲内をフィルタ
                 if (data.mall === "amazon" && data.date >= startDate && data.date <= endDate) {
                   if (!allSalesData[data.date]) {
-                    allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                    allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
                   }
                   allSalesData[data.date].amazonSales += data.sales || 0;
                   allSalesData[data.date].amazonQuantity += data.quantity || 0;
@@ -482,7 +498,7 @@ export default function DashboardPage() {
             if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
               for (const item of cacheData.dailySales) {
                 if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
                 }
                 allSalesData[item.date].qoo10Sales += item.qoo10Sales || 0;
                 allSalesData[item.date].qoo10Quantity += item.qoo10Quantity || 0;
@@ -496,7 +512,7 @@ export default function DashboardPage() {
               if (qoo10Data.success && qoo10Data.dailySales) {
                 for (const item of qoo10Data.dailySales) {
                   if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
                   }
                   allSalesData[item.date].qoo10Sales += item.sales;
                   allSalesData[item.date].qoo10Quantity += item.quantity;
@@ -518,7 +534,7 @@ export default function DashboardPage() {
             if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
               for (const item of cacheData.dailySales) {
                 if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
                 }
                 allSalesData[item.date].rakutenSales += item.rakutenSales || 0;
                 allSalesData[item.date].rakutenQuantity += item.rakutenQuantity || 0;
@@ -532,7 +548,7 @@ export default function DashboardPage() {
               if (rakutenData.success && rakutenData.dailySales) {
                 for (const item of rakutenData.dailySales) {
                   if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0 };
+                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
                   }
                   allSalesData[item.date].rakutenSales += item.sales;
                   allSalesData[item.date].rakutenQuantity += item.quantity;
@@ -542,6 +558,43 @@ export default function DashboardPage() {
           } catch (err) {
             console.error("楽天売上取得エラー:", err);
           }
+        }
+      }
+
+      // unified_daily_salesからデータを取得（統合CSV入稿分）
+      for (const product of validProducts) {
+        try {
+          const unifiedQuery = query(
+            collection(db, "unified_daily_sales"),
+            where("productId", "==", product.id),
+          );
+          const unifiedSnap = await getDocs(unifiedQuery);
+          unifiedSnap.forEach((doc) => {
+            const d = doc.data();
+            if (d.date < startDate || d.date > endDate) return;
+            if (!allSalesData[d.date]) {
+              allSalesData[d.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0 };
+            }
+            const channel = d.channel as string;
+            if (channel === "Amazon") {
+              allSalesData[d.date].amazonSales += d.salesAmount || 0;
+              allSalesData[d.date].amazonQuantity += d.quantity || 0;
+            } else if (channel === "楽天") {
+              allSalesData[d.date].rakutenSales += d.salesAmount || 0;
+              allSalesData[d.date].rakutenQuantity += d.quantity || 0;
+            } else if (channel === "Qoo10") {
+              allSalesData[d.date].qoo10Sales += d.salesAmount || 0;
+              allSalesData[d.date].qoo10Quantity += d.quantity || 0;
+            } else if (channel === "自社サイト") {
+              allSalesData[d.date].ownSiteSales += d.salesAmount || 0;
+              allSalesData[d.date].ownSiteQuantity += d.quantity || 0;
+            } else if (channel === "アインズ&トルペ") {
+              allSalesData[d.date].ainsTolpeSales += d.salesAmount || 0;
+              allSalesData[d.date].ainsTolpeQuantity += d.quantity || 0;
+            }
+          });
+        } catch (err) {
+          console.error("統合売上取得エラー:", err);
         }
       }
 
@@ -555,6 +608,10 @@ export default function DashboardPage() {
           qoo10Quantity: data.qoo10Quantity,
           rakutenSales: data.rakutenSales,
           rakutenQuantity: data.rakutenQuantity,
+          ownSiteSales: data.ownSiteSales,
+          ownSiteQuantity: data.ownSiteQuantity,
+          ainsTolpeSales: data.ainsTolpeSales,
+          ainsTolpeQuantity: data.ainsTolpeQuantity,
         }))
         .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -1417,6 +1474,24 @@ export default function DashboardPage() {
                       stackId="productSales"
                       fill={MALL_COLORS.qoo10}
                       barSize={30}
+                    />
+                  )}
+                  {/* 自社サイト売上（積み上げ） */}
+                  {productSalesData.some(d => d.ownSiteSales > 0) && (
+                    <Bar
+                      dataKey="ownSiteSales"
+                      stackId="productSales"
+                      fill={MALL_COLORS.ownSite}
+                      barSize={30}
+                    />
+                  )}
+                  {/* アインズ&トルペ売上（積み上げ） */}
+                  {productSalesData.some(d => d.ainsTolpeSales > 0) && (
+                    <Bar
+                      dataKey="ainsTolpeSales"
+                      stackId="productSales"
+                      fill={MALL_COLORS.ainsTolpe}
+                      barSize={30}
                       radius={[4, 4, 0, 0]}
                     />
                   )}
@@ -1441,6 +1516,18 @@ export default function DashboardPage() {
                   <div className="flex items-center gap-1">
                     <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.qoo10 }} />
                     <span>Qoo10</span>
+                  </div>
+                )}
+                {productSalesData.some(d => d.ownSiteSales > 0) && (
+                  <div className="flex items-center gap-1">
+                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.ownSite }} />
+                    <span>自社サイト</span>
+                  </div>
+                )}
+                {productSalesData.some(d => d.ainsTolpeSales > 0) && (
+                  <div className="flex items-center gap-1">
+                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.ainsTolpe }} />
+                    <span>アインズ&トルペ</span>
                   </div>
                 )}
               </div>
