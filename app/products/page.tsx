@@ -754,17 +754,16 @@ export default function ProductsPage() {
           // 日付を正規化（YYYY/MM/DD → YYYY-MM-DD, M/D → 今年のYYYY-MM-DD）
           const normalizeDate = (d: string): string => {
             const cleaned = d.trim();
-            // YYYY/MM/DD or YYYY-MM-DD
-            if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(cleaned)) {
-              return cleaned.replace(/\//g, "-");
+            // YYYY/M/D or YYYY-M-D → ゼロ埋めしてYYYY-MM-DD
+            const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+            if (ymdMatch) {
+              return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
             }
             // M/D or MM/DD（年なし） → 今年を補完
             const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
             if (mdMatch) {
               const year = new Date().getFullYear();
-              const month = mdMatch[1].padStart(2, "0");
-              const day = mdMatch[2].padStart(2, "0");
-              return `${year}-${month}-${day}`;
+              return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
             }
             return cleaned.replace(/\//g, "-");
           };
@@ -1044,7 +1043,8 @@ export default function ProductsPage() {
         // 日付正規化（M/D → YYYY-MM-DD）
         const normalizeDate = (d: string): string => {
           const cleaned = d.trim();
-          if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(cleaned)) return cleaned.replace(/\//g, "-");
+          const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
           const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
           if (mdMatch) {
             const year = new Date().getFullYear();
@@ -1188,7 +1188,8 @@ export default function ProductsPage() {
 
         const normQoo10Date = (d: string): string => {
           const cleaned = d.trim();
-          if (/^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(cleaned)) return cleaned.replace(/\//g, "-");
+          const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
           const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
           if (mdMatch) {
             const year = new Date().getFullYear();
