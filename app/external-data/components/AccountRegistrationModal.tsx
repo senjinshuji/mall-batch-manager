@@ -130,27 +130,54 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
-      const lines = text.split(/\r?\n/).filter(line => line.trim());
-      if (lines.length < 2) { setCsvErrors(["CSVにデータ行がありません"]); setCsvPreview([]); return; }
 
-      const rows = lines.slice(1).map(line => {
-        const result: string[] = [];
+      // マルチライン対応CSVパーサー（ダブルクォート内の改行を正しく処理）
+      const parseMultilineCsv = (csv: string): string[][] => {
+        const rows: string[][] = [];
         let current = "";
         let inQuotes = false;
-        for (const char of line) {
-          if (char === '"') inQuotes = !inQuotes;
-          else if (char === ',' && !inQuotes) { result.push(current.trim()); current = ""; }
-          else current += char;
+        const currentRow: string[] = [];
+
+        for (let i = 0; i < csv.length; i++) {
+          const ch = csv[i];
+          if (ch === '"') {
+            inQuotes = !inQuotes;
+          } else if (ch === ',' && !inQuotes) {
+            currentRow.push(current.trim());
+            current = "";
+          } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+            if (ch === '\r' && csv[i + 1] === '\n') i++; // CRLF
+            currentRow.push(current.trim());
+            current = "";
+            if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+            currentRow.length = 0;
+          } else {
+            current += ch;
+          }
         }
-        result.push(current.trim());
-        return result;
-      });
+        // 最後の行
+        currentRow.push(current.trim());
+        if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+
+        return rows;
+      };
+
+      const allRows = parseMultilineCsv(text);
+      if (allRows.length < 2) { setCsvErrors(["CSVにデータ行がありません"]); setCsvPreview([]); return; }
+
+      // ヘッダー行を検出（「商材名」を含む行）
+      let headerIdx = 0;
+      for (let i = 0; i < allRows.length; i++) {
+        if (allRows[i].some(cell => cell.includes("商材名"))) { headerIdx = i; break; }
+      }
+
+      const rows = allRows.slice(headerIdx + 1);
 
       // バリデーション（新列順: 商材名, プロフィールURL, アカウント名, ...）
       const errors: string[] = [];
       const atCol = platform === "tiktok" ? 4 : 3; // アクセストークンの列
       rows.forEach((row, i) => {
-        const rowNum = i + 2;
+        const rowNum = headerIdx + i + 2;
         if (!row[0]) errors.push(`${rowNum}行目: 商材名が空です`);
         if (!row[1]) errors.push(`${rowNum}行目: プロフィールURLが空です`);
         if (platform === "tiktok" && !row[3]) errors.push(`${rowNum}行目: オープンIDが空です`);
@@ -263,23 +290,40 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
     setIsSubmitting(true); setResult(null);
     try {
       const text = await csvFile.text();
-      const lines = text.split(/\r?\n/).filter(line => line.trim());
-      const rows = lines.slice(1);
+
+      // マルチライン対応CSVパーサー
+      const parseMultilineCsv = (csv: string): string[][] => {
+        const rows: string[][] = [];
+        let current = "";
+        let inQuotes = false;
+        const currentRow: string[] = [];
+        for (let i = 0; i < csv.length; i++) {
+          const ch = csv[i];
+          if (ch === '"') { inQuotes = !inQuotes; }
+          else if (ch === ',' && !inQuotes) { currentRow.push(current.trim()); current = ""; }
+          else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+            if (ch === '\r' && csv[i + 1] === '\n') i++;
+            currentRow.push(current.trim()); current = "";
+            if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+            currentRow.length = 0;
+          } else { current += ch; }
+        }
+        currentRow.push(current.trim());
+        if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+        return rows;
+      };
+
+      const allRows = parseMultilineCsv(text);
+      let headerIdx = 0;
+      for (let i = 0; i < allRows.length; i++) {
+        if (allRows[i].some(cell => cell.includes("商材名"))) { headerIdx = i; break; }
+      }
+      const dataRows = allRows.slice(headerIdx + 1);
 
       const productNameToId: Record<string, string> = {};
       products.forEach(p => { productNameToId[p.productName] = p.id; });
 
-      const accounts = rows.map(line => {
-        const cols: string[] = [];
-        let current = "";
-        let inQuotes = false;
-        for (const char of line) {
-          if (char === '"') inQuotes = !inQuotes;
-          else if (char === ',' && !inQuotes) { cols.push(current.trim()); current = ""; }
-          else current += char;
-        }
-        cols.push(current.trim());
-
+      const accounts = dataRows.map(cols => {
         // 新列順: 商材名, プロフィールURL, アカウント名, ...
         if (platform === "tiktok") {
           return {
