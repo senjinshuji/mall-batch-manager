@@ -1426,29 +1426,52 @@ export default function DashboardPage() {
             <div className="h-72 relative">
               {/* フラグマーカー（グラフの上に重ねて表示） */}
               {showFlags && eventFlags
-                .filter(flag => flag.date >= startDate && flag.date <= endDate)
+                .filter(flag => {
+                  const end = flag.endDate || flag.date;
+                  return flag.date <= endDate && end >= startDate;
+                })
                 .map((flag) => {
-                  const dataIndex = productSalesData.findIndex(d => d.date === flag.date);
-                  if (dataIndex === -1) return null;
+                  const startIdx = productSalesData.findIndex(d => d.date >= flag.date);
+                  if (startIdx === -1) return null;
+                  const endIdx = flag.endDate
+                    ? productSalesData.findLastIndex(d => d.date <= flag.endDate!)
+                    : startIdx;
+                  if (endIdx === -1) return null;
                   const graphLeftMargin = 55;
                   const graphRightMargin = 55;
-                  const position = ((dataIndex + 0.5) / productSalesData.length) * 100;
+                  const startPos = ((startIdx + 0.5) / productSalesData.length) * 100;
+                  const endPos = ((endIdx + 0.5) / productSalesData.length) * 100;
+                  const hasRange = flag.endDate && endIdx > startIdx;
+                  const mallColor = flag.mall ? ({"Amazon":"#FF9900","楽天":"#BF0000","Qoo10":"#3266CC"} as Record<string,string>)[flag.mall] || "#9333EA" : "#9333EA";
                   return (
-                    <div
-                      key={flag.id}
-                      className="absolute z-10 cursor-pointer"
-                      style={{
-                        top: '20px',
-                        left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${position / 100})`,
-                        transform: 'translateX(-50%)',
-                      }}
-                      onClick={() => setSelectedFlag(flag)}
-                    >
-                      <div className="flex flex-col items-center">
-                        <span className="text-purple-600 text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border border-purple-200">
-                          🚩 {flag.name}
-                        </span>
-                        <div className="w-0.5 h-44 opacity-80" style={{ background: 'repeating-linear-gradient(to bottom, #9333EA 0, #9333EA 4px, transparent 4px, transparent 8px)' }} />
+                    <div key={flag.id}>
+                      {hasRange && (
+                        <div
+                          className="absolute z-5 opacity-15 rounded"
+                          style={{
+                            top: '20px',
+                            height: '220px',
+                            backgroundColor: mallColor,
+                            left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                            width: `calc((100% - ${graphLeftMargin + graphRightMargin}px) * ${(endPos - startPos) / 100})`,
+                          }}
+                        />
+                      )}
+                      <div
+                        className="absolute z-10 cursor-pointer"
+                        style={{
+                          top: '20px',
+                          left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                          transform: 'translateX(-50%)',
+                        }}
+                        onClick={() => setSelectedFlag(flag)}
+                      >
+                        <div className="flex flex-col items-center">
+                          <span className="text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border" style={{ color: mallColor, borderColor: mallColor + '40' }}>
+                            {flag.name}
+                          </span>
+                          <div className="w-0.5 h-44 opacity-80" style={{ background: `repeating-linear-gradient(to bottom, ${mallColor} 0, ${mallColor} 4px, transparent 4px, transparent 8px)` }} />
+                        </div>
                       </div>
                     </div>
                   );
@@ -1663,32 +1686,52 @@ export default function DashboardPage() {
           <div className="h-72 relative">
             {/* フラグマーカー（グラフの上に重ねて表示） */}
             {showFlags && eventFlags
-              .filter(flag => flag.date >= startDate && flag.date <= endDate)
+              .filter(flag => {
+                const end = flag.endDate || flag.date;
+                return flag.date <= endDate && end >= startDate;
+              })
               .map((flag) => {
-                const dataIndex = chartData.findIndex(d => d.date === flag.date);
-                if (dataIndex === -1) return null;
-                // ComposedChartのmargin: { top: 20, right: 30, left: 20, bottom: 5 }
-                // 左Y軸ラベル幅 + margin.left ≈ 55px, 右Y軸ラベル幅 + margin.right ≈ 55px
+                const startIdx = chartData.findIndex(d => d.date >= flag.date);
+                if (startIdx === -1) return null;
+                const endIdx = flag.endDate
+                  ? chartData.findLastIndex(d => d.date <= flag.endDate!)
+                  : startIdx;
+                if (endIdx === -1) return null;
                 const graphLeftMargin = 55;
                 const graphRightMargin = 55;
-                // 棒グラフの中心位置を計算
-                const position = ((dataIndex + 0.5) / chartData.length) * 100;
+                const startPos = ((startIdx + 0.5) / chartData.length) * 100;
+                const endPos = ((endIdx + 0.5) / chartData.length) * 100;
+                const hasRange = flag.endDate && endIdx > startIdx;
+                const mallColor = flag.mall ? ({"Amazon":"#FF9900","楽天":"#BF0000","Qoo10":"#3266CC"} as Record<string,string>)[flag.mall] || "#9333EA" : "#9333EA";
                 return (
-                  <div
-                    key={flag.id}
-                    className="absolute z-10 cursor-pointer"
-                    style={{
-                      top: '20px', // グラフのtop marginに合わせる
-                      left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${position / 100})`,
-                      transform: 'translateX(-50%)',
-                    }}
-                    onClick={() => setSelectedFlag(flag)}
-                  >
-                    <div className="flex flex-col items-center">
-                      <span className="text-purple-600 text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border border-purple-200">
-                        🚩 {flag.name}
-                      </span>
-                      <div className="w-0.5 h-44 opacity-80" style={{ background: 'repeating-linear-gradient(to bottom, #9333EA 0, #9333EA 4px, transparent 4px, transparent 8px)' }} />
+                  <div key={flag.id}>
+                    {hasRange && (
+                      <div
+                        className="absolute z-5 opacity-15 rounded"
+                        style={{
+                          top: '20px',
+                          height: '220px',
+                          backgroundColor: mallColor,
+                          left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                          width: `calc((100% - ${graphLeftMargin + graphRightMargin}px) * ${(endPos - startPos) / 100})`,
+                        }}
+                      />
+                    )}
+                    <div
+                      className="absolute z-10 cursor-pointer"
+                      style={{
+                        top: '20px',
+                        left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                        transform: 'translateX(-50%)',
+                      }}
+                      onClick={() => setSelectedFlag(flag)}
+                    >
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border" style={{ color: mallColor, borderColor: mallColor + '40' }}>
+                          {flag.name}
+                        </span>
+                        <div className="w-0.5 h-44 opacity-80" style={{ background: `repeating-linear-gradient(to bottom, ${mallColor} 0, ${mallColor} 4px, transparent 4px, transparent 8px)` }} />
+                      </div>
                     </div>
                   </div>
                 );
@@ -1840,7 +1883,10 @@ export default function DashboardPage() {
         )}
 
         {/* フラグリスト（グラフ下に表示） */}
-        {showFlags && eventFlags.filter(flag => flag.date >= startDate && flag.date <= endDate).length > 0 && (
+        {showFlags && eventFlags.filter(flag => {
+          const end = flag.endDate || flag.date;
+          return flag.date <= endDate && end >= startDate;
+        }).length > 0 && (
           <div className="mt-4 pt-4 border-t border-gray-200">
             <h3 className="text-sm font-medium text-gray-600 mb-2 flex items-center gap-1">
               <Flag className="w-4 h-4 text-purple-600" />
@@ -1848,21 +1894,29 @@ export default function DashboardPage() {
             </h3>
             <div className="flex flex-wrap gap-2">
               {eventFlags
-                .filter(flag => flag.date >= startDate && flag.date <= endDate)
+                .filter(flag => {
+                  const end = flag.endDate || flag.date;
+                  return flag.date <= endDate && end >= startDate;
+                })
                 .sort((a, b) => a.date.localeCompare(b.date))
-                .map((flag) => (
-                  <button
-                    key={flag.id}
-                    onClick={() => setSelectedFlag(flag)}
-                    className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm hover:bg-purple-200 transition-colors"
-                  >
-                    <Flag className="w-3 h-3" />
-                    <span className="font-medium">{flag.name}</span>
-                    <span className="text-purple-500 text-xs">
-                      ({new Date(flag.date).getMonth() + 1}/{new Date(flag.date).getDate()})
-                    </span>
-                  </button>
-                ))}
+                .map((flag) => {
+                  const mallColor = flag.mall ? ({"Amazon":"#FF9900","楽天":"#BF0000","Qoo10":"#3266CC"} as Record<string,string>)[flag.mall] || "#9333EA" : "#9333EA";
+                  const d = new Date(flag.date);
+                  const dateLabel = `${d.getMonth() + 1}/${d.getDate()}`;
+                  const endLabel = flag.endDate ? (() => { const ed = new Date(flag.endDate); return `〜${ed.getMonth() + 1}/${ed.getDate()}`; })() : "";
+                  return (
+                    <button
+                      key={flag.id}
+                      onClick={() => setSelectedFlag(flag)}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm hover:opacity-80 transition-colors"
+                      style={{ backgroundColor: mallColor + '20', color: mallColor }}
+                    >
+                      <Flag className="w-3 h-3" />
+                      <span className="font-medium">{flag.name}</span>
+                      <span className="text-xs opacity-70">({dateLabel}{endLabel})</span>
+                    </button>
+                  );
+                })}
             </div>
           </div>
         )}
