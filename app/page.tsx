@@ -2,24 +2,30 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { LogIn, Mail, Lock, Store } from "lucide-react";
+import { LogIn, User, Lock, Store } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 
 export default function LoginPage() {
   const router = useRouter();
   const { login } = useAuth();
-  const [email, setEmail] = useState("");
+  const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setError("");
 
-    // ログイン処理
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    login(email, password);
-    router.push("/dashboard");
+    const result = await login(loginId, password);
+
+    if (result.success) {
+      router.push("/dashboard");
+    } else {
+      setError(result.error || "ログインに失敗しました");
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -44,25 +50,31 @@ export default function LoginPage() {
             ログイン
           </h2>
 
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm text-center">
+              {error}
+            </div>
+          )}
+
           <form onSubmit={handleLogin} className="space-y-5">
-            {/* メールアドレス */}
+            {/* ID */}
             <div>
               <label
-                htmlFor="email"
+                htmlFor="loginId"
                 className="block text-sm font-medium text-gray-600 mb-1"
               >
-                メールアドレス
+                ID
               </label>
               <div className="relative">
                 <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">
-                  <Mail size={18} />
+                  <User size={18} />
                 </div>
                 <input
-                  type="email"
-                  id="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="example@mail.com"
+                  type="text"
+                  id="loginId"
+                  value={loginId}
+                  onChange={(e) => setLoginId(e.target.value)}
+                  placeholder="IDを入力"
                   className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
                   required
                 />
@@ -113,7 +125,7 @@ export default function LoginPage() {
           {/* デモモード注記 */}
           <div className="mt-6 p-4 bg-gray-50 rounded-lg">
             <p className="text-xs text-gray-500 text-center">
-              ※ デモモード: 任意のメールアドレス・パスワードでログインできます
+              ※ 登録済みアカウント以外のIDではデモモードでログインされます
             </p>
           </div>
         </div>

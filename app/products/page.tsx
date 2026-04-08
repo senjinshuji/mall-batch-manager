@@ -55,7 +55,7 @@ type Qoo10Product = {
 };
 
 export default function ProductsPage() {
-  const { isRealDataUser, isAuthLoading } = useAuth();
+  const { isRealDataUser, isAuthLoading, allowedProductIds } = useAuth();
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -151,7 +151,12 @@ export default function ProductsPage() {
         id: doc.id,
         ...doc.data(),
       })) as RegisteredProduct[];
-      setProducts(productsData);
+      // クライアントユーザーの場合は許可された商品のみ表示
+      if (allowedProductIds) {
+        setProducts(productsData.filter((p) => allowedProductIds.includes(p.id)));
+      } else {
+        setProducts(productsData);
+      }
     } catch (error) {
       console.error("商品一覧取得エラー:", error);
     } finally {

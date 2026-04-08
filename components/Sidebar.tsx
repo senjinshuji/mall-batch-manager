@@ -2,51 +2,67 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Users, Flag, BarChart3 } from "lucide-react";
+import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Users, Flag, BarChart3, UserCog } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/auth-context";
 
 const menuItems = [
   {
     name: "ダッシュボード",
     href: "/dashboard",
     icon: LayoutDashboard,
+    adminOnly: false,
   },
   {
     name: "商品登録",
     href: "/products",
     icon: Package,
+    adminOnly: false,
   },
   {
     name: "動画分析",
     href: "/video-analytics",
     icon: BarChart3,
+    adminOnly: false,
   },
   {
     name: "アカウントリスト",
     href: "/external-data",
     icon: Users,
+    adminOnly: false,
   },
   {
     name: "フラグ登録",
     href: "/flags",
     icon: Flag,
+    adminOnly: false,
   },
   {
     name: "媒体設定",
     href: "/settings",
     icon: Settings,
+    adminOnly: false,
+  },
+  {
+    name: "マスター機能",
+    href: "/accounts",
+    icon: UserCog,
+    adminOnly: true,
   },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const { isAdmin } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const handleLogout = () => {
     router.push("/");
   };
+
+  const visibleItems = menuItems.filter((item) => !item.adminOnly || isAdmin);
 
   return (
     <>
@@ -84,7 +100,7 @@ export default function Sidebar() {
         {/* ナビゲーションメニュー */}
         <nav className="flex-1 p-4">
           <ul className="space-y-2">
-            {menuItems.map((item) => {
+            {visibleItems.map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.href;
 

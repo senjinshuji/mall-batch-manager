@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { X, ChevronDown, Copy, CheckCircle, Upload, Download, FileText } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, getDocs } from "firebase/firestore";
+import { useAuth } from "@/lib/auth-context";
 
 const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
@@ -28,6 +29,7 @@ const TIKTOK_CSV_HEADERS = ["商材名", "プロフィールURL", "アカウン�
 const INSTAGRAM_CSV_HEADERS = ["商材名", "プロフィールURL", "アカウント名", "アクセストークン", "端末", "メアド", "PW", "運用者"];
 
 export default function AccountRegistrationModal({ isOpen, platform, onClose, onRegistered }: AccountRegistrationModalProps) {
+  const { allowedProductIds } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>("manual");
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
@@ -69,7 +71,12 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
       const snapshot = await getDocs(collection(db, "registered_products"));
       const list: RegisteredProduct[] = [];
       snapshot.forEach(doc => { list.push({ id: doc.id, ...doc.data() } as RegisteredProduct); });
-      setProducts(list);
+      // クライアントユーザーの場合は許可された商品のみ表示
+      if (allowedProductIds) {
+        setProducts(list.filter((p) => allowedProductIds.includes(p.id)));
+      } else {
+        setProducts(list);
+      }
     };
     fetchProducts();
   }, [isOpen]);
