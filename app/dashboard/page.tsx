@@ -94,7 +94,11 @@ interface EventFlag {
   id: string;
   name: string;
   date: string;
+  endDate?: string;
   description: string;
+  scope?: string;
+  productId?: string;
+  mall?: string;
 }
 
 // デモ用のフラグデータ
@@ -195,7 +199,11 @@ export default function DashboardPage() {
           id: doc.id,
           name: doc.data().name || "",
           date: doc.data().date || "",
+          endDate: doc.data().endDate || "",
           description: doc.data().description || "",
+          scope: doc.data().scope || "global",
+          productId: doc.data().productId || "",
+          mall: doc.data().mall || "",
         })) as EventFlag[];
         // 日付降順でソート
         flags.sort((a, b) => b.date.localeCompare(a.date));
