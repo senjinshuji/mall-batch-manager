@@ -129,6 +129,12 @@ export default function ProductsPage() {
   const unifiedFileRef = useRef<HTMLInputElement>(null);
   const [unifiedClients, setUnifiedClients] = useState<{ id: string; name: string; allowedProductIds: string[]; extraChannels: string[] }[]>([]);
 
+  // 再生数CSV入稿用ステート
+  const [viewsUploading, setViewsUploading] = useState(false);
+  const [viewsError, setViewsError] = useState<string | null>(null);
+  const [viewsSuccess, setViewsSuccess] = useState<string | null>(null);
+  const viewsFileRef = useRef<HTMLInputElement>(null);
+
   // Firestoreから商品一覧を取得（実データユーザーのみ）
   useEffect(() => {
     // 認証ロード中は何もしない
@@ -1357,6 +1363,98 @@ export default function ProductsPage() {
     reader.readAsText(file, "UTF-8");
   }, [products]);
 
+  // 再生数CSV入稿ハンドラ
+  // フォーマット: date, views（商品選択中の商品に紐づけ）
+  const [selectedProductForViews, setSelectedProductForViews] = useState<string | null>(null);
+
+  const handleViewsCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selectedProductForViews) return;
+
+    setViewsUploading(true);
+    setViewsError(null);
+    setViewsSuccess(null);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        let text = e.target?.result as string;
+        // BOM除去
+        if (text.charCodeAt(0) === 0xFEFF) text = text.substring(1);
+
+        const lines = text.split(/\r?\n/).filter((l) => l.trim());
+        if (lines.length < 2) {
+          setViewsError("データがありません");
+          setViewsUploading(false);
+          return;
+        }
+
+        const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
+        const dateIdx = header.findIndex((h) => h === "date" || h === "日付");
+        const viewsIdx = header.findIndex((h) => h === "views" || h === "再生数" || h === "view_count");
+
+        if (dateIdx === -1 || viewsIdx === -1) {
+          setViewsError("CSVヘッダーが不正です。必要な列: date, views");
+          setViewsUploading(false);
+          return;
+        }
+
+        const rows: { date: string; views: number }[] = [];
+        for (let i = 1; i < lines.length; i++) {
+          const values = lines[i].split(",").map((v) => v.trim());
+          if (values.length < Math.max(dateIdx, viewsIdx) + 1) continue;
+          const date = values[dateIdx].replace(/\//g, "-");
+          const views = parseInt(values[viewsIdx]) || 0;
+          if (date && views > 0) {
+            rows.push({ date, views });
+          }
+        }
+
+        if (rows.length === 0) {
+          setViewsError("有効なデータがありません");
+          setViewsUploading(false);
+          return;
+        }
+
+        // Firestoreにバッチ書き込み
+        let savedCount = 0;
+        const batchSize = 400;
+        for (let i = 0; i < rows.length; i += batchSize) {
+          const batch = writeBatch(db);
+          const chunk = rows.slice(i, i + batchSize);
+          for (const row of chunk) {
+            const docRef = doc(collection(db, "daily_views"));
+            batch.set(docRef, {
+              productId: selectedProductForViews,
+              date: row.date,
+              views: row.views,
+              createdAt: Timestamp.now(),
+            });
+          }
+          await batch.commit();
+          savedCount += chunk.length;
+        }
+
+        const productName = products.find((p) => p.id === selectedProductForViews)?.productName || "";
+        setViewsSuccess(`${productName}: ${savedCount}日分の再生数データを保存しました`);
+      } catch (err: unknown) {
+        console.error("再生数CSVパースエラー:", err);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setViewsError(`エラー: ${errMsg}`);
+      } finally {
+        setViewsUploading(false);
+        if (viewsFileRef.current) viewsFileRef.current.value = "";
+      }
+    };
+
+    reader.onerror = () => {
+      setViewsError("ファイルの読み込みに失敗しました");
+      setViewsUploading(false);
+    };
+
+    reader.readAsText(file, "UTF-8");
+  }, [selectedProductForViews, products]);
+
   // カスタムドロップダウンコンポーネント
   const ProductCodeDropdown = ({
     value,
@@ -1644,6 +1742,76 @@ export default function ProductsPage() {
           </div>
         </div>
       ) : null}
+
+      {/* 再生数CSV入稿セクション */}
+      {isRealDataUser && (
+        <div className="bg-white rounded-lg shadow-md p-6 mb-6 border-l-4 border-pink-400">
+          <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5 text-pink-500" />
+            再生数CSV入稿
+          </h2>
+          <p className="text-sm text-gray-500 mb-4">
+            商品ごとの日別再生数をCSVで入稿します。ダッシュボードの売上グラフに折れ線で表示されます。
+          </p>
+
+          <div className="flex flex-wrap gap-4 items-center">
+            {/* 商品選択 */}
+            <select
+              value={selectedProductForViews || ""}
+              onChange={(e) => setSelectedProductForViews(e.target.value || null)}
+              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-pink-500 outline-none text-sm"
+            >
+              <option value="">商品を選択...</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.productName}{p.skuName ? `（${p.skuName}）` : ""}
+                </option>
+              ))}
+            </select>
+
+            <div>
+              <input
+                type="file"
+                ref={viewsFileRef}
+                accept=".csv"
+                onChange={handleViewsCsvImport}
+                className="hidden"
+                id="views-csv-upload"
+                disabled={viewsUploading || !selectedProductForViews}
+              />
+              <label
+                htmlFor="views-csv-upload"
+                className={`flex items-center gap-2 px-4 py-2 bg-pink-500 text-white rounded-lg hover:bg-pink-600 transition-colors cursor-pointer ${(viewsUploading || !selectedProductForViews) ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                {viewsUploading ? (
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Upload className="w-5 h-5" />
+                )}
+                {viewsUploading ? "アップロード中..." : "CSVアップロード"}
+              </label>
+            </div>
+          </div>
+
+          {viewsError && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              {viewsError}
+            </div>
+          )}
+
+          {viewsSuccess && (
+            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+              {viewsSuccess}
+            </div>
+          )}
+
+          <div className="mt-4 bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+            <p className="font-medium mb-1">CSVフォーマット:</p>
+            <p className="text-xs font-mono">date, views</p>
+            <p className="text-xs mt-1 text-gray-400">例: 2026-04-01, 15000</p>
+          </div>
+        </div>
+      )}
 
       {/* 新規登録フォーム */}
       {isAdding && (
