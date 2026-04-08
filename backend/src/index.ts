@@ -4330,12 +4330,10 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
       if (expiresAt && expiresAt.getTime() - Date.now() < THIRTY_DAYS_MS && igData.accessToken) {
         try {
           const axios = (await import('axios')).default;
-          const refreshRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+          const refreshRes = await axios.get('https://graph.instagram.com/refresh_access_token', {
             params: {
-              grant_type: 'fb_exchange_token',
-              client_id: INSTAGRAM_APP_ID,
-              client_secret: INSTAGRAM_APP_SECRET,
-              fb_exchange_token: igData.accessToken,
+              grant_type: 'ig_refresh_token',
+              access_token: igData.accessToken,
             },
           });
           if (refreshRes.data.access_token) {
@@ -8674,23 +8672,23 @@ async function exchangeInstagramLongLivedToken(shortLivedToken: string): Promise
 } | null> {
   const axios = (await import('axios')).default;
 
+  // EAAトークン（既存のFacebook Graph APIトークン）もInstagram APIで長期化を試みる
   if (shortLivedToken.startsWith("EAA")) {
     try {
-      const response = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+      const response = await axios.get('https://graph.instagram.com/access_token', {
         params: {
-          grant_type: 'fb_exchange_token',
-          client_id: INSTAGRAM_APP_ID,
+          grant_type: 'ig_exchange_token',
           client_secret: INSTAGRAM_APP_SECRET,
-          fb_exchange_token: shortLivedToken,
+          access_token: shortLivedToken,
         },
       });
-      console.log("Facebook long-lived token exchange success");
+      console.log("Instagram long-lived token exchange success (EAA)");
       return {
         accessToken: response.data.access_token,
         expiresIn: response.data.expires_in || 5184000,
       };
     } catch (error: any) {
-      console.error("Facebook long-lived token exchange error:", error?.response?.data || error?.message);
+      console.error("Instagram long-lived token exchange error (EAA):", error?.response?.data || error?.message);
       // 既に長期トークンの可能性があるのでそのまま返す
       return { accessToken: shortLivedToken, expiresIn: 5184000 };
     }
