@@ -651,14 +651,26 @@ export default function ProductsPage() {
           return;
         }
 
-        // ヘッダー行を見つける（「日付」「売上」「ASIN」「セッション」等のキーワード）
+        // 「注文商品の売上額」を含む行をヘッダーとして検出（1-2行目を優先検索）
         let headerLineIndex = 0;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (line.includes("日付") || line.includes("売上") || line.includes("ASIN") || line.includes("セッション") || line.toLowerCase().includes("date")) {
+        let salesColOverride: number | undefined;
+        for (let i = 0; i < Math.min(lines.length, 5); i++) {
+          const cols = parseCSVLine(lines[i]);
+          const salesIdx = cols.findIndex(c => c.trim().replace(/^["']|["']$/g, "") === "注文商品の売上額");
+          if (salesIdx !== -1) {
             headerLineIndex = i;
-            console.log("[CSVパース] ヘッダー行発見: 行", i, "内容:", line.substring(0, 100));
+            salesColOverride = salesIdx;
+            console.log("[CSVパース] ヘッダー行発見: 行", i, " 売上額列:", salesIdx);
             break;
+          }
+        }
+        // フォールバック: 「日付」「売上」「ASIN」等のキーワードで検索
+        if (salesColOverride === undefined) {
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes("日付") || lines[i].includes("売上") || lines[i].includes("ASIN") || lines[i].toLowerCase().includes("date")) {
+              headerLineIndex = i;
+              break;
+            }
           }
         }
 
@@ -762,24 +774,18 @@ export default function ProductsPage() {
         console.log("[CSVパース] マッピング結果:", columnIndexes);
         console.log("[CSVパース] salesAmountインデックス:", columnIndexes["salesAmount"]);
 
-        // 「日付」列が見つからない場合、最初の列が日付かチェック
-        if (columnIndexes["date"] === undefined) {
-          const dataStartIndex = headerLineIndex + 1;
-          if (dataStartIndex < lines.length) {
-            const firstDataValues = parseCSVLine(lines[dataStartIndex]);
-            const firstVal = (firstDataValues[0] || "").trim();
-            if (/^\d{1,2}[/-]\d{1,2}$/.test(firstVal) || /^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(firstVal)) {
-              columnIndexes["date"] = 0;
-              console.log("[CSVパース] 1列目を日付列として自動認識");
-            }
-          }
+        // 日付は常にA列（0列目）
+        columnIndexes["date"] = 0;
+
+        // 売上額列: 完全一致で見つかった列を優先
+        if (salesColOverride !== undefined) {
+          columnIndexes["salesAmount"] = salesColOverride;
         }
 
         // ヘッダー行の次の行からデータ開始
         const dataStartIndex = headerLineIndex + 1;
 
-        // シンプルな2カラム形式かどうか判定（ヘッダーなしで日付,売上のみ）
-        const isSimpleFormat = headers.length <= 3 && !columnIndexes["date"];
+        const isSimpleFormat = false; // 常にヘッダーベースで処理
 
         const parsedData = [];
 
