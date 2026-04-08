@@ -114,6 +114,20 @@ export default function AccountListPage() {
     fetchAccounts();
   }, [fetchAccounts]);
 
+  // Instagram OAuth成功/エラーのURLパラメータ処理
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("igSuccess") === "true") {
+      setPlatform("instagram");
+      setNotification({ type: "success", message: "Instagramアカウントを連携しました" });
+      window.history.replaceState({}, "", "/external-data");
+    } else if (params.get("igError")) {
+      setPlatform("instagram");
+      setNotification({ type: "error", message: `Instagram認証エラー: ${params.get("igError")}` });
+      window.history.replaceState({}, "", "/external-data");
+    }
+  }, []);
+
   // 通知の自動消去
   useEffect(() => {
     if (!notification) return;

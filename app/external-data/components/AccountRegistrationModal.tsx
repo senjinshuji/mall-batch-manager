@@ -450,35 +450,55 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
           {/* 認証コードタブ */}
           {activeTab === "authCode" && (
             <>
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h3 className="text-sm font-medium text-blue-800 mb-2">手順</h3>
-                <ol className="text-xs text-blue-700 space-y-1 list-decimal list-inside">
-                  <li>下のURLをブラウザで開いて{platformLabel}にログイン・認可する</li>
-                  <li>リダイレクト後のURLから <code className="bg-blue-100 px-1 rounded">code=</code> パラメータの値をコピー</li>
-                  <li>下の認証コード欄にペーストして「取得」ボタンを押す</li>
-                </ol>
-                <div className="mt-3">
-                  <p className="text-xs text-blue-600 mb-1">認証URL:</p>
-                  <div className="flex items-center gap-2">
-                    <code className="text-xs bg-white px-2 py-1 rounded border border-blue-200 flex-1 break-all">{getAuthUrl()}</code>
-                    <button onClick={handleCopyAuthUrl} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded transition-colors flex-shrink-0" title="コピー">
-                      {authUrlCopied ? <CheckCircle size={16} /> : <Copy size={16} />}
-                    </button>
+              {platform === "instagram" ? (
+                <>
+                  <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                    <h3 className="text-sm font-medium text-purple-800 mb-2">Instagram認証</h3>
+                    <p className="text-xs text-purple-700 mb-3">
+                      下のボタンをクリックするとFacebookログイン画面が開きます。認可すると自動でアカウントが登録されます。
+                    </p>
+                    {!selectedProductId ? (
+                      <p className="text-xs text-red-600">※ 先に商品を選択してください</p>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          window.location.href = `${BACKEND_URL}/auth/instagram/login?productId=${selectedProductId}`;
+                        }}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-medium hover:from-purple-600 hover:to-pink-600 transition-all"
+                      >
+                        Instagramで認証する
+                      </button>
+                    )}
                   </div>
-                  {platform === "instagram" && (
-                    <p className="text-xs text-blue-500 mt-1">※ REDIRECT_URI はMeta Developer設定のリダイレクトURIに置き換えてください</p>
-                  )}
-                  {platform === "tiktok" && (
-                    <p className="text-xs text-blue-500 mt-1">※ 認証後、リダイレクト先URLのパラメータから code の値をコピーしてください</p>
-                  )}
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">認証コード *</label>
-                <input type="text" value={authCode} onChange={e => setAuthCode(e.target.value)}
-                  placeholder="リダイレクトURLから取得したcodeの値を貼り付け"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-              </div>
+                </>
+              ) : (
+                <>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h3 className="text-sm font-medium text-blue-800 mb-2">手順</h3>
+                    <ol className="text-xs text-blue-700 space-y-1 list-decimal list-inside">
+                      <li>下のURLをブラウザで開いてTikTokにログイン・認可する</li>
+                      <li>リダイレクト後のURLから <code className="bg-blue-100 px-1 rounded">code=</code> パラメータの値をコピー</li>
+                      <li>下の認証コード欄にペーストして「取得」ボタンを押す</li>
+                    </ol>
+                    <div className="mt-3">
+                      <p className="text-xs text-blue-600 mb-1">認証URL:</p>
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs bg-white px-2 py-1 rounded border border-blue-200 flex-1 break-all">{getAuthUrl()}</code>
+                        <button onClick={handleCopyAuthUrl} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded transition-colors flex-shrink-0" title="コピー">
+                          {authUrlCopied ? <CheckCircle size={16} /> : <Copy size={16} />}
+                        </button>
+                      </div>
+                      <p className="text-xs text-blue-500 mt-1">※ 認証後、リダイレクト先URLのパラメータから code の値をコピーしてください</p>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">認証コード *</label>
+                    <input type="text" value={authCode} onChange={e => setAuthCode(e.target.value)}
+                      placeholder="リダイレクトURLから取得したcodeの値を貼り付け"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+                  </div>
+                </>
+              )}
             </>
           )}
 

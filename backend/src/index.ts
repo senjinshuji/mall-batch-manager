@@ -4318,9 +4318,39 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
       bqVideosInserted,
     });
 
-    // Step 4: Instagram動画同期
-    console.log("Step 4: Syncing Instagram videos...");
+    // Step 4: Instagramトークン自動リフレッシュ + 動画同期
+    console.log("Step 4: Refreshing Instagram tokens & syncing videos...");
     const igAccountsSnapshot = await db.collection("instagram_accounts").get();
+
+    // トークンリフレッシュ（残り30日以下のもの）
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    for (const igDoc of igAccountsSnapshot.docs) {
+      const igData = igDoc.data();
+      const expiresAt = igData.accessTokenExpiresAt?.toDate?.();
+      if (expiresAt && expiresAt.getTime() - Date.now() < THIRTY_DAYS_MS && igData.accessToken) {
+        try {
+          const axios = (await import('axios')).default;
+          const refreshRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+            params: {
+              grant_type: 'fb_exchange_token',
+              client_id: INSTAGRAM_APP_ID,
+              client_secret: INSTAGRAM_APP_SECRET,
+              fb_exchange_token: igData.accessToken,
+            },
+          });
+          if (refreshRes.data.access_token) {
+            await igDoc.ref.update({
+              accessToken: refreshRes.data.access_token,
+              accessTokenExpiresAt: Timestamp.fromMillis(Date.now() + (refreshRes.data.expires_in || 5184000) * 1000),
+              updatedAt: Timestamp.now(),
+            });
+            console.log(`Instagram: Token refreshed for ${igData.instagramUserName || igDoc.id}`);
+          }
+        } catch (refreshErr: any) {
+          console.error(`Instagram token refresh failed for ${igDoc.id}:`, refreshErr?.response?.data || refreshErr?.message);
+        }
+      }
+    }
     let igVideoSyncSuccess = 0;
     let igVideoSyncError = 0;
     let igTotalSnapshots = 0;
@@ -9216,6 +9246,150 @@ async function getInstagramBusinessAccountId(accessToken: string): Promise<{
     return null;
   }
 }
+
+// Instagram OAuth認証開始
+const INSTAGRAM_REDIRECT_URI = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app/auth/instagram/callback";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://mall-batch-manager.vercel.app";
+
+app.get("/auth/instagram/login", async (req: Request, res: Response) => {
+  try {
+    const productId = req.query.productId as string;
+    if (!productId) {
+      return res.status(400).json({ success: false, message: "productIdが必要です" });
+    }
+
+    const csrfToken = Math.random().toString(36).substring(2, 15);
+    const stateData = { productId, csrfToken, timestamp: Date.now() };
+    const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
+
+    await db.collection("instagram_oauth_states").doc(csrfToken).set({
+      productId,
+      createdAt: Timestamp.now(),
+      expiresAt: Timestamp.fromMillis(Date.now() + 10 * 60 * 1000),
+    });
+
+    const scope = 'pages_show_list,pages_read_engagement,instagram_basic,instagram_manage_insights';
+    const authUrl = `https://www.facebook.com/v21.0/dialog/oauth` +
+      `?client_id=${INSTAGRAM_APP_ID}` +
+      `&redirect_uri=${encodeURIComponent(INSTAGRAM_REDIRECT_URI)}` +
+      `&scope=${encodeURIComponent(scope)}` +
+      `&state=${encodeURIComponent(state)}` +
+      `&response_type=code`;
+
+    console.log(`Instagram OAuth: Redirecting for productId=${productId}`);
+    res.redirect(authUrl);
+  } catch (error: any) {
+    console.error("Instagram OAuth login error:", error);
+    res.status(500).json({ success: false, message: "認証開始に失敗しました" });
+  }
+});
+
+app.get("/auth/instagram/callback", async (req: Request, res: Response) => {
+  try {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    const error = req.query.error as string;
+
+    if (error) {
+      return res.redirect(`${FRONTEND_URL}/external-data?igError=auth_denied`);
+    }
+    if (!code || !state) {
+      return res.redirect(`${FRONTEND_URL}/external-data?igError=missing_params`);
+    }
+
+    let stateData: { productId: string; csrfToken: string };
+    try {
+      stateData = JSON.parse(Buffer.from(state, 'base64').toString('utf-8'));
+    } catch (e) {
+      return res.redirect(`${FRONTEND_URL}/external-data?igError=invalid_state`);
+    }
+
+    const storedState = await db.collection("instagram_oauth_states").doc(stateData.csrfToken).get();
+    if (!storedState.exists) {
+      return res.redirect(`${FRONTEND_URL}/external-data?igError=invalid_csrf`);
+    }
+    await db.collection("instagram_oauth_states").doc(stateData.csrfToken).delete();
+
+    const axios = (await import('axios')).default;
+    const crypto = await import('crypto');
+    const generateProof = (token: string) => crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(token).digest('hex');
+
+    // コード→短期トークン
+    const tokenRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+      params: { client_id: INSTAGRAM_APP_ID, client_secret: INSTAGRAM_APP_SECRET, redirect_uri: INSTAGRAM_REDIRECT_URI, code },
+    });
+    const shortToken = tokenRes.data.access_token;
+    if (!shortToken) {
+      return res.redirect(`${FRONTEND_URL}/external-data?igError=token_error`);
+    }
+
+    // 短期→長期トークン
+    let longToken = shortToken;
+    let expiresIn = 5184000;
+    try {
+      const longRes = await axios.get('https://graph.facebook.com/v21.0/oauth/access_token', {
+        params: { grant_type: 'fb_exchange_token', client_id: INSTAGRAM_APP_ID, client_secret: INSTAGRAM_APP_SECRET, fb_exchange_token: shortToken },
+      });
+      longToken = longRes.data.access_token || shortToken;
+      expiresIn = longRes.data.expires_in || 5184000;
+    } catch (longErr: any) {
+      console.error("Long-lived token exchange failed:", longErr?.response?.data);
+    }
+
+    const proof = generateProof(longToken);
+
+    // Page Token + IG Business Account
+    const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
+      params: { fields: 'id,name,access_token,instagram_business_account', access_token: longToken, appsecret_proof: proof },
+    });
+
+    let displayName = "Unknown";
+    let avatarUrl = "";
+    let accountId = "";
+
+    for (const page of pagesRes.data?.data || []) {
+      const igId = page.instagram_business_account?.id;
+      if (igId) {
+        const pageToken = page.access_token || longToken;
+        const pageProof = generateProof(pageToken);
+        const igRes = await axios.get(`https://graph.facebook.com/v21.0/${igId}`, {
+          params: { fields: 'id,username,name,profile_picture_url', access_token: pageToken, appsecret_proof: pageProof },
+        });
+        displayName = igRes.data.name || igRes.data.username || "Unknown";
+        avatarUrl = igRes.data.profile_picture_url || "";
+        accountId = igRes.data.username || "";
+        break;
+      }
+    }
+
+    // Firestore upsert
+    const existing = accountId
+      ? await db.collection("instagram_accounts").where("productId", "==", stateData.productId).where("instagramAccountId", "==", accountId).get()
+      : { empty: true } as any;
+
+    const accountData: Record<string, unknown> = {
+      productId: stateData.productId,
+      instagramUserName: displayName,
+      instagramAccountId: accountId,
+      instagramAvatarUrl: avatarUrl,
+      accessToken: longToken,
+      accessTokenExpiresAt: Timestamp.fromMillis(Date.now() + expiresIn * 1000),
+      profileUrl: accountId ? `https://www.instagram.com/${accountId}/` : "",
+    };
+
+    if (!existing.empty) {
+      await existing.docs[0].ref.update({ ...accountData, updatedAt: Timestamp.now() });
+    } else {
+      await db.collection("instagram_accounts").add({ ...accountData, connectedAt: Timestamp.now() });
+    }
+
+    console.log(`Instagram OAuth: Account ${displayName} (@${accountId}) registered`);
+    res.redirect(`${FRONTEND_URL}/external-data?igSuccess=true&productId=${stateData.productId}`);
+  } catch (error: any) {
+    console.error("Instagram OAuth callback error:", error?.response?.data || error);
+    res.redirect(`${FRONTEND_URL}/external-data?igError=callback_error`);
+  }
+});
 
 // ==================== End Instagram ====================
 
