@@ -1389,24 +1389,68 @@ export default function ProductsPage() {
           return;
         }
 
-        const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
-        const dateIdx = header.findIndex((h) => h === "date" || h === "日付");
-        const viewsIdx = header.findIndex((h) => h === "views" || h === "再生数" || h === "view_count");
+        // CSVをカンマ分割（ダブルクォート内のカンマを考慮）
+        const parseCsvLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') {
+              inQuotes = !inQuotes;
+            } else if (ch === "," && !inQuotes) {
+              result.push(current.trim());
+              current = "";
+            } else {
+              current += ch;
+            }
+          }
+          result.push(current.trim());
+          return result;
+        };
 
-        if (dateIdx === -1 || viewsIdx === -1) {
-          setViewsError("CSVヘッダーが不正です。必要な列: date, views");
-          setViewsUploading(false);
-          return;
-        }
+        const row1 = parseCsvLine(lines[0]);
+        const row2 = parseCsvLine(lines[1]);
 
+        // フォーマット自動判定
         const rows: { date: string; views: number }[] = [];
-        for (let i = 1; i < lines.length; i++) {
-          const values = lines[i].split(",").map((v) => v.trim());
-          if (values.length < Math.max(dateIdx, viewsIdx) + 1) continue;
-          const date = values[dateIdx].replace(/\//g, "-");
-          const views = parseInt(values[viewsIdx]) || 0;
-          if (date && views > 0) {
-            rows.push({ date, views });
+
+        // 横持ちフォーマット判定: 1行目に日付（YYYY/MM/DD等）が横に並んでいるか
+        const datePattern = /^\d{4}[\/-]\d{1,2}[\/-]\d{1,2}$/;
+        const firstDateIdx = row1.findIndex((v) => datePattern.test(v));
+
+        if (firstDateIdx !== -1) {
+          // 横持ちフォーマット: 1行目=日付列、2行目=再生数
+          for (let i = firstDateIdx; i < row1.length; i++) {
+            if (!datePattern.test(row1[i])) continue;
+            const date = row1[i].replace(/\//g, "-");
+            const rawVal = (row2[i] || "").replace(/,/g, "").replace(/"/g, "");
+            const views = parseInt(rawVal) || 0;
+            if (views > 0) {
+              rows.push({ date, views });
+            }
+          }
+        } else {
+          // 縦持ちフォーマット: date, views のヘッダー形式
+          const header = row1.map((h) => h.toLowerCase());
+          const dateIdx = header.findIndex((h) => h === "date" || h === "日付");
+          const viewsIdx = header.findIndex((h) => h === "views" || h === "再生数" || h === "view_count");
+
+          if (dateIdx === -1 || viewsIdx === -1) {
+            setViewsError("CSVフォーマットを認識できません。横持ち（1行目に日付）または縦持ち（date, views列）に対応しています。");
+            setViewsUploading(false);
+            return;
+          }
+
+          for (let i = 1; i < lines.length; i++) {
+            const values = parseCsvLine(lines[i]);
+            if (values.length < Math.max(dateIdx, viewsIdx) + 1) continue;
+            const date = values[dateIdx].replace(/\//g, "-");
+            const rawVal = values[viewsIdx].replace(/,/g, "");
+            const views = parseInt(rawVal) || 0;
+            if (date && views > 0) {
+              rows.push({ date, views });
+            }
           }
         }
 
@@ -1806,9 +1850,9 @@ export default function ProductsPage() {
           )}
 
           <div className="mt-4 bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-            <p className="font-medium mb-1">CSVフォーマット:</p>
-            <p className="text-xs font-mono">date, views</p>
-            <p className="text-xs mt-1 text-gray-400">例: 2026-04-01, 15000</p>
+            <p className="font-medium mb-1">対応フォーマット:</p>
+            <p className="text-xs text-gray-400">横持ち: 1行目に日付、2行目に全体再生数（TTO共有シートの各媒体分析CSVそのまま対応）</p>
+            <p className="text-xs text-gray-400">縦持ち: date, views の2列</p>
           </div>
         </div>
       )}
