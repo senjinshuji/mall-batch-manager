@@ -20,7 +20,7 @@ import { UserCog, Plus, Trash2, Edit2, X, Check, Eye, EyeOff } from "lucide-reac
 type SalesFormat = "standard" | "unified";
 
 const DEFAULT_CHANNELS = ["Amazon", "楽天", "Qoo10"];
-const EXTRA_CHANNEL_OPTIONS = ["自社サイト", "アインズ&トルペ"];
+const EXTRA_CHANNEL_OPTIONS = ["Yahoo", "自社サイト", "アインズ&トルペ", "LOFT", "ドンキ", "PLAZA", "東急ハンズ", "マツキヨ", "ツルハドラッグ"];
 
 interface ClientAccount {
   id: string;
