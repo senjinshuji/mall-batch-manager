@@ -33,6 +33,7 @@ type VideoRawData = {
   createTime: string | null;
   platform: "tiktok" | "instagram";
   dailyViews: { [day: number]: number };
+  permalink: string;
 };
 
 // 月の日数を取得
@@ -235,6 +236,21 @@ export default function ViewRecordsPage() {
       }
     }
 
+    // Instagramの場合はvideosコレクションからpermalinkを取得
+    const permalinkMap: { [videoId: string]: string } = {};
+    if (platform === "instagram") {
+      const videosCol = "instagram_videos";
+      for (const accountId of Object.keys(cumulativeByAccountDate)) {
+        const videosSnapshot = await getDocs(
+          query(collection(db, videosCol), where("accountId", "==", accountId))
+        );
+        for (const doc of videosSnapshot.docs) {
+          const d = doc.data();
+          if (d.permalink) permalinkMap[d.videoId || doc.id] = d.permalink;
+        }
+      }
+    }
+
     // 動画別viewMap（ローデータ用）
     const productName = selectedProduct?.productName || "";
     const videoRaw: VideoRawData[] = Object.keys(cumulativeByVideoDate).map((videoId) => {
@@ -256,6 +272,7 @@ export default function ViewRecordsPage() {
         createTime: meta?.createTime || null,
         platform,
         dailyViews,
+        permalink: permalinkMap[videoId] || "",
       };
     });
 
@@ -375,11 +392,6 @@ export default function ViewRecordsPage() {
       // アカウント名マップ（全商材）
       const accountNameMapAll: { [id: string]: { name: string; operator: string } } = {};
 
-      const buildVideoUrl = (videoId: string, accountName: string, platform: "tiktok" | "instagram"): string => {
-        if (platform === "tiktok") return `https://www.tiktok.com/@${accountName}/video/${videoId}`;
-        return `https://www.instagram.com/reel/${videoId}/`;
-      };
-
       // プラットフォーム単位で処理
       for (const platform of ["tiktok", "instagram"] as const) {
         const accountsCol = platform === "tiktok" ? "tiktok_accounts" : "instagram_accounts";
@@ -394,6 +406,16 @@ export default function ViewRecordsPage() {
             name: platform === "tiktok" ? (d.tiktokUserName || "Unknown") : (d.instagramUserName || "Unknown"),
             operator: d.operator || "",
           };
+        }
+
+        // Instagramの場合はpermalinkマップを構築
+        const allPermalinkMap: { [videoId: string]: string } = {};
+        if (platform === "instagram") {
+          const igVideosSnapshot = await getDocs(collection(db, "instagram_videos"));
+          for (const doc of igVideosSnapshot.docs) {
+            const d = doc.data();
+            if (d.permalink) allPermalinkMap[d.videoId || doc.id] = d.permalink;
+          }
         }
 
         // 全スナップショット取得（productIdフィルターなし）
@@ -445,7 +467,8 @@ export default function ViewRecordsPage() {
             if (total === 0) continue;
 
             const meta = videoMeta[videoId];
-            const url = buildVideoUrl(videoId, meta?.accountName || "", platform);
+            const url = allPermalinkMap[videoId]
+              || (platform === "tiktok" ? `https://www.tiktok.com/@${meta?.accountName || ""}/video/${videoId}` : "");
             const postDate = meta?.createTime ? meta.createTime.split("T")[0] : "";
             rows.push([url, meta?.accountName || "", meta?.operator || "", meta?.productName || "", postDate, String(total), ...dailyCells]);
           }
@@ -482,11 +505,10 @@ export default function ViewRecordsPage() {
     rows.push(headerRow);
 
     // 動画URLを生成
-    const buildVideoUrl = (videoId: string, accountName: string, platform: "tiktok" | "instagram"): string => {
-      if (platform === "tiktok") {
-        return `https://www.tiktok.com/@${accountName}/video/${videoId}`;
-      }
-      return `https://www.instagram.com/reel/${videoId}/`;
+    const buildVideoUrl = (video: VideoRawData): string => {
+      if (video.permalink) return video.permalink;
+      if (video.platform === "tiktok") return `https://www.tiktok.com/@${video.accountName}/video/${video.videoId}`;
+      return "";
     };
 
     const addVideoRows = (videoRaw: VideoRawData[]) => {
@@ -498,7 +520,7 @@ export default function ViewRecordsPage() {
         }
         if (total === 0) continue;
 
-        const url = buildVideoUrl(video.videoId, video.accountName, video.platform);
+        const url = buildVideoUrl(video);
         const postDate = video.createTime ? video.createTime.split("T")[0] : "";
         const row = [url, video.accountName, video.operator, video.productName, postDate, String(total)];
         for (let day = 1; day <= days; day++) {
