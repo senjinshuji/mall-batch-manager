@@ -285,7 +285,7 @@ export default function VideoAnalyticsPage() {
             videoId: d.videoId || doc.id,
             title: d.title || "",
             coverImageUrl: d.coverImageUrl || "",
-            shareUrl: d.shareUrl || "",
+            shareUrl: d.shareUrl && d.shareUrl.includes("@") ? d.shareUrl : `https://www.tiktok.com/@${accountInfo.name}/video/${d.videoId || doc.id}`,
             createTime: typeof d.createTime === "string" ? d.createTime : d.createTime?.toDate?.()?.toISOString() || null,
             viewCount: d.viewCount || 0,
             likeCount: d.likeCount || 0,
