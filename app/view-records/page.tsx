@@ -238,7 +238,7 @@ export default function ViewRecordsPage() {
 
     // 日付ヘッダー（2026/4/1形式）
     const dateHeaders = Array.from({ length: days }, (_, i) => `${year}/${month}/${i + 1}`);
-    const headerRow = ["", "合計", ...dateHeaders];
+    const headerRow = ["", "運用者", "合計", ...dateHeaders];
 
     const rows: string[][] = [];
     rows.push(headerRow);
@@ -251,19 +251,16 @@ export default function ViewRecordsPage() {
 
       // 合計行
       const grandTotal = calcGrandTotal(viewMap, days);
-      const totalRow = ["合計", String(grandTotal)];
+      const totalRow = ["合計", "", String(grandTotal)];
       for (let day = 1; day <= days; day++) {
         totalRow.push(String(calcDailyTotal(viewMap, day)));
       }
       rows.push(totalRow);
 
-      // アカウントごとに2行（運用者行 + アカウント行）
+      // アカウント行（運用者列付き1行）
       for (const account of accounts) {
-        // 運用者行（データなし）
-        rows.push([account.operator]);
-        // アカウント行（再生数データ）
         const accountTotal = calcAccountTotal(viewMap, account.id, days);
-        const accountRow = [account.name, String(accountTotal)];
+        const accountRow = [account.name, account.operator, String(accountTotal)];
         for (let day = 1; day <= days; day++) {
           accountRow.push(String(viewMap[account.id]?.[day] || 0));
         }
