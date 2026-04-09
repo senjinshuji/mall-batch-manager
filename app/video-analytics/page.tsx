@@ -1730,7 +1730,7 @@ export default function VideoAnalyticsPage() {
                   className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-700 text-sm"
                 >
                   <ExternalLink size={14} />
-                  TikTokで見る
+                  {platform === "tiktok" ? "TikTokで見る" : "Instagramで見る"}
                 </a>
               </div>
             )}
