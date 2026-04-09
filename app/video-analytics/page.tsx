@@ -350,10 +350,10 @@ export default function VideoAnalyticsPage() {
         if (!snapshotsByDate[date]) {
           snapshotsByDate[date] = { views: 0, likes: 0, comments: 0, shares: 0 };
         }
-        snapshotsByDate[date].views += snap.viewCount || 0;
+        snapshotsByDate[date].views += snap.viewCount || snap.reach || 0;
         snapshotsByDate[date].likes += snap.likeCount || 0;
         snapshotsByDate[date].comments += snap.commentCount || 0;
-        snapshotsByDate[date].shares += snap.shareCount || 0;
+        snapshotsByDate[date].shares += snap.shareCount || snap.shares || 0;
       }
 
       // 投稿日別の動画数
@@ -547,10 +547,10 @@ export default function VideoAnalyticsPage() {
       for (const doc of snapshotsSnapshot.docs) {
         const d = doc.data();
         snapsByDate[d.date] = {
-          views: d.viewCount || 0,
+          views: d.viewCount || d.reach || 0,
           likes: d.likeCount || 0,
           comments: d.commentCount || 0,
-          shares: d.shareCount || 0,
+          shares: d.shareCount || d.shares || 0,
         };
       }
 
