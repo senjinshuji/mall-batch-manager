@@ -771,24 +771,27 @@ export default function DashboardPage() {
     setAiResult(null);
 
     try {
-      // 売上データを整形（チャネル別）
-      const salesData = productSalesData.map(day => {
+      // 売上データを整形（チャネル別）- 売上0の日も含める
+      const formatSalesData = (data: ProductSalesData[]) => data.map(day => {
         const channels: Record<string, number> = {};
         ALL_CHANNELS.forEach(ch => {
           const val = (day[`${ch.key}_sales`] as number) || 0;
           if (val > 0) channels[ch.label] = val;
         });
-        return { date: day.date, ...channels };
-      }).filter(d => Object.keys(d).length > 1); // dateのみの日は除外
+        return { date: day.date, views: day.totalViews || 0, ...channels };
+      });
 
-      // 再生数データ
-      const viewsData = productSalesData
-        .filter(d => (d.totalViews || 0) > 0)
-        .map(d => ({ date: d.date, views: d.totalViews }));
+      const salesData = formatSalesData(productSalesData);
+      const prevSalesData = formatSalesData(prevProductSalesData);
 
-      // フラグデータ
-      const flagsData = filteredFlags
-        .filter(f => f.date <= endDate && (f.endDate || f.date) >= startDate)
+      // フラグデータ（前期間も含む）
+      const daysDiff = Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1;
+      const prevStart = new Date(startDate);
+      prevStart.setDate(prevStart.getDate() - daysDiff);
+      const prevStartStr = prevStart.toISOString().split("T")[0];
+
+      const flagsData = eventFlags
+        .filter(f => f.date <= endDate && (f.endDate || f.date) >= prevStartStr)
         .map(f => ({ name: f.name, date: f.date, endDate: f.endDate || "", mall: f.mall || "", scope: f.scope || "global" }));
 
       const response = await fetch("/api/analyze", {
@@ -796,7 +799,7 @@ export default function DashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           salesData,
-          viewsData,
+          prevSalesData,
           flagsData,
           productName: selectedProduct,
           startDate,
