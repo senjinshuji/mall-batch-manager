@@ -4074,10 +4074,12 @@ async function refreshTikTokAccessToken(accountId: string, refreshToken: string)
     }
 
     // Firestoreのアカウント情報を更新
+    const newExpiresAt = Timestamp.fromMillis(Date.now() + (tokenData.expires_in || 86400) * 1000);
     await db.collection("tiktok_accounts").doc(accountId).update({
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token || refreshToken, // 新しいリフレッシュトークンがない場合は既存を維持
-      expiresAt: Timestamp.fromMillis(Date.now() + (tokenData.expires_in || 86400) * 1000),
+      expiresAt: newExpiresAt,
+      accessTokenExpiresAt: newExpiresAt, // UIが読むフィールドも更新
       lastTokenRefreshAt: Timestamp.now(),
     });
 
@@ -8514,8 +8516,10 @@ app.post("/qoo10/import-sales-csv/:productId", async (req: Request, res: Respons
 
 // ==================== Instagram アカウント管理 ====================
 
-const INSTAGRAM_APP_ID = "1516539189822981";
-const INSTAGRAM_APP_SECRET = "aac5fafe7447eaf19cd6c50def3f3e4c";
+const FACEBOOK_APP_ID = "1516539189822981"; // Facebook App ID（EAAトークン用）
+const FACEBOOK_APP_SECRET = "aac5fafe7447eaf19cd6c50def3f3e4c"; // Facebook App Secret
+const INSTAGRAM_APP_ID = "840989291594681"; // Instagram アプリID（Instagram Business Login用）
+const INSTAGRAM_APP_SECRET = "507f6eece8b4c5203c2e5d57caf6f30c"; // Instagram App Secret
 
 // Instagram ユーザー情報を取得（Facebook Graph API経由）
 // EAAトークン（Facebook Graph API）の場合: /me/accounts → instagram_business_account
@@ -8525,10 +8529,10 @@ async function fetchInstagramUserInfo(accessToken: string): Promise<{
 } | null> {
   const axios = (await import('axios')).default;
 
-  // appsecret_proof を生成（Meta APIのセキュリティ要件）
+  // appsecret_proof を生成（EAAトークン用、Facebook App Secretで生成）
   const crypto = await import('crypto');
   const generateAppSecretProof = (token: string): string => {
-    return crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(token).digest('hex');
+    return crypto.createHmac('sha256', FACEBOOK_APP_SECRET).update(token).digest('hex');
   };
 
   // EAAトークン（Facebook Graph API）の場合
@@ -9080,7 +9084,8 @@ async function fetchAllInstagramVideos(
 ): Promise<any[]> {
   const axios = (await import('axios')).default;
   const crypto = await import('crypto');
-  const generateProof = (token: string) => crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(token).digest('hex');
+  // EAAトークン用のappsecret_proofはFacebook App Secretで生成
+  const generateProof = (token: string) => crypto.createHmac('sha256', FACEBOOK_APP_SECRET).update(token).digest('hex');
 
   const allVideos: any[] = [];
   // IGQトークン → graph.instagram.com/me/media、EAAトークン → graph.facebook.com/{igId}/media
@@ -9257,7 +9262,7 @@ async function getInstagramBusinessAccountId(accessToken: string): Promise<{
 
   // EAAトークン（Facebook Graph API）の場合はPage経由
   const crypto = await import('crypto');
-  const proof = crypto.createHmac('sha256', INSTAGRAM_APP_SECRET).update(accessToken).digest('hex');
+  const proof = crypto.createHmac('sha256', FACEBOOK_APP_SECRET).update(accessToken).digest('hex');
 
   try {
     const pagesRes = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
