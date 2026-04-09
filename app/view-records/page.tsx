@@ -348,6 +348,125 @@ export default function ViewRecordsPage() {
     URL.revokeObjectURL(url);
   };
 
+  // 全商材ローデータCSVエクスポート
+  const [isExportingAll, setIsExportingAll] = useState(false);
+  const exportAllRawCsv = async () => {
+    setIsExportingAll(true);
+    setIsCsvDropdownOpen(false);
+    try {
+      const days = daysInMonth;
+      const startDateStr = `${year}-${String(month).padStart(2, "0")}-01`;
+      const nextMonth = month === 12 ? 1 : month + 1;
+      const nextYear = month === 12 ? year + 1 : year;
+      const endDateStr = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`;
+
+      const esc = (v: string | number) => {
+        const s = String(v);
+        return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const dateHeaders = Array.from({ length: days }, (_, i) => `${year}/${String(month).padStart(2, "0")}/${String(i + 1).padStart(2, "0")}`);
+      const headerRow = ["動画リンク", "アカウント", "運用者", "商材", "投稿日", "合計", ...dateHeaders];
+      const rows: string[][] = [headerRow];
+
+      // 商材名マップ
+      const productNameMap: { [id: string]: string } = {};
+      for (const p of products) productNameMap[p.id] = p.productName;
+
+      // アカウント名マップ（全商材）
+      const accountNameMapAll: { [id: string]: { name: string; operator: string } } = {};
+
+      const buildVideoUrl = (videoId: string, accountName: string, platform: "tiktok" | "instagram"): string => {
+        if (platform === "tiktok") return `https://www.tiktok.com/@${accountName}/video/${videoId}`;
+        return `https://www.instagram.com/reel/${videoId}/`;
+      };
+
+      // プラットフォーム単位で処理
+      for (const platform of ["tiktok", "instagram"] as const) {
+        const accountsCol = platform === "tiktok" ? "tiktok_accounts" : "instagram_accounts";
+        const snapshotsCol = platform === "tiktok" ? "tiktok_video_daily_snapshots" : "instagram_video_daily_snapshots";
+
+        // 全アカウント取得
+        const accountsSnapshot = await getDocs(query(collection(db, accountsCol)));
+        for (const doc of accountsSnapshot.docs) {
+          const d = doc.data();
+          if (d.hidden) continue;
+          accountNameMapAll[doc.id] = {
+            name: platform === "tiktok" ? (d.tiktokUserName || "Unknown") : (d.instagramUserName || "Unknown"),
+            operator: d.operator || "",
+          };
+        }
+
+        // 全スナップショット取得（productIdフィルターなし）
+        const snapshotsSnapshot = await getDocs(collection(db, snapshotsCol));
+
+        const cumulativeByVideoDate: { [videoId: string]: { [date: string]: number } } = {};
+        const videoMeta: { [videoId: string]: { accountName: string; operator: string; productName: string; createTime: string | null } } = {};
+
+        for (const doc of snapshotsSnapshot.docs) {
+          const snap = doc.data();
+          const date = snap.date as string;
+          if (date < startDateStr || date > endDateStr) continue;
+
+          const videoId = snap.videoId as string;
+          if (!cumulativeByVideoDate[videoId]) cumulativeByVideoDate[videoId] = {};
+          if (!cumulativeByVideoDate[videoId][date]) cumulativeByVideoDate[videoId][date] = 0;
+          cumulativeByVideoDate[videoId][date] += snap.viewCount || snap.reach || 0;
+
+          if (!videoMeta[videoId]) {
+            const accInfo = accountNameMapAll[snap.accountId] || { name: snap.accountName || "Unknown", operator: snap.operator || "" };
+            const ct = snap.createTime;
+            videoMeta[videoId] = {
+              accountName: snap.accountName || accInfo.name,
+              operator: snap.operator || accInfo.operator,
+              productName: productNameMap[snap.productId] || snap.productId || "",
+              createTime: typeof ct === "string" ? ct : ct?.toDate?.()?.toISOString?.() || null,
+            };
+          }
+        }
+
+        // 動画行を生成
+        if (Object.keys(cumulativeByVideoDate).length > 0) {
+          rows.push([]);
+          rows.push([platform === "tiktok" ? "TikTok" : "Instagram"]);
+
+          for (const videoId of Object.keys(cumulativeByVideoDate)) {
+            let total = 0;
+            const dailyCells: string[] = [];
+            for (let day = 1; day <= days; day++) {
+              const todayStr = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+              const tomorrow = new Date(year, month - 1, day + 1);
+              const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+              const todayVal = cumulativeByVideoDate[videoId][todayStr] || 0;
+              const tomorrowVal = cumulativeByVideoDate[videoId][tomorrowStr] || 0;
+              const diff = tomorrowVal > 0 ? Math.max(0, tomorrowVal - todayVal) : 0;
+              total += diff;
+              dailyCells.push(String(diff));
+            }
+            if (total === 0) continue;
+
+            const meta = videoMeta[videoId];
+            const url = buildVideoUrl(videoId, meta?.accountName || "", platform);
+            const postDate = meta?.createTime ? meta.createTime.split("T")[0] : "";
+            rows.push([url, meta?.accountName || "", meta?.operator || "", meta?.productName || "", postDate, String(total), ...dailyCells]);
+          }
+        }
+      }
+
+      const csvContent = rows.map((row) => row.map(esc).join(",")).join("\n");
+      const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = dlUrl;
+      a.download = `全商材_ローデータ_${year}年${month}月.csv`;
+      a.click();
+      URL.revokeObjectURL(dlUrl);
+    } catch (error) {
+      console.error("全商材ローデータ出力エラー:", error);
+    } finally {
+      setIsExportingAll(false);
+    }
+  };
+
   // ローデータCSVエクスポート（動画単位）
   const exportRawCsv = () => {
     const days = daysInMonth;
@@ -357,7 +476,7 @@ export default function ViewRecordsPage() {
     };
 
     const dateHeaders = Array.from({ length: days }, (_, i) => `${year}/${String(month).padStart(2, "0")}/${String(i + 1).padStart(2, "0")}`);
-    const headerRow = ["動画リンク", "アカウント", "商材", "投稿日", "合計", ...dateHeaders];
+    const headerRow = ["動画リンク", "アカウント", "運用者", "商材", "投稿日", "合計", ...dateHeaders];
 
     const rows: string[][] = [];
     rows.push(headerRow);
@@ -372,13 +491,16 @@ export default function ViewRecordsPage() {
 
     const addVideoRows = (videoRaw: VideoRawData[]) => {
       for (const video of videoRaw) {
-        const url = buildVideoUrl(video.videoId, video.accountName, video.platform);
-        const postDate = video.createTime ? video.createTime.split("T")[0] : "";
+        // 合計0の動画はスキップ
         let total = 0;
         for (let day = 1; day <= days; day++) {
           total += video.dailyViews[day] || 0;
         }
-        const row = [url, video.accountName, video.productName, postDate, String(total)];
+        if (total === 0) continue;
+
+        const url = buildVideoUrl(video.videoId, video.accountName, video.platform);
+        const postDate = video.createTime ? video.createTime.split("T")[0] : "";
+        const row = [url, video.accountName, video.operator, video.productName, postDate, String(total)];
         for (let day = 1; day <= days; day++) {
           row.push(String(video.dailyViews[day] || 0));
         }
@@ -537,9 +659,16 @@ export default function ViewRecordsPage() {
                 </button>
                 <button
                   onClick={() => { exportRawCsv(); setIsCsvDropdownOpen(false); }}
-                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 rounded-b-lg border-t"
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 border-t"
                 >
                   ローデータ
+                </button>
+                <button
+                  onClick={exportAllRawCsv}
+                  disabled={isExportingAll}
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 rounded-b-lg border-t disabled:opacity-50"
+                >
+                  {isExportingAll ? "出力中..." : "全商材ローデータ"}
                 </button>
               </div>
             )}
