@@ -236,8 +236,8 @@ export default function ViewRecordsPage() {
       return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
     };
 
-    // 日付ヘッダー（2026/4/1形式）
-    const dateHeaders = Array.from({ length: days }, (_, i) => `${year}/${month}/${i + 1}`);
+    // 日付ヘッダー（2026/04/01形式）
+    const dateHeaders = Array.from({ length: days }, (_, i) => `${year}/${String(month).padStart(2, "0")}/${String(i + 1).padStart(2, "0")}`);
     const headerRow = ["", "運用者", "合計", ...dateHeaders];
 
     const rows: string[][] = [];
