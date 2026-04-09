@@ -24,6 +24,17 @@ type AccountInfo = {
 // アカウント×日付の再生数マップ
 type ViewCountMap = { [accountId: string]: { [day: number]: number } };
 
+// 動画別の日次再生数データ（ローデータCSV用）
+type VideoRawData = {
+  videoId: string;
+  accountName: string;
+  operator: string;
+  productName: string;
+  createTime: string | null;
+  platform: "tiktok" | "instagram";
+  dailyViews: { [day: number]: number };
+};
+
 // 月の日数を取得
 function getDaysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate();
@@ -53,6 +64,9 @@ export default function ViewRecordsPage() {
   const [instagramAccounts, setInstagramAccounts] = useState<AccountInfo[]>([]);
   const [tiktokViews, setTiktokViews] = useState<ViewCountMap>({});
   const [instagramViews, setInstagramViews] = useState<ViewCountMap>({});
+  const [tiktokVideoRaw, setTiktokVideoRaw] = useState<VideoRawData[]>([]);
+  const [instagramVideoRaw, setInstagramVideoRaw] = useState<VideoRawData[]>([]);
+  const [isCsvDropdownOpen, setIsCsvDropdownOpen] = useState(false);
 
   // 商品一覧を取得
   useEffect(() => {
@@ -121,8 +135,10 @@ export default function ViewRecordsPage() {
 
       setTiktokAccounts(tiktokResult.accounts);
       setTiktokViews(tiktokResult.viewMap);
+      setTiktokVideoRaw(tiktokResult.videoRaw);
       setInstagramAccounts(instagramResult.accounts);
       setInstagramViews(instagramResult.viewMap);
+      setInstagramVideoRaw(instagramResult.videoRaw);
     } catch (error) {
       console.error("データ取得エラー:", error);
     } finally {
@@ -136,7 +152,7 @@ export default function ViewRecordsPage() {
     startDateStr: string,
     endDateStr: string,
     daysInMonth: number
-  ): Promise<{ accounts: AccountInfo[]; viewMap: ViewCountMap }> => {
+  ): Promise<{ accounts: AccountInfo[]; viewMap: ViewCountMap; videoRaw: VideoRawData[] }> => {
     const accountsCol = platform === "tiktok" ? "tiktok_accounts" : "instagram_accounts";
     const snapshotsCol = platform === "tiktok" ? "tiktok_video_daily_snapshots" : "instagram_video_daily_snapshots";
 
@@ -155,13 +171,24 @@ export default function ViewRecordsPage() {
         };
       });
 
-    if (accounts.length === 0) return { accounts, viewMap: {} };
+    if (accounts.length === 0) return { accounts, viewMap: {}, videoRaw: [] };
+
+    // アカウント名マップ
+    const accountNameMap: { [id: string]: { name: string; operator: string } } = {};
+    for (const acc of accounts) {
+      accountNameMap[acc.id] = { name: acc.name, operator: acc.operator };
+    }
 
     const snapshotsSnapshot = await getDocs(
       query(collection(db, snapshotsCol), where("productId", "==", selectedProductId))
     );
 
+    // アカウント×日付の累計（既存）
     const cumulativeByAccountDate: { [accountId: string]: { [date: string]: number } } = {};
+    // 動画×日付の累計（ローデータ用）
+    const cumulativeByVideoDate: { [videoId: string]: { [date: string]: number } } = {};
+    // 動画メタ情報
+    const videoMeta: { [videoId: string]: { accountId: string; accountName: string; operator: string; createTime: string | null } } = {};
 
     for (const doc of snapshotsSnapshot.docs) {
       const snap = doc.data();
@@ -169,15 +196,32 @@ export default function ViewRecordsPage() {
       if (date < startDateStr || date > endDateStr) continue;
 
       const accountId = snap.accountId as string;
-      if (!cumulativeByAccountDate[accountId]) {
-        cumulativeByAccountDate[accountId] = {};
-      }
-      if (!cumulativeByAccountDate[accountId][date]) {
-        cumulativeByAccountDate[accountId][date] = 0;
-      }
+      const videoId = snap.videoId as string;
+
+      // アカウント集約（既存ロジック）
+      if (!cumulativeByAccountDate[accountId]) cumulativeByAccountDate[accountId] = {};
+      if (!cumulativeByAccountDate[accountId][date]) cumulativeByAccountDate[accountId][date] = 0;
       cumulativeByAccountDate[accountId][date] += snap.viewCount || snap.reach || 0;
+
+      // 動画集約（ローデータ用）
+      if (!cumulativeByVideoDate[videoId]) cumulativeByVideoDate[videoId] = {};
+      if (!cumulativeByVideoDate[videoId][date]) cumulativeByVideoDate[videoId][date] = 0;
+      cumulativeByVideoDate[videoId][date] += snap.viewCount || snap.reach || 0;
+
+      // 動画メタ情報（最新のスナップショットから取得）
+      if (!videoMeta[videoId]) {
+        const ct = snap.createTime;
+        const createTimeStr = typeof ct === "string" ? ct : ct?.toDate?.()?.toISOString?.() || null;
+        videoMeta[videoId] = {
+          accountId,
+          accountName: snap.accountName || accountNameMap[accountId]?.name || "Unknown",
+          operator: snap.operator || accountNameMap[accountId]?.operator || "",
+          createTime: createTimeStr,
+        };
+      }
     }
 
+    // アカウント別viewMap（既存ロジック）
     const viewMap: ViewCountMap = {};
     for (const accountId of Object.keys(cumulativeByAccountDate)) {
       viewMap[accountId] = {};
@@ -185,16 +229,37 @@ export default function ViewRecordsPage() {
         const todayStr = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
         const tomorrow = new Date(year, month - 1, day + 1);
         const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
-
         const todayVal = cumulativeByAccountDate[accountId][todayStr] || 0;
         const tomorrowVal = cumulativeByAccountDate[accountId][tomorrowStr] || 0;
-
-        const diff = tomorrowVal > 0 ? Math.max(0, tomorrowVal - todayVal) : 0;
-        viewMap[accountId][day] = diff;
+        viewMap[accountId][day] = tomorrowVal > 0 ? Math.max(0, tomorrowVal - todayVal) : 0;
       }
     }
 
-    return { accounts, viewMap };
+    // 動画別viewMap（ローデータ用）
+    const productName = selectedProduct?.productName || "";
+    const videoRaw: VideoRawData[] = Object.keys(cumulativeByVideoDate).map((videoId) => {
+      const dailyViews: { [day: number]: number } = {};
+      for (let day = 1; day <= daysInMonth; day++) {
+        const todayStr = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        const tomorrow = new Date(year, month - 1, day + 1);
+        const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+        const todayVal = cumulativeByVideoDate[videoId][todayStr] || 0;
+        const tomorrowVal = cumulativeByVideoDate[videoId][tomorrowStr] || 0;
+        dailyViews[day] = tomorrowVal > 0 ? Math.max(0, tomorrowVal - todayVal) : 0;
+      }
+      const meta = videoMeta[videoId];
+      return {
+        videoId,
+        accountName: meta?.accountName || "Unknown",
+        operator: meta?.operator || "",
+        productName,
+        createTime: meta?.createTime || null,
+        platform,
+        dailyViews,
+      };
+    });
+
+    return { accounts, viewMap, videoRaw };
   };
 
   // 日別合計を計算
@@ -279,6 +344,69 @@ export default function ViewRecordsPage() {
     a.href = url;
     const productName = selectedProduct?.productName || "再生数";
     a.download = `${productName}_再生数記録_${year}年${month}月.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ローデータCSVエクスポート（動画単位）
+  const exportRawCsv = () => {
+    const days = daysInMonth;
+    const esc = (v: string | number) => {
+      const s = String(v);
+      return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const dateHeaders = Array.from({ length: days }, (_, i) => `${year}/${String(month).padStart(2, "0")}/${String(i + 1).padStart(2, "0")}`);
+    const headerRow = ["動画リンク", "アカウント", "商材", "投稿日", "合計", ...dateHeaders];
+
+    const rows: string[][] = [];
+    rows.push(headerRow);
+
+    // 動画URLを生成
+    const buildVideoUrl = (videoId: string, accountName: string, platform: "tiktok" | "instagram"): string => {
+      if (platform === "tiktok") {
+        return `https://www.tiktok.com/@${accountName}/video/${videoId}`;
+      }
+      return `https://www.instagram.com/reel/${videoId}/`;
+    };
+
+    const addVideoRows = (videoRaw: VideoRawData[]) => {
+      for (const video of videoRaw) {
+        const url = buildVideoUrl(video.videoId, video.accountName, video.platform);
+        const postDate = video.createTime ? video.createTime.split("T")[0] : "";
+        let total = 0;
+        for (let day = 1; day <= days; day++) {
+          total += video.dailyViews[day] || 0;
+        }
+        const row = [url, video.accountName, video.productName, postDate, String(total)];
+        for (let day = 1; day <= days; day++) {
+          row.push(String(video.dailyViews[day] || 0));
+        }
+        rows.push(row);
+      }
+    };
+
+    // TikTok
+    if (tiktokVideoRaw.length > 0) {
+      rows.push([]);
+      rows.push(["TikTok"]);
+      addVideoRows(tiktokVideoRaw);
+    }
+
+    // Instagram
+    if (instagramVideoRaw.length > 0) {
+      rows.push([]);
+      rows.push(["Instagram"]);
+      addVideoRows(instagramVideoRaw);
+    }
+
+    const csvContent = rows.map((row) => row.map(esc).join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const productName = selectedProduct?.productName || "再生数";
+    a.download = `${productName}_ローデータ_${year}年${month}月.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -388,15 +516,34 @@ export default function ViewRecordsPage() {
     <div className="max-w-full">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold">再生数記録</h1>
-        {/* CSVエクスポートボタン */}
+        {/* CSVエクスポートプルダウン */}
         {selectedProductId && !isLoading && (
-          <button
-            onClick={exportCsv}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
-          >
-            <Download size={16} />
-            CSV出力
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setIsCsvDropdownOpen(!isCsvDropdownOpen)}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
+            >
+              <Download size={16} />
+              CSV出力
+              <ChevronDown size={14} />
+            </button>
+            {isCsvDropdownOpen && (
+              <div className="absolute right-0 mt-1 w-44 bg-white border rounded-lg shadow-lg z-20">
+                <button
+                  onClick={() => { exportCsv(); setIsCsvDropdownOpen(false); }}
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 rounded-t-lg"
+                >
+                  表形式
+                </button>
+                <button
+                  onClick={() => { exportRawCsv(); setIsCsvDropdownOpen(false); }}
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 rounded-b-lg border-t"
+                >
+                  ローデータ
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
