@@ -127,7 +127,6 @@ export default function DashboardPage() {
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
   const [aiResult, setAiResult] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [showAiModal, setShowAiModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const today = new Date();
@@ -770,7 +769,6 @@ export default function DashboardPage() {
     setAiAnalyzing(true);
     setAiError(null);
     setAiResult(null);
-    setShowAiModal(true);
 
     try {
       // 売上データを整形（チャネル別）
@@ -1173,69 +1171,6 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
-
-      {/* AI分析ボタン */}
-      {selectedProduct && productSalesData.length > 0 && (
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleAiAnalysis}
-            disabled={aiAnalyzing}
-            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-lg hover:from-violet-600 hover:to-purple-700 disabled:opacity-50 transition-all text-sm shadow-sm"
-          >
-            {aiAnalyzing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {aiAnalyzing ? "分析中..." : "AI分析（β版）"}
-          </button>
-          <span className="text-xs text-gray-400">SNS再生数と売上の相関を分析します</span>
-        </div>
-      )}
-
-      {/* AI分析モーダル */}
-      {showAiModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col">
-            <div className="flex items-center justify-between p-5 border-b">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-purple-600" />
-                <h2 className="text-lg font-bold text-gray-800">AI分析レポート（β版）</h2>
-              </div>
-              <button onClick={() => setShowAiModal(false)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-auto p-5">
-              {aiAnalyzing && (
-                <div className="flex flex-col items-center justify-center py-16">
-                  <RefreshCw className="w-10 h-10 text-purple-500 animate-spin mb-4" />
-                  <p className="text-gray-600 font-medium">分析中...</p>
-                  <p className="text-gray-400 text-sm mt-1">データを解析しています。30秒ほどお待ちください。</p>
-                </div>
-              )}
-              {aiError && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-                  <p className="font-medium mb-1">エラー</p>
-                  <p>{aiError}</p>
-                </div>
-              )}
-              {aiResult && (
-                <div className="prose prose-sm max-w-none text-gray-700">
-                  {aiResult.split("\n").map((line, i) => {
-                    if (line.startsWith("# ")) return <h1 key={i} className="text-xl font-bold text-gray-900 mt-4 mb-2">{line.slice(2)}</h1>;
-                    if (line.startsWith("## ")) return <h2 key={i} className="text-lg font-bold text-gray-800 mt-4 mb-2">{line.slice(3)}</h2>;
-                    if (line.startsWith("### ")) return <h3 key={i} className="text-base font-bold text-gray-700 mt-3 mb-1">{line.slice(4)}</h3>;
-                    if (line.startsWith("#### ")) return <h4 key={i} className="text-sm font-bold text-gray-700 mt-2 mb-1">{line.slice(5)}</h4>;
-                    if (line.startsWith("- ") || line.startsWith("* ")) return <li key={i} className="ml-4 text-sm">{line.slice(2)}</li>;
-                    if (line.startsWith("|")) return <pre key={i} className="text-xs bg-gray-50 px-2 py-0.5 rounded overflow-x-auto">{line}</pre>;
-                    if (line.startsWith("```")) return null;
-                    if (line.trim() === "") return <br key={i} />;
-                    if (line.startsWith("**") && line.endsWith("**")) return <p key={i} className="font-bold text-sm mt-2">{line.slice(2, -2)}</p>;
-                    return <p key={i} className="text-sm leading-relaxed">{line}</p>;
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* グラフエリア */}
       <div className="bg-white rounded-xl shadow-sm p-4">
@@ -1688,6 +1623,58 @@ export default function DashboardPage() {
       </div>
 
       {/* フラグ詳細モーダル */}
+      {/* AI分析（β版） */}
+      {selectedProduct && productSalesData.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-purple-600" />
+              <h2 className="text-base font-semibold text-gray-700">AI分析（β版）</h2>
+            </div>
+            <button
+              onClick={handleAiAnalysis}
+              disabled={aiAnalyzing}
+              className="flex items-center gap-2 px-4 py-1.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-lg hover:from-violet-600 hover:to-purple-700 disabled:opacity-50 transition-all text-sm"
+            >
+              {aiAnalyzing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {aiAnalyzing ? "分析中..." : aiResult ? "再分析" : "分析する"}
+            </button>
+          </div>
+
+          {!aiResult && !aiAnalyzing && !aiError && (
+            <p className="text-sm text-gray-400 py-6 text-center">「分析する」ボタンを押すと、SNS再生数と売上の相関をAIが分析します</p>
+          )}
+
+          {aiAnalyzing && (
+            <div className="flex items-center justify-center py-8 gap-3">
+              <RefreshCw className="w-6 h-6 text-purple-500 animate-spin" />
+              <p className="text-gray-500 text-sm">データを解析しています。30秒ほどお待ちください...</p>
+            </div>
+          )}
+
+          {aiError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{aiError}</div>
+          )}
+
+          {aiResult && (
+            <div className="prose prose-sm max-w-none text-gray-700 max-h-[600px] overflow-y-auto">
+              {aiResult.split("\n").map((line, i) => {
+                if (line.startsWith("# ")) return <h1 key={i} className="text-xl font-bold text-gray-900 mt-4 mb-2">{line.slice(2)}</h1>;
+                if (line.startsWith("## ")) return <h2 key={i} className="text-lg font-bold text-gray-800 mt-4 mb-2">{line.slice(3)}</h2>;
+                if (line.startsWith("### ")) return <h3 key={i} className="text-base font-bold text-gray-700 mt-3 mb-1">{line.slice(4)}</h3>;
+                if (line.startsWith("#### ")) return <h4 key={i} className="text-sm font-bold text-gray-700 mt-2 mb-1">{line.slice(5)}</h4>;
+                if (line.startsWith("- ") || line.startsWith("* ")) return <li key={i} className="ml-4 text-sm">{line.slice(2)}</li>;
+                if (line.startsWith("|")) return <pre key={i} className="text-xs bg-gray-50 px-2 py-0.5 rounded overflow-x-auto">{line}</pre>;
+                if (line.startsWith("```")) return null;
+                if (line.trim() === "") return <br key={i} />;
+                if (line.startsWith("**") && line.endsWith("**")) return <p key={i} className="font-bold text-sm mt-2">{line.slice(2, -2)}</p>;
+                return <p key={i} className="text-sm leading-relaxed">{line}</p>;
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {selectedFlag && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
