@@ -1,5 +1,14 @@
 import OpenAI from "openai";
 import { NextRequest, NextResponse } from "next/server";
+import { initializeApp, getApps } from "firebase/app";
+import { getFirestore, doc, getDoc } from "firebase/firestore";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC1yeHPptvV1t-3eNquE-_ElABNQC73lxc",
+  projectId: "mall-batch-manager",
+};
+const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
 const SYSTEM_PROMPT = `あなたはプロのECデータアナリストです。
 提供される「SNSの再生数データ」と「ECモール（Amazon、楽天、Qoo10等）の売上データ」を用いて、SNS運用が各モールの売上に与えた効果を正確に測定・分析してください。
@@ -51,9 +60,18 @@ export async function POST(req: NextRequest) {
   try {
     const { salesData, viewsData, flagsData, productName, startDate, endDate } = await req.json();
 
-    const apiKey = process.env.OPENAI_API_KEY;
+    // 環境変数 → Firestoreのsettingsコレクションからフォールバック
+    let apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "OPENAI_API_KEY が設定されていません" }, { status: 500 });
+      try {
+        const settingsDoc = await getDoc(doc(db, "settings", "openai"));
+        apiKey = settingsDoc.data()?.apiKey;
+      } catch (e) {
+        console.error("Firestore settings取得エラー:", e);
+      }
+    }
+    if (!apiKey) {
+      return NextResponse.json({ error: "OpenAI APIキーが設定されていません。" }, { status: 500 });
     }
 
     const client = new OpenAI({ apiKey });
