@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { NextRequest, NextResponse } from "next/server";
 
 const SYSTEM_PROMPT = `あなたはプロのECデータアナリストです。
@@ -51,12 +51,12 @@ export async function POST(req: NextRequest) {
   try {
     const { salesData, viewsData, flagsData, productName, startDate, endDate } = await req.json();
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "ANTHROPIC_API_KEY が設定されていません" }, { status: 500 });
+      return NextResponse.json({ error: "OPENAI_API_KEY が設定されていません" }, { status: 500 });
     }
 
-    const client = new Anthropic({ apiKey });
+    const client = new OpenAI({ apiKey });
 
     const userMessage = `以下のデータを分析してください。
 
@@ -80,17 +80,16 @@ ${JSON.stringify(flagsData, null, 2)}
 
 上記データに基づいて、指定のフォーマットで分析レポートを作成してください。`;
 
-    const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+    const response = await client.chat.completions.create({
+      model: "gpt-4o",
       max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: userMessage }],
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMessage },
+      ],
     });
 
-    const responseText = message.content
-      .filter((block): block is Anthropic.TextBlock => block.type === "text")
-      .map((block) => block.text)
-      .join("\n");
+    const responseText = response.choices[0]?.message?.content || "分析結果を取得できませんでした。";
 
     return NextResponse.json({ analysis: responseText });
   } catch (error: unknown) {
