@@ -30,7 +30,7 @@ const menuItems = [
     name: "再生数記録",
     href: "/view-records",
     icon: Table,
-    adminOnly: false,
+    adminOnly: true,
   },
   {
     name: "アカウントリスト",
