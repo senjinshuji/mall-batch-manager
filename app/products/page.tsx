@@ -12,30 +12,31 @@ import { useAuth } from "@/lib/auth-context";
 
 const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
-// デモ用のモール商品データ
-const demoAmazonProducts: MallProduct[] = [
-  { code: "DEMO-AMZ-001", name: "デモAmazon商品A" },
-  { code: "DEMO-AMZ-002", name: "デモAmazon商品B" },
-  { code: "DEMO-AMZ-003", name: "デモAmazon商品C" },
-];
+// 全チャネル定義
+const SALES_CHANNELS = {
+  online: [
+    { key: "Amazon", label: "Amazon", color: "#FF9900" },
+    { key: "楽天", label: "楽天", color: "#BF0000" },
+    { key: "Qoo10", label: "Qoo10", color: "#3266CC" },
+    { key: "Yahoo", label: "Yahoo", color: "#FF0033" },
+    { key: "自社サイト", label: "自社サイト", color: "#10B981" },
+  ],
+  store: [
+    { key: "アインズ&トルペ", label: "アインズ&トルペ", color: "#8B5CF6" },
+    { key: "LOFT", label: "LOFT", color: "#D97706" },
+    { key: "ドンキ", label: "ドンキ", color: "#2563EB" },
+    { key: "PLAZA", label: "PLAZA", color: "#EC4899" },
+    { key: "東急ハンズ", label: "東急ハンズ", color: "#059669" },
+    { key: "マツキヨ", label: "マツキヨ", color: "#7C3AED" },
+    { key: "ツルハドラッグ", label: "ツルハドラッグ", color: "#0891B2" },
+  ],
+};
 
-const demoRakutenProducts: MallProduct[] = [
-  { code: "DEMO-RKT-001", name: "デモ楽天商品A" },
-  { code: "DEMO-RKT-002", name: "デモ楽天商品B" },
-  { code: "DEMO-RKT-003", name: "デモ楽天商品C" },
-];
-
-const demoQoo10Products: MallProduct[] = [
-  { code: "DEMO-Q10-001", name: "デモQoo10商品A" },
-  { code: "DEMO-Q10-002", name: "デモQoo10商品B" },
-  { code: "DEMO-Q10-003", name: "デモQoo10商品C" },
-];
-
-// デモ用の登録済み商品
-const demoRegisteredProducts: RegisteredProduct[] = [
-  { id: "demo-1", productName: "デモ商品A", amazonCode: "DEMO-AMZ-001", rakutenCode: "DEMO-RKT-001", qoo10Code: "DEMO-Q10-001" },
-  { id: "demo-2", productName: "デモ商品B", amazonCode: "DEMO-AMZ-002", rakutenCode: "", qoo10Code: "DEMO-Q10-002" },
-];
+// デモ用データ（空）
+const demoAmazonProducts: MallProduct[] = [];
+const demoRakutenProducts: MallProduct[] = [];
+const demoQoo10Products: MallProduct[] = [];
+const demoRegisteredProducts: RegisteredProduct[] = [];
 
 type NewProduct = {
   productName: string;
@@ -128,6 +129,14 @@ export default function ProductsPage() {
   const [unifiedSuccess, setUnifiedSuccess] = useState<string | null>(null);
   const unifiedFileRef = useRef<HTMLInputElement>(null);
   const [unifiedClients, setUnifiedClients] = useState<{ id: string; name: string; allowedProductIds: string[]; extraChannels: string[] }[]>([]);
+
+  // チャネル別売上CSV入稿用ステート
+  const [channelSalesUploading, setChannelSalesUploading] = useState(false);
+  const [channelSalesError, setChannelSalesError] = useState<string | null>(null);
+  const [channelSalesSuccess, setChannelSalesSuccess] = useState<string | null>(null);
+  const channelSalesFileRef = useRef<HTMLInputElement>(null);
+  const [selectedProductForChannelSales, setSelectedProductForChannelSales] = useState<string | null>(null);
+  const [selectedChannel, setSelectedChannel] = useState<string>("");
 
   // 再生数CSV入稿用ステート
   const [viewsUploading, setViewsUploading] = useState(false);
@@ -642,19 +651,44 @@ export default function ProductsPage() {
           return;
         }
 
-        // 空行をスキップして実際のヘッダー行を見つける
+        // ダブルクォートで囲まれたCSVを正しく分割
+        const parseCSVLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+              result.push(current.trim().replace(/^["']|["']$/g, ""));
+              current = "";
+            } else {
+              current += char;
+            }
+          }
+          result.push(current.trim().replace(/^["']|["']$/g, ""));
+          return result;
+        };
+
+        // 「注文商品の売上額」を含む行をヘッダーとして検出（1-2行目を優先検索）
         let headerLineIndex = 0;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          // カンマだけの行（空行）をスキップ
-          const nonEmptyValues = line.split(",").filter(v => v.trim().replace(/^["']|["']$/g, "").length > 0);
-          if (nonEmptyValues.length > 0) {
-            // 日付形式かヘッダー名かを判定
-            const firstValue = nonEmptyValues[0].trim().replace(/^["']|["']$/g, "");
-            if (!/^\d{4}[/-]\d{2}[/-]\d{2}$/.test(firstValue)) {
-              // 日付形式でなければヘッダー行
+        let salesColOverride: number | undefined;
+        for (let i = 0; i < Math.min(lines.length, 5); i++) {
+          const cols = parseCSVLine(lines[i]);
+          const salesIdx = cols.findIndex(c => c.trim().replace(/^["']|["']$/g, "") === "注文商品の売上額");
+          if (salesIdx !== -1) {
+            headerLineIndex = i;
+            salesColOverride = salesIdx;
+            console.log("[CSVパース] ヘッダー行発見: 行", i, " 売上額列:", salesIdx);
+            break;
+          }
+        }
+        // フォールバック: 「日付」「売上」「ASIN」等のキーワードで検索
+        if (salesColOverride === undefined) {
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes("日付") || lines[i].includes("売上") || lines[i].includes("ASIN") || lines[i].toLowerCase().includes("date")) {
               headerLineIndex = i;
-              console.log("[CSVパース] ヘッダー行発見: 行", i, "内容:", line.substring(0, 100));
               break;
             }
           }
@@ -682,26 +716,6 @@ export default function ProductsPage() {
           // 数値以外の文字が含まれていたら0
           if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return "0";
           return cleaned || "0";
-        };
-
-        // ダブルクォートで囲まれたCSVを正しく分割
-        const parseCSVLine = (line: string): string[] => {
-          const result: string[] = [];
-          let current = "";
-          let inQuotes = false;
-          for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            if (char === '"') {
-              inQuotes = !inQuotes;
-            } else if (char === ',' && !inQuotes) {
-              result.push(current.trim().replace(/^["']|["']$/g, ""));
-              current = "";
-            } else {
-              current += char;
-            }
-          }
-          result.push(current.trim().replace(/^["']|["']$/g, ""));
-          return result;
         };
 
         const headers = parseCSVLine(headerLine).map(normalizeHeader);
@@ -760,11 +774,18 @@ export default function ProductsPage() {
         console.log("[CSVパース] マッピング結果:", columnIndexes);
         console.log("[CSVパース] salesAmountインデックス:", columnIndexes["salesAmount"]);
 
+        // 日付は常にA列（0列目）
+        columnIndexes["date"] = 0;
+
+        // 売上額列: 完全一致で見つかった列を優先
+        if (salesColOverride !== undefined) {
+          columnIndexes["salesAmount"] = salesColOverride;
+        }
+
         // ヘッダー行の次の行からデータ開始
         const dataStartIndex = headerLineIndex + 1;
 
-        // シンプルな2カラム形式かどうか判定（ヘッダーなしで日付,売上のみ）
-        const isSimpleFormat = headers.length <= 3 && !columnIndexes["date"];
+        const isSimpleFormat = false; // 常にヘッダーベースで処理
 
         const parsedData = [];
 
@@ -777,75 +798,64 @@ export default function ProductsPage() {
             continue;
           }
 
-          // 日付を正規化（YYYY/MM/DD → YYYY-MM-DD）
+          // 日付を正規化（YYYY/MM/DD → YYYY-MM-DD, M/D → 今年のYYYY-MM-DD）
           const normalizeDate = (d: string): string => {
-            return d.replace(/\//g, "-");
+            const cleaned = d.trim();
+            // YYYY/M/D or YYYY-M-D → ゼロ埋めしてYYYY-MM-DD
+            const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+            if (ymdMatch) {
+              return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
+            }
+            // M/D or MM/DD（年なし） → 今年を補完
+            const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+            if (mdMatch) {
+              const year = new Date().getFullYear();
+              return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
+            }
+            return cleaned.replace(/\//g, "-");
           };
 
-          if (isSimpleFormat) {
-            // シンプル形式: A列=日付, B列=売上
-            parsedData.push({
-              date: normalizeDate(values[0]),
-              salesAmount: parseAmount(values[1]),
-              salesAmountB2B: "0",
-              orderedUnits: "0",
-              orderedUnitsB2B: "0",
-              totalOrderItems: "0",
-              totalOrderItemsB2B: "0",
-              pageViews: "0",
-              pageViewsB2B: "0",
-              sessions: "0",
-              sessionsB2B: "0",
-              buyBoxPercentage: "0",
-              buyBoxPercentageB2B: "0",
-              unitSessionPercentage: "0",
-              unitSessionPercentageB2B: "0",
-              averageOfferCount: "0",
-              averageParentItems: "0",
-            });
-          } else if (columnIndexes["date"] !== undefined) {
-            // ヘッダーベースのマッピング
-            parsedData.push({
-              date: normalizeDate(values[columnIndexes["date"]] || ""),
-              salesAmount: parseAmount(values[columnIndexes["salesAmount"]]),
-              salesAmountB2B: parseAmount(values[columnIndexes["salesAmountB2B"]]),
-              orderedUnits: parseAmount(values[columnIndexes["orderedUnits"]]),
-              orderedUnitsB2B: parseAmount(values[columnIndexes["orderedUnitsB2B"]]),
-              totalOrderItems: parseAmount(values[columnIndexes["totalOrderItems"]]),
-              totalOrderItemsB2B: parseAmount(values[columnIndexes["totalOrderItemsB2B"]]),
-              pageViews: parseAmount(values[columnIndexes["pageViews"]]),
-              pageViewsB2B: parseAmount(values[columnIndexes["pageViewsB2B"]]),
-              sessions: parseAmount(values[columnIndexes["sessions"]]),
-              sessionsB2B: parseAmount(values[columnIndexes["sessionsB2B"]]),
-              buyBoxPercentage: values[columnIndexes["buyBoxPercentage"]] || "0",
-              buyBoxPercentageB2B: values[columnIndexes["buyBoxPercentageB2B"]] || "0",
-              unitSessionPercentage: values[columnIndexes["unitSessionPercentage"]] || "0",
-              unitSessionPercentageB2B: values[columnIndexes["unitSessionPercentageB2B"]] || "0",
-              averageOfferCount: parseAmount(values[columnIndexes["averageOfferCount"]]),
-              averageParentItems: parseAmount(values[columnIndexes["averageParentItems"]]),
-            });
-          } else {
-            // 位置ベースのマッピング（Amazon詳細フォーマット）
-            parsedData.push({
-              date: normalizeDate(values[0]),
-              salesAmount: parseAmount(values[1]),
-              salesAmountB2B: parseAmount(values[2]),
-              orderedUnits: parseAmount(values[3]),
-              orderedUnitsB2B: parseAmount(values[4]),
-              totalOrderItems: parseAmount(values[5]),
-              totalOrderItemsB2B: parseAmount(values[6]),
-              pageViews: parseAmount(values[7]),
-              pageViewsB2B: parseAmount(values[8]),
-              sessions: parseAmount(values[9]),
-              sessionsB2B: parseAmount(values[10]),
-              buyBoxPercentage: values[11] || "0",
-              buyBoxPercentageB2B: values[12] || "0",
-              unitSessionPercentage: values[13] || "0",
-              unitSessionPercentageB2B: values[14] || "0",
-              averageOfferCount: parseAmount(values[15]),
-              averageParentItems: parseAmount(values[16]),
-            });
-          }
+          // 日付を取得（ヘッダーマッピングがあればそれを使う、なければ0列目）
+          const dateColIdx = columnIndexes["date"] ?? 0;
+          const date = normalizeDate(values[dateColIdx] || "");
+          if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+
+          // 売上額を取得（ヘッダーマッピングがあればそれを使う）
+          const salesColIdx = columnIndexes["salesAmount"];
+          const salesAmount = salesColIdx !== undefined
+            ? parseAmount(values[salesColIdx])
+            : (isSimpleFormat ? parseAmount(values[1]) : parseAmount(values[1]));
+
+          // 各フィールドをヘッダーから取得（あれば）、なければ"0"
+          const getField = (field: string, fallbackIdx?: number): string => {
+            if (columnIndexes[field] !== undefined) return parseAmount(values[columnIndexes[field]]);
+            if (fallbackIdx !== undefined && values[fallbackIdx]) return parseAmount(values[fallbackIdx]);
+            return "0";
+          };
+          const getFieldRaw = (field: string): string => {
+            if (columnIndexes[field] !== undefined) return values[columnIndexes[field]] || "0";
+            return "0";
+          };
+
+          parsedData.push({
+            date,
+            salesAmount,
+            salesAmountB2B: getField("salesAmountB2B"),
+            orderedUnits: getField("orderedUnits"),
+            orderedUnitsB2B: getField("orderedUnitsB2B"),
+            totalOrderItems: getField("totalOrderItems"),
+            totalOrderItemsB2B: getField("totalOrderItemsB2B"),
+            pageViews: getField("pageViews"),
+            pageViewsB2B: getField("pageViewsB2B"),
+            sessions: getField("sessions"),
+            sessionsB2B: getField("sessionsB2B"),
+            buyBoxPercentage: getFieldRaw("buyBoxPercentage"),
+            buyBoxPercentageB2B: getFieldRaw("buyBoxPercentageB2B"),
+            unitSessionPercentage: getFieldRaw("unitSessionPercentage"),
+            unitSessionPercentageB2B: getFieldRaw("unitSessionPercentageB2B"),
+            averageOfferCount: getField("averageOfferCount"),
+            averageParentItems: getField("averageParentItems"),
+          });
         }
 
         if (parsedData.length === 0) {
@@ -1048,9 +1058,28 @@ export default function ProductsPage() {
           return;
         }
 
+        // 「日付」を含むヘッダー行を見つける
+        let headerIdx = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes("日付")) { headerIdx = i; break; }
+        }
+
+        // 日付正規化（M/D → YYYY-MM-DD）
+        const normalizeDate = (d: string): string => {
+          const cleaned = d.trim();
+          const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
+          const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+          if (mdMatch) {
+            const year = new Date().getFullYear();
+            return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
+          }
+          return cleaned.replace(/\//g, "-");
+        };
+
         const parsedData = [];
 
-        for (let i = 1; i < lines.length; i++) {
+        for (let i = headerIdx + 1; i < lines.length; i++) {
           const line = lines[i];
           const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
 
@@ -1059,7 +1088,7 @@ export default function ProductsPage() {
           }
 
           parsedData.push({
-            date: values[0],
+            date: normalizeDate(values[0]),
             productManagementCode: values[1] || "",
             productCode: values[2] || "",
             salesAmount: values[3] || "0",
@@ -1175,20 +1204,68 @@ export default function ProductsPage() {
           return;
         }
 
+        // ダブルクォート対応CSVパーサー
+        const parseQoo10Line = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') inQuotes = !inQuotes;
+            else if (ch === ',' && !inQuotes) { result.push(current.trim().replace(/^["']|["']$/g, "")); current = ""; }
+            else current += ch;
+          }
+          result.push(current.trim().replace(/^["']|["']$/g, ""));
+          return result;
+        };
+
+        // ヘッダー行検出: 「受注金額」「開始日」「日付」を含む行を探す
+        let qoo10HeaderIdx = 0;
+        let salesColIdx = 1; // デフォルト: 2列目
+        for (let i = 0; i < Math.min(lines.length, 5); i++) {
+          const cols = parseQoo10Line(lines[i]);
+          const idx = cols.findIndex(c => c === "受注金額");
+          if (idx !== -1) {
+            qoo10HeaderIdx = i;
+            salesColIdx = idx;
+            break;
+          }
+          if (cols.some(c => c === "開始日" || c === "日付" || c.toLowerCase() === "date")) {
+            qoo10HeaderIdx = i;
+            break;
+          }
+        }
+
+        const normQoo10Date = (d: string): string => {
+          const cleaned = d.trim();
+          const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
+          const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+          if (mdMatch) {
+            const year = new Date().getFullYear();
+            return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
+          }
+          return cleaned.replace(/\//g, "-");
+        };
+
+        const parseQoo10Amount = (val: string): string => {
+          if (!val) return "0";
+          return val.replace(/[¥￥,\s]/g, "") || "0";
+        };
+
         const parsedData = [];
 
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i];
-          const values = line.split(",").map(v => v.trim().replace(/^["']|["']$/g, ""));
+        for (let i = qoo10HeaderIdx + 1; i < lines.length; i++) {
+          const values = parseQoo10Line(lines[i]);
 
           if (values.length < 1 || !values[0]) {
             continue;
           }
 
           parsedData.push({
-            date: values[0].replace(/\//g, "-"),
-            sales: values[1] || "0",
-            units: values[2] || "0",
+            date: normQoo10Date(values[0]),
+            sales: parseQoo10Amount(values[salesColIdx]),
+            units: values[salesColIdx + 1] || "0",
           });
         }
 
@@ -1499,6 +1576,137 @@ export default function ProductsPage() {
     reader.readAsText(file, "UTF-8");
   }, [selectedProductForViews, products]);
 
+  // チャネル別売上CSV入稿ハンドラ（汎用）
+  const handleChannelSalesCsvImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selectedProductForChannelSales || !selectedChannel) return;
+
+    setChannelSalesUploading(true);
+    setChannelSalesError(null);
+    setChannelSalesSuccess(null);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        let text = e.target?.result as string;
+        if (text.charCodeAt(0) === 0xFEFF) text = text.substring(1);
+
+        const lines = text.split(/\r?\n/).filter((l) => l.trim());
+        if (lines.length < 2) {
+          setChannelSalesError("データがありません");
+          setChannelSalesUploading(false);
+          return;
+        }
+
+        // ヘッダー行検出
+        let headerIdx = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes("日付") || lines[i].toLowerCase().includes("date")) { headerIdx = i; break; }
+        }
+
+        const parseCsvLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') inQuotes = !inQuotes;
+            else if (ch === "," && !inQuotes) { result.push(current.trim()); current = ""; }
+            else current += ch;
+          }
+          result.push(current.trim());
+          return result;
+        };
+
+        const normalizeDate = (d: string): string => {
+          const cleaned = d.trim();
+          const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+          if (ymdMatch) return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
+          const mdMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})$/);
+          if (mdMatch) {
+            const year = new Date().getFullYear();
+            return `${year}-${mdMatch[1].padStart(2, "0")}-${mdMatch[2].padStart(2, "0")}`;
+          }
+          return cleaned.replace(/\//g, "-");
+        };
+
+        // ヘッダー解析
+        const header = parseCsvLine(lines[headerIdx]).map(h => h.replace(/^["']|["']$/g, "").trim().toLowerCase());
+        const dateIdx = header.findIndex(h => h === "日付" || h === "date");
+        const salesIdx = header.findIndex(h => h === "売上" || h === "売上額" || h === "sales" || h === "sales_amount" || h.includes("売上"));
+        const qtyIdx = header.findIndex(h => h === "数量" || h === "個数" || h === "quantity" || h === "units" || h.includes("件数") || h.includes("個数"));
+
+        if (dateIdx === -1) {
+          setChannelSalesError("日付列が見つかりません。ヘッダーに「日付」または「date」を含めてください。");
+          setChannelSalesUploading(false);
+          return;
+        }
+        if (salesIdx === -1) {
+          setChannelSalesError("売上列が見つかりません。ヘッダーに「売上」または「sales」を含めてください。");
+          setChannelSalesUploading(false);
+          return;
+        }
+
+        const rows: { date: string; salesAmount: number; quantity: number }[] = [];
+        for (let i = headerIdx + 1; i < lines.length; i++) {
+          const values = parseCsvLine(lines[i]);
+          if (values.length <= dateIdx) continue;
+          const date = normalizeDate(values[dateIdx].replace(/^["']|["']$/g, ""));
+          if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+          const rawSales = (values[salesIdx] || "0").replace(/[¥￥,\s"]/g, "");
+          const salesAmount = parseInt(rawSales) || 0;
+          const rawQty = qtyIdx !== -1 ? (values[qtyIdx] || "0").replace(/[,\s"]/g, "") : "0";
+          const quantity = parseInt(rawQty) || 0;
+          rows.push({ date, salesAmount, quantity });
+        }
+
+        if (rows.length === 0) {
+          setChannelSalesError("有効なデータがありません");
+          setChannelSalesUploading(false);
+          return;
+        }
+
+        // Firestoreにバッチ書き込み（unified_daily_sales）
+        let savedCount = 0;
+        const batchSize = 400;
+        for (let i = 0; i < rows.length; i += batchSize) {
+          const batch = writeBatch(db);
+          const chunk = rows.slice(i, i + batchSize);
+          for (const row of chunk) {
+            const docRef = doc(collection(db, "unified_daily_sales"));
+            batch.set(docRef, {
+              productId: selectedProductForChannelSales,
+              date: row.date,
+              channel: selectedChannel,
+              quantity: row.quantity,
+              salesAmount: row.salesAmount,
+              createdAt: Timestamp.now(),
+            });
+          }
+          await batch.commit();
+          savedCount += chunk.length;
+        }
+
+        const productName = products.find(p => p.id === selectedProductForChannelSales)?.productName || "";
+        setChannelSalesSuccess(`${productName}（${selectedChannel}）: ${savedCount}日分の売上データを保存しました`);
+      } catch (err: unknown) {
+        console.error("チャネル売上CSVエラー:", err);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setChannelSalesError(`エラー: ${errMsg}`);
+      } finally {
+        setChannelSalesUploading(false);
+        if (channelSalesFileRef.current) channelSalesFileRef.current.value = "";
+      }
+    };
+
+    reader.onerror = () => {
+      setChannelSalesError("ファイルの読み込みに失敗しました");
+      setChannelSalesUploading(false);
+    };
+
+    reader.readAsText(file, "UTF-8");
+  }, [selectedProductForChannelSales, selectedChannel, products]);
+
   // カスタムドロップダウンコンポーネント
   const ProductCodeDropdown = ({
     value,
@@ -1662,23 +1870,24 @@ export default function ProductsPage() {
             </span>
           )}
         </div>
-        <button
-          onClick={() => setIsAdding(true)}
-          disabled={isAdding}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-          新規登録
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setIsAdding(true)}
+            disabled={isAdding}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+            新規登録
+          </button>
+        )}
       </div>
 
       <p className="text-gray-600 mb-6">
-        商品名と各モールでの商品コードを紐付けて登録します。
-        各モールの商品コードはプルダウンから選択できます。
+        {isAdmin ? "商品名と各モールでの商品コードを紐付けて登録します。各モールの商品コードはプルダウンから選択できます。" : "売上データのCSV入稿ができます。"}
       </p>
 
-      {/* CSV入稿セクション */}
-      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+      {/* CSV入稿セクション（admin only） */}
+      {isAdmin && <div className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-lg font-semibold mb-4">CSV一括登録</h2>
         <div className="flex flex-wrap gap-4 items-center">
           <button
@@ -1723,7 +1932,7 @@ export default function ProductsPage() {
         <p className="mt-4 text-sm text-gray-500">
           CSVフォーマット: 商品名, Amazon商品コード, 楽天商品コード, Qoo10商品コード
         </p>
-      </div>
+      </div>}
 
       {/* 統合CSV売上入稿セクション（admin or unified形式のクライアント） */}
       {(isAdmin && unifiedClients.length > 0) || user?.salesFormat === "unified" ? (
@@ -1787,8 +1996,8 @@ export default function ProductsPage() {
         </div>
       ) : null}
 
-      {/* 再生数CSV入稿セクション */}
-      {isRealDataUser && (
+      {/* 再生数CSV入稿セクション（admin only） */}
+      {isAdmin && (
         <div className="bg-white rounded-lg shadow-md p-6 mb-6 border-l-4 border-pink-400">
           <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
             <FileSpreadsheet className="w-5 h-5 text-pink-500" />
@@ -1857,8 +2066,100 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {/* 新規登録フォーム */}
-      {isAdding && (
+      {/* チャネル別売上CSV入稿モーダル */}
+      {selectedProductForChannelSales && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-blue-500" />
+                  その他チャネル売上入稿
+                </h2>
+                <button
+                  onClick={() => {
+                    setSelectedProductForChannelSales(null);
+                    setChannelSalesError(null);
+                    setChannelSalesSuccess(null);
+                    setSelectedChannel("");
+                  }}
+                  className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-sm text-gray-600 mb-4">
+                商品: <span className="font-medium">{products.find(p => p.id === selectedProductForChannelSales)?.productName}</span>
+              </p>
+
+              <div className="space-y-4">
+                {/* チャネル選択 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">チャネル</label>
+                  <select
+                    value={selectedChannel}
+                    onChange={(e) => setSelectedChannel(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm"
+                  >
+                    <option value="">チャネルを選択...</option>
+                    <optgroup label="オンライン">
+                      {SALES_CHANNELS.online.map(ch => (
+                        <option key={ch.key} value={ch.key}>{ch.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="店舗">
+                      {SALES_CHANNELS.store.map(ch => (
+                        <option key={ch.key} value={ch.key}>{ch.label}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+
+                {/* アップロード */}
+                <div>
+                  <input
+                    type="file"
+                    ref={channelSalesFileRef}
+                    accept=".csv"
+                    onChange={handleChannelSalesCsvImport}
+                    className="hidden"
+                    id="channel-sales-csv-upload"
+                    disabled={channelSalesUploading || !selectedChannel}
+                  />
+                  <label
+                    htmlFor="channel-sales-csv-upload"
+                    className={`flex items-center justify-center gap-2 w-full px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors cursor-pointer ${(channelSalesUploading || !selectedChannel) ? "opacity-50 cursor-not-allowed" : ""}`}
+                  >
+                    {channelSalesUploading ? (
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Upload className="w-5 h-5" />
+                    )}
+                    {channelSalesUploading ? "アップロード中..." : "CSVアップロード"}
+                  </label>
+                </div>
+
+                {channelSalesError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{channelSalesError}</div>
+                )}
+                {channelSalesSuccess && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{channelSalesSuccess}</div>
+                )}
+
+                <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
+                  <p className="font-medium mb-1">CSVフォーマット:</p>
+                  <p className="text-xs font-mono">日付, 売上, 数量</p>
+                  <p className="text-xs mt-1 text-gray-400">日付: YYYY/MM/DD, M/D 等対応。ヘッダー行に「日付」「売上」を含めてください。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 新規登録フォーム（admin only） */}
+      {isAdmin && isAdding && (
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <h2 className="text-lg font-semibold mb-4">新規商品登録</h2>
           <div className="space-y-4">
@@ -2095,24 +2396,14 @@ export default function ProductsPage() {
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
                   商品名
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  SKU名
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  ブランド名
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  <span className="text-orange-600">Amazon</span>
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  <span className="text-red-600">楽天</span>
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
-                  <span className="text-blue-600">Qoo10</span>
-                </th>
-                <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
-                  操作
-                </th>
+                {isAdmin && <>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">SKU名</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">ブランド名</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-orange-600">Amazon</span></th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-red-600">楽天</span></th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-blue-600">Qoo10</span></th>
+                  <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">操作</th>
+                </>}
                 <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
                   売上入稿
                 </th>
@@ -2128,7 +2419,7 @@ export default function ProductsPage() {
               ) : (
                 products.map((product) => (
                   <tr key={product.id} className="hover:bg-gray-50">
-                    {editingId === product.id ? (
+                    {isAdmin && editingId === product.id ? (
                       <>
                         <td className="px-4 py-3">
                           <input
@@ -2234,81 +2525,40 @@ export default function ProductsPage() {
                         <td className="px-4 py-3 font-medium text-gray-900">
                           {product.productName}
                         </td>
-                        <td className="px-4 py-3 text-gray-600 text-sm">
-                          {product.skuName || "-"}
-                        </td>
-                        <td className="px-4 py-3 text-gray-600 text-sm">
-                          {product.brandName || "-"}
-                        </td>
-                        <td className="px-4 py-3">
-                          {product.amazonCode ? (
-                            <div>
-                              <span className="text-sm font-mono text-orange-600">
-                                {product.amazonCode}
-                              </span>
-                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
-                                {getProductNameByCode(
-                                  product.amazonCode,
-                                  amazonProducts
-                                )}
-                              </p>
+                        {isAdmin && <>
+                          <td className="px-4 py-3 text-gray-600 text-sm">{product.skuName || "-"}</td>
+                          <td className="px-4 py-3 text-gray-600 text-sm">{product.brandName || "-"}</td>
+                          <td className="px-4 py-3">
+                            {product.amazonCode ? (
+                              <div>
+                                <span className="text-sm font-mono text-orange-600">{product.amazonCode}</span>
+                                <p className="text-xs text-gray-500 truncate max-w-[200px]">{getProductNameByCode(product.amazonCode, amazonProducts)}</p>
+                              </div>
+                            ) : <span className="text-gray-400">-</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            {product.rakutenCode ? (
+                              <div>
+                                <span className="text-sm font-mono text-red-600">{product.rakutenCode}</span>
+                                <p className="text-xs text-gray-500 truncate max-w-[200px]">{getProductNameByCode(product.rakutenCode, rakutenProducts)}</p>
+                              </div>
+                            ) : <span className="text-gray-400">-</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            {product.qoo10Code ? (
+                              <div>
+                                <span className="text-sm font-mono text-blue-600">{product.qoo10Code}</span>
+                                <p className="text-xs text-gray-500 truncate max-w-[200px]">{getProductNameByCode(product.qoo10Code, qoo10Products)}</p>
+                              </div>
+                            ) : <span className="text-gray-400">-</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-center gap-2">
+                              <button onClick={() => handleStartEdit(product)} className="p-1 text-blue-600 hover:bg-blue-100 rounded" title="編集"><Edit2 className="w-5 h-5" /></button>
+                              <button onClick={() => handleDeleteProduct(product.id)} className="p-1 text-red-600 hover:bg-red-100 rounded" title="削除"><Trash2 className="w-5 h-5" /></button>
                             </div>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {product.rakutenCode ? (
-                            <div>
-                              <span className="text-sm font-mono text-red-600">
-                                {product.rakutenCode}
-                              </span>
-                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
-                                {getProductNameByCode(
-                                  product.rakutenCode,
-                                  rakutenProducts
-                                )}
-                              </p>
-                            </div>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {product.qoo10Code ? (
-                            <div>
-                              <span className="text-sm font-mono text-blue-600">
-                                {product.qoo10Code}
-                              </span>
-                              <p className="text-xs text-gray-500 truncate max-w-[200px]">
-                                {getProductNameByCode(
-                                  product.qoo10Code,
-                                  qoo10Products
-                                )}
-                              </p>
-                            </div>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-center gap-2">
-                            <button
-                              onClick={() => handleStartEdit(product)}
-                              className="p-1 text-blue-600 hover:bg-blue-100 rounded"
-                              title="編集"
-                            >
-                              <Edit2 className="w-5 h-5" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteProduct(product.id)}
-                              className="p-1 text-red-600 hover:bg-red-100 rounded"
-                              title="削除"
-                            >
-                              <Trash2 className="w-5 h-5" />
-                            </button>
-                          </div>
-                        </td>
+                          </td>
+                        </>}
                         <td className="px-4 py-3 text-center">
                           <div className="flex justify-center gap-1">
                             <button
@@ -2331,6 +2581,17 @@ export default function ProductsPage() {
                               title="Qoo10売上入稿"
                             >
                               <FileSpreadsheet className="w-5 h-5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setSelectedProductForChannelSales(product.id);
+                                setChannelSalesError(null);
+                                setChannelSalesSuccess(null);
+                              }}
+                              className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                              title="その他チャネル売上入稿"
+                            >
+                              <Plus className="w-4 h-4" />
                             </button>
                           </div>
                         </td>
@@ -2372,14 +2633,6 @@ export default function ProductsPage() {
 
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-4">
-                  <button
-                    onClick={handleDownloadAmazonSalesTemplate}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    テンプレートDL
-                  </button>
-
                   <div>
                     <input
                       type="file"
@@ -2417,13 +2670,9 @@ export default function ProductsPage() {
                 )}
 
                 <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
-                  <p className="text-xs break-words">
-                    日付, 注文商品の売上額, 注文商品の売上額 - B2B, 注文された商品点数, 注文点数 - B2B,
-                    注文品目総数, 注文品目総数 - B2B, ページビュー - 合計, ページビュー - 合計 - B2B,
-                    セッション数 - 合計, セッション数 - 合計 - B2B, おすすめ出品の獲得率, おすすめ出品の獲得率 - B2B,
-                    ユニットセッション率, ユニットセッション率 - B2B, 平均出品数, 親商品の平均数
-                  </p>
+                  <p className="font-medium mb-1">対応フォーマット:</p>
+                  <p className="text-xs text-gray-500">A列に日付、ヘッダー行に「注文商品の売上額」を含むCSV</p>
+                  <p className="text-xs text-gray-500">Amazon セラーセントラルのビジネスレポートCSVをそのままアップロードできます</p>
                 </div>
               </div>
             </div>
@@ -2459,14 +2708,6 @@ export default function ProductsPage() {
 
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-4">
-                  <button
-                    onClick={handleDownloadRakutenSalesTemplate}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    テンプレートDL
-                  </button>
-
                   <div>
                     <input
                       type="file"
@@ -2504,13 +2745,9 @@ export default function ProductsPage() {
                 )}
 
                 <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
-                  <p className="text-xs break-words">
-                    日付, 商品管理番号, 商品番号, 売上, 売上件数, 売上個数, アクセス人数, ユニークユーザー数,
-                    転換率, 客単価, 総購入件数, 新規購入件数, リピート購入件数, 未購入アクセス人数,
-                    レビュー投稿数, レビュー総合評価（点）, 総レビュー数, 滞在時間（秒）, 直帰数, 離脱数,
-                    離脱率, お気に入り登録ユーザ数, お気に入り総ユーザ数, 在庫数
-                  </p>
+                  <p className="font-medium mb-1">対応フォーマット:</p>
+                  <p className="text-xs text-gray-500">ヘッダー行に「日付」を含むCSV（楽天RMSのアクセス流入分析CSVそのまま対応）</p>
+                  <p className="text-xs text-gray-500">日付は M/D, YYYY/MM/DD, YYYY/M/D いずれも対応</p>
                 </div>
               </div>
             </div>
@@ -2546,14 +2783,6 @@ export default function ProductsPage() {
 
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-4">
-                  <button
-                    onClick={handleDownloadQoo10SalesTemplate}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    テンプレートDL
-                  </button>
-
                   <div>
                     <input
                       type="file"
@@ -2591,10 +2820,9 @@ export default function ProductsPage() {
                 )}
 
                 <div className="bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
-                  <p className="font-medium mb-2">CSVヘッダー形式:</p>
-                  <p className="text-xs break-words">
-                    日付, 売上, 売上個数
-                  </p>
+                  <p className="font-medium mb-1">対応フォーマット:</p>
+                  <p className="text-xs text-gray-500">A列に開始日（日付）、ヘッダーに「受注金額」を含むCSV</p>
+                  <p className="text-xs text-gray-500">Qoo10の売上データCSVをそのままアップロードできます</p>
                 </div>
               </div>
             </div>

@@ -11,7 +11,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X } from "lucide-react";
+import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X, Eye, Package } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, query, orderBy, onSnapshot, Timestamp, getDocs, where } from "firebase/firestore";
 import { formatCurrency } from "@/lib/mockData";
@@ -43,23 +43,37 @@ interface SalesData {
   createdAt?: Timestamp;
 }
 
-// モールのテーマカラー
-const MALL_COLORS: Record<string, string> = {
-  amazon: "#FF9900",
-  rakuten: "#BF0000",
-  qoo10: "#3266CC",
-  ownSite: "#10B981",
-  ainsTolpe: "#8B5CF6",
-};
+// チャネル定義（表示名・色・カテゴリ）
+type ChannelCategory = "online" | "store";
+interface ChannelDef {
+  key: string;
+  label: string;
+  color: string;
+  category: ChannelCategory;
+}
 
-// チャネル名の日本語表示
-const CHANNEL_LABELS: Record<string, string> = {
-  amazon: "Amazon",
-  rakuten: "楽天",
-  qoo10: "Qoo10",
-  ownSite: "自社サイト",
-  ainsTolpe: "アインズ&トルペ",
-};
+const ALL_CHANNELS: ChannelDef[] = [
+  // オンライン
+  { key: "Amazon", label: "Amazon", color: "#FF9900", category: "online" },
+  { key: "楽天", label: "楽天", color: "#BF0000", category: "online" },
+  { key: "Qoo10", label: "Qoo10", color: "#3266CC", category: "online" },
+  { key: "Yahoo", label: "Yahoo", color: "#FF0033", category: "online" },
+  { key: "自社サイト", label: "自社サイト", color: "#10B981", category: "online" },
+  // 店舗
+  { key: "アインズ&トルペ", label: "アインズ&トルペ", color: "#8B5CF6", category: "store" },
+  { key: "LOFT", label: "LOFT", color: "#D97706", category: "store" },
+  { key: "ドンキ", label: "ドンキ", color: "#2563EB", category: "store" },
+  { key: "PLAZA", label: "PLAZA", color: "#EC4899", category: "store" },
+  { key: "東急ハンズ", label: "東急ハンズ", color: "#059669", category: "store" },
+  { key: "マツキヨ", label: "マツキヨ", color: "#7C3AED", category: "store" },
+  { key: "ツルハドラッグ", label: "ツルハドラッグ", color: "#0891B2", category: "store" },
+];
+
+const CHANNEL_MAP = Object.fromEntries(ALL_CHANNELS.map(c => [c.key, c]));
+const CHANNEL_COLOR = (key: string) => CHANNEL_MAP[key]?.color || "#6B7280";
+
+// 旧互換
+const MALL_COLORS: Record<string, string> = Object.fromEntries(ALL_CHANNELS.map(c => [c.key, c.color]));
 
 // 広告費の色
 const AD_TOTAL_COLOR = "#10B981"; // エメラルドグリーン（モール内広告費合計）
@@ -70,23 +84,13 @@ const EXTERNAL_AD_COLORS = {
   tiktok: "#FF0050",  // TikTok（ピンク）
 };
 
-const BACKEND_URL = "https://mall-batch-manager-backend-983678294034.asia-northeast1.run.app";
 
-// 商品別売上データの型（媒体別）
+
+// 商品別売上データの型（動的チャネル対応）
 interface ProductSalesData {
   date: string;
-  amazonSales: number;
-  amazonQuantity: number;
-  qoo10Sales: number;
-  qoo10Quantity: number;
-  rakutenSales: number;
-  rakutenQuantity: number;
-  ownSiteSales: number;
-  ownSiteQuantity: number;
-  ainsTolpeSales: number;
-  ainsTolpeQuantity: number;
   totalViews: number;
-  [key: string]: number | string;
+  [key: string]: number | string; // ${channelKey}_sales, ${channelKey}_qty
 }
 
 // イベントフラグの型
@@ -101,55 +105,23 @@ interface EventFlag {
   mall?: string;
 }
 
-// デモ用のフラグデータ
-const demoFlags: EventFlag[] = [
-  { id: "demo-1", name: "セール開始", date: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0], description: "ブラックフライデーセール開始" },
-  { id: "demo-2", name: "広告開始", date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString().split("T")[0], description: "TikTok広告キャンペーン開始" },
-];
-
-// デモ用のダミーデータ
-const generateDemoData = (): SalesData[] => {
-  const data: SalesData[] = [];
-  const today = new Date();
-  for (let i = 30; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
-    const dateStr = date.toISOString().split("T")[0];
-    data.push({
-      id: `demo-${i}`,
-      date: dateStr,
-      amazon: Math.floor(Math.random() * 50000) + 10000,
-      rakuten: Math.floor(Math.random() * 40000) + 8000,
-      qoo10: Math.floor(Math.random() * 30000) + 5000,
-      amazonAd: Math.floor(Math.random() * 5000) + 1000,
-      rakutenAd: Math.floor(Math.random() * 4000) + 800,
-      qoo10Ad: Math.floor(Math.random() * 3000) + 500,
-      xAd: Math.floor(Math.random() * 2000) + 300,
-      tiktokAd: Math.floor(Math.random() * 2500) + 400,
-    });
-  }
-  return data;
-};
-
-// デモ用の商品データ
-const demoProducts: RegisteredProduct[] = [
-  { id: "demo-1", productName: "デモ商品A", skuName: "1本", amazonCode: "DEMO-A", rakutenCode: "DEMO-A", qoo10Code: "" },
-  { id: "demo-2", productName: "デモ商品A", skuName: "3本セット", amazonCode: "DEMO-A2", rakutenCode: "DEMO-A2", qoo10Code: "" },
-  { id: "demo-3", productName: "デモ商品B", amazonCode: "DEMO-B", rakutenCode: "DEMO-B", qoo10Code: "" },
-];
+// デモ用データ（空）
+const demoFlags: EventFlag[] = [];
+const demoProducts: RegisteredProduct[] = [];
+const generateDemoData = (): SalesData[] => [];
 
 export default function DashboardPage() {
   const { isRealDataUser, isAuthLoading, allowedProductIds } = useAuth();
   const [salesData, setSalesData] = useState<SalesData[]>([]);
   const [registeredProducts, setRegisteredProducts] = useState<RegisteredProduct[]>([]);
   const [productSalesData, setProductSalesData] = useState<ProductSalesData[]>([]);
+  const [prevProductSalesData, setPrevProductSalesData] = useState<ProductSalesData[]>([]);
   const [eventFlags, setEventFlags] = useState<EventFlag[]>([]);
   const [showFlags, setShowFlags] = useState(true);
   const [selectedFlag, setSelectedFlag] = useState<EventFlag | null>(null);
   const [loading, setLoading] = useState(true);
   const [productLoading, setProductLoading] = useState(false);
-  const [syncLoading, setSyncLoading] = useState(false);
-  const [amazonSyncLoading, setAmazonSyncLoading] = useState(false);
+  const fetchGenRef = useRef(0); // フェッチ世代カウンター
   const [error, setError] = useState<string | null>(null);
 
   const today = new Date();
@@ -158,14 +130,13 @@ export default function DashboardPage() {
 
   const [startDate, setStartDate] = useState(thirtyDaysAgo.toISOString().split("T")[0]);
   const [endDate, setEndDate] = useState(today.toISOString().split("T")[0]);
-  const [selectedMalls, setSelectedMalls] = useState({
-    amazon: true,
-    rakuten: true,
-    qoo10: true,
-    ownSite: true,
-    ainsTolpe: true,
-  });
+  const DEFAULT_ON_CHANNELS = new Set(["Amazon", "楽天", "Qoo10"]);
+  const [selectedChannels, setSelectedChannels] = useState<Record<string, boolean>>(
+    Object.fromEntries(ALL_CHANNELS.map(c => [c.key, DEFAULT_ON_CHANNELS.has(c.key)]))
+  );
   const [showViews, setShowViews] = useState(true);
+  // 旧互換エイリアス
+  const selectedMalls = { amazon: selectedChannels["Amazon"], rakuten: selectedChannels["楽天"], qoo10: selectedChannels["Qoo10"] };
   const [showAdCost, setShowAdCost] = useState({
     amazon: false,
     rakuten: false,
@@ -311,350 +282,136 @@ export default function DashboardPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 選択中の商品の売上データをAPIから取得してFirestoreに同期
-  const syncProductSalesData = async () => {
-    if (!isRealDataUser || !selectedProduct) return;
-
-    const product = registeredProducts.find(p => p.id === selectedProduct);
-    if (!product) return;
-
-    setSyncLoading(true);
-    try {
-      let totalSynced = 0;
-      const results: string[] = [];
-
-      // Qoo10のデータを取得してFirestoreに保存
-      if (product.qoo10Code) {
-        const qoo10Response = await fetch(
-          `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
-        );
-        const qoo10Data = await qoo10Response.json();
-        if (qoo10Data.success && qoo10Data.dailySales) {
-          // Firestoreに保存するAPIを呼び出す
-          const syncResponse = await fetch(`${BACKEND_URL}/sync/save-product-sales`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              productCode: product.qoo10Code,
-              productName: product.productName,
-              mall: 'qoo10',
-              dailySales: qoo10Data.dailySales,
-            }),
-          });
-          const syncResult = await syncResponse.json();
-          if (syncResult.success) {
-            totalSynced += syncResult.synced || 0;
-            results.push(`Qoo10: ${syncResult.synced}件`);
-          }
-        }
-      }
-
-      // 楽天のデータを取得してFirestoreに保存
-      if (product.rakutenCode) {
-        const rakutenResponse = await fetch(
-          `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
-        );
-        const rakutenData = await rakutenResponse.json();
-        if (rakutenData.success && rakutenData.dailySales) {
-          // Firestoreに保存するAPIを呼び出す
-          const syncResponse = await fetch(`${BACKEND_URL}/sync/save-product-sales`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              productCode: product.rakutenCode,
-              productName: product.productName,
-              mall: 'rakuten',
-              dailySales: rakutenData.dailySales,
-            }),
-          });
-          const syncResult = await syncResponse.json();
-          if (syncResult.success) {
-            totalSynced += syncResult.synced || 0;
-            results.push(`楽天: ${syncResult.synced}件`);
-          }
-        }
-      }
-
-      if (totalSynced > 0) {
-        alert(`売上データを同期しました\n${results.join('\n')}`);
-        // データを再取得
-        fetchProductSales(product);
-      } else {
-        alert("同期するデータがありませんでした");
-      }
-    } catch (err) {
-      console.error("売上データ同期エラー:", err);
-      alert("売上データの同期に失敗しました");
-    } finally {
-      setSyncLoading(false);
-    }
-  };
-
-  // Amazon売上データを同期
-  const syncAmazonSales = async () => {
-    if (!isRealDataUser) return;
-
-    setAmazonSyncLoading(true);
-    try {
-      const response = await fetch(`${BACKEND_URL}/amazon/sync-sales`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startDate, endDate }),
-      });
-      const result = await response.json();
-
-      if (result.success) {
-        alert(`Amazon売上を同期しました！\n${result.syncedDays}日分、合計 ¥${result.totalSales.toLocaleString()}`);
-      } else {
-        alert(`同期エラー: ${result.message || result.error}`);
-      }
-    } catch (err) {
-      console.error("Amazon売上同期エラー:", err);
-      alert("Amazon売上の同期に失敗しました");
-    } finally {
-      setAmazonSyncLoading(false);
-    }
-  };
-
   // 単一商品または複数商品の売上データを取得（実データユーザーのみ）
   const fetchProductSales = async (product: RegisteredProduct) => {
     await fetchMultipleProductSales([product]);
   };
 
-  // 複数商品の売上データを取得して合算
+  // 複数商品の売上データを取得して合算（Firestoreのみ）
   const fetchMultipleProductSales = async (products: RegisteredProduct[]) => {
     if (!isRealDataUser) {
       setProductSalesData([]);
       return;
     }
 
-    // 有効な商品をフィルタリング（登録されていればOK - amazonCodeが空でもCSV入稿データがある可能性）
     const validProducts = products.filter(p => p.id);
     if (validProducts.length === 0) {
       setProductSalesData([]);
       return;
     }
 
+    const thisGen = ++fetchGenRef.current;
     setProductLoading(true);
+
+    // 前期間を計算（同じ日数分、startDateの直前）
+    const daysDiff = Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / (86400000)) + 1;
+    const prevEnd = new Date(startDate);
+    prevEnd.setDate(prevEnd.getDate() - 1);
+    const prevStart = new Date(prevEnd);
+    prevStart.setDate(prevStart.getDate() - daysDiff + 1);
+    const prevStartStr = prevStart.toISOString().split("T")[0];
+    const prevEndStr = prevEnd.toISOString().split("T")[0];
+
+    type RawRow = { date: string; channel: string; sales: number; qty: number; views?: number };
+    const rawRows: RawRow[] = [];
+
+    const safeQuery = async (colName: string, productId: string) => {
+      try {
+        return await getDocs(query(collection(db, colName), where("productId", "==", productId)));
+      } catch {
+        return null;
+      }
+    };
+
     try {
-      const allSalesData: { [date: string]: { amazonSales: number; amazonQuantity: number; qoo10Sales: number; qoo10Quantity: number; rakutenSales: number; rakutenQuantity: number; ownSiteSales: number; ownSiteQuantity: number; ainsTolpeSales: number; ainsTolpeQuantity: number; totalViews: number } } = {};
+      const allPromises: Promise<void>[] = [];
 
-      console.log("fetchMultipleProductSales対象商品:", validProducts.map(p => ({ id: p.id, name: p.productName, amazon: p.amazonCode, qoo10: p.qoo10Code, rakuten: p.rakutenCode })));
-
-      // すべての商品の売上を取得して合算
       for (const product of validProducts) {
-        // Amazonのデータを取得
-        // productIdベースで取得（amazonCodeが空でもCSV入稿データを表示可能に）
-        try {
-          console.log(`[Amazon売上取得] productId: ${product.id}, 日付範囲: ${startDate} 〜 ${endDate}`);
-          let amazonDataFound = false;
-
-          // 1. まずamazon_daily_salesコレクションからproductIdで取得（CSV入稿データ）
-          const amazonDailySalesQuery = query(
-            collection(db, "amazon_daily_sales"),
-            where("productId", "==", product.id)
-          );
-          const amazonDailySalesSnapshot = await getDocs(amazonDailySalesQuery);
-          console.log(`[Amazon売上取得] amazon_daily_salesクエリ結果: ${amazonDailySalesSnapshot.size}件`);
-
-          if (!amazonDailySalesSnapshot.empty) {
-            amazonDailySalesSnapshot.docs.forEach((doc) => {
-              const data = doc.data();
-              // 日付範囲内をフィルタ
-              if (data.date >= startDate && data.date <= endDate) {
-                amazonDataFound = true;
-                if (!allSalesData[data.date]) {
-                  allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                }
-                allSalesData[data.date].amazonSales += data.salesAmount || 0;
-                allSalesData[data.date].amazonQuantity += data.orderedUnits || 0;
+        allPromises.push(
+          safeQuery("amazon_daily_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= prevStartStr && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: "Amazon", sales: d.salesAmount || 0, qty: d.orderedUnits || 0 });
               }
             });
-            console.log(`[Amazon売上取得] amazon_daily_salesからデータ取得完了`);
-          }
-
-          // 2. amazon_daily_salesになければproduct_salesコレクションも確認
-          if (!amazonDataFound) {
-            const productSalesQuery = query(
-              collection(db, "product_sales"),
-              where("productId", "==", product.id)
-            );
-            const productSalesSnapshot = await getDocs(productSalesQuery);
-            console.log(`[Amazon売上取得] product_salesクエリ結果: ${productSalesSnapshot.size}件`);
-
-            if (!productSalesSnapshot.empty) {
-              productSalesSnapshot.docs.forEach((doc) => {
-                const data = doc.data();
-                // mall === "amazon" かつ 日付範囲内をフィルタ
-                if (data.mall === "amazon" && data.date >= startDate && data.date <= endDate) {
-                  if (!allSalesData[data.date]) {
-                    allSalesData[data.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                  }
-                  allSalesData[data.date].amazonSales += data.sales || 0;
-                  allSalesData[data.date].amazonQuantity += data.quantity || 0;
-                }
-              });
-            }
-          }
-        } catch (err) {
-          console.error("Amazon売上取得エラー:", err);
-        }
-
-        // Qoo10のデータを取得
-        if (product.qoo10Code) {
-          try {
-            const cacheResponse = await fetch(
-              `${BACKEND_URL}/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
-            );
-            const cacheData = await cacheResponse.json();
-            if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
-              for (const item of cacheData.dailySales) {
-                if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                }
-                allSalesData[item.date].qoo10Sales += item.qoo10Sales || 0;
-                allSalesData[item.date].qoo10Quantity += item.qoo10Quantity || 0;
+          })
+        );
+        allPromises.push(
+          safeQuery("rakuten_daily_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= prevStartStr && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: "楽天", sales: d.salesAmount || 0, qty: d.salesCount || d.orderedUnits || 0 });
               }
-            } else {
-              // キャッシュがなければAPIから直接取得
-              const qoo10Response = await fetch(
-                `${BACKEND_URL}/qoo10/product-sales/${encodeURIComponent(product.qoo10Code)}?startDate=${startDate}&endDate=${endDate}`
-              );
-              const qoo10Data = await qoo10Response.json();
-              if (qoo10Data.success && qoo10Data.dailySales) {
-                for (const item of qoo10Data.dailySales) {
-                  if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                  }
-                  allSalesData[item.date].qoo10Sales += item.sales;
-                  allSalesData[item.date].qoo10Quantity += item.quantity;
-                }
+            });
+          })
+        );
+        allPromises.push(
+          safeQuery("product_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= prevStartStr && d.date <= endDate) {
+                const ch = d.mall === "amazon" ? "Amazon" : d.mall === "qoo10" ? "Qoo10" : d.mall === "rakuten" ? "楽天" : null;
+                if (ch) rawRows.push({ date: d.date, channel: ch, sales: d.sales || 0, qty: d.quantity || 0 });
               }
-            }
-          } catch (err) {
-            console.error("Qoo10売上取得エラー:", err);
-          }
-        }
-
-        // 楽天のデータを取得
-        if (product.rakutenCode) {
-          try {
-            const cacheResponse = await fetch(
-              `${BACKEND_URL}/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
-            );
-            const cacheData = await cacheResponse.json();
-            if (cacheData.success && cacheData.dailySales && cacheData.dailySales.length > 0) {
-              for (const item of cacheData.dailySales) {
-                if (!allSalesData[item.date]) {
-                  allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                }
-                allSalesData[item.date].rakutenSales += item.rakutenSales || 0;
-                allSalesData[item.date].rakutenQuantity += item.rakutenQuantity || 0;
+            });
+          })
+        );
+        allPromises.push(
+          safeQuery("unified_daily_sales", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= prevStartStr && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: d.channel, sales: d.salesAmount || 0, qty: d.quantity || 0 });
               }
-            } else {
-              // キャッシュがなければAPIから直接取得
-              const rakutenResponse = await fetch(
-                `${BACKEND_URL}/rakuten/product-sales/${encodeURIComponent(product.rakutenCode)}?startDate=${startDate}&endDate=${endDate}`
-              );
-              const rakutenData = await rakutenResponse.json();
-              if (rakutenData.success && rakutenData.dailySales) {
-                for (const item of rakutenData.dailySales) {
-                  if (!allSalesData[item.date]) {
-                    allSalesData[item.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-                  }
-                  allSalesData[item.date].rakutenSales += item.sales;
-                  allSalesData[item.date].rakutenQuantity += item.quantity;
-                }
+            });
+          })
+        );
+        allPromises.push(
+          safeQuery("daily_views", product.id).then(snap => {
+            snap?.docs.forEach(doc => {
+              const d = doc.data();
+              if (d.date >= prevStartStr && d.date <= endDate) {
+                rawRows.push({ date: d.date, channel: "__views__", sales: 0, qty: 0, views: d.views || 0 });
               }
-            }
-          } catch (err) {
-            console.error("楽天売上取得エラー:", err);
-          }
-        }
+            });
+          })
+        );
       }
 
-      // unified_daily_salesからデータを取得（統合CSV入稿分）
-      for (const product of validProducts) {
-        try {
-          const unifiedQuery = query(
-            collection(db, "unified_daily_sales"),
-            where("productId", "==", product.id),
-          );
-          const unifiedSnap = await getDocs(unifiedQuery);
-          unifiedSnap.forEach((doc) => {
-            const d = doc.data();
-            if (d.date < startDate || d.date > endDate) return;
-            if (!allSalesData[d.date]) {
-              allSalesData[d.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-            }
-            const channel = d.channel as string;
-            if (channel === "Amazon") {
-              allSalesData[d.date].amazonSales += d.salesAmount || 0;
-              allSalesData[d.date].amazonQuantity += d.quantity || 0;
-            } else if (channel === "楽天") {
-              allSalesData[d.date].rakutenSales += d.salesAmount || 0;
-              allSalesData[d.date].rakutenQuantity += d.quantity || 0;
-            } else if (channel === "Qoo10") {
-              allSalesData[d.date].qoo10Sales += d.salesAmount || 0;
-              allSalesData[d.date].qoo10Quantity += d.quantity || 0;
-            } else if (channel === "自社サイト") {
-              allSalesData[d.date].ownSiteSales += d.salesAmount || 0;
-              allSalesData[d.date].ownSiteQuantity += d.quantity || 0;
-            } else if (channel === "アインズ&トルペ") {
-              allSalesData[d.date].ainsTolpeSales += d.salesAmount || 0;
-              allSalesData[d.date].ainsTolpeQuantity += d.quantity || 0;
-            }
-          });
-        } catch (err) {
-          console.error("統合売上取得エラー:", err);
+      await Promise.allSettled(allPromises);
+
+      // 現在期間と前期間に分けて集計
+      const aggregate = (fromDate: string, toDate: string) => {
+        const data: { [date: string]: Record<string, number> } = {};
+        const c = new Date(fromDate);
+        const e = new Date(toDate);
+        while (c <= e) { data[c.toISOString().split("T")[0]] = { totalViews: 0 }; c.setDate(c.getDate() + 1); }
+        for (const row of rawRows) {
+          if (row.date < fromDate || row.date > toDate) continue;
+          if (!data[row.date]) data[row.date] = { totalViews: 0 };
+          if (row.channel === "__views__") {
+            data[row.date].totalViews = (data[row.date].totalViews || 0) + (row.views || 0);
+          } else {
+            data[row.date][`${row.channel}_sales`] = (data[row.date][`${row.channel}_sales`] || 0) + row.sales;
+            data[row.date][`${row.channel}_qty`] = (data[row.date][`${row.channel}_qty`] || 0) + row.qty;
+          }
         }
-      }
+        return Object.entries(data).map(([date, d]) => ({ date, ...d } as ProductSalesData)).sort((a, b) => a.date.localeCompare(b.date));
+      };
 
-      // daily_viewsから再生数を取得
-      for (const product of validProducts) {
-        try {
-          const viewsQuery = query(
-            collection(db, "daily_views"),
-            where("productId", "==", product.id),
-          );
-          const viewsSnap = await getDocs(viewsQuery);
-          viewsSnap.forEach((doc) => {
-            const d = doc.data();
-            if (d.date < startDate || d.date > endDate) return;
-            if (!allSalesData[d.date]) {
-              allSalesData[d.date] = { amazonSales: 0, amazonQuantity: 0, qoo10Sales: 0, qoo10Quantity: 0, rakutenSales: 0, rakutenQuantity: 0, ownSiteSales: 0, ownSiteQuantity: 0, ainsTolpeSales: 0, ainsTolpeQuantity: 0, totalViews: 0 };
-            }
-            allSalesData[d.date].totalViews += d.views || 0;
-          });
-        } catch (err) {
-          console.error("再生数取得エラー:", err);
-        }
-      }
+      const salesArray = aggregate(startDate, endDate);
+      const prevSalesArray = aggregate(prevStartStr, prevEndStr);
 
-      // 配列に変換してソート
-      const salesArray = Object.entries(allSalesData)
-        .map(([date, data]) => ({
-          date,
-          amazonSales: data.amazonSales,
-          amazonQuantity: data.amazonQuantity,
-          qoo10Sales: data.qoo10Sales,
-          qoo10Quantity: data.qoo10Quantity,
-          rakutenSales: data.rakutenSales,
-          rakutenQuantity: data.rakutenQuantity,
-          ownSiteSales: data.ownSiteSales,
-          ownSiteQuantity: data.ownSiteQuantity,
-          ainsTolpeSales: data.ainsTolpeSales,
-          ainsTolpeQuantity: data.ainsTolpeQuantity,
-          totalViews: data.totalViews,
-        }))
-        .sort((a, b) => a.date.localeCompare(b.date));
-
+      if (thisGen !== fetchGenRef.current) return;
       setProductSalesData(salesArray);
+      setPrevProductSalesData(prevSalesArray);
     } catch (err) {
       console.error("商品別売上取得エラー:", err);
-      setProductSalesData([]);
+      if (thisGen === fetchGenRef.current) setProductSalesData([]);
     } finally {
-      setProductLoading(false);
+      if (thisGen === fetchGenRef.current) setProductLoading(false);
     }
   };
 
@@ -773,13 +530,21 @@ export default function DashboardPage() {
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [salesData, startDate, endDate]);
 
+  // フラグを媒体選択でフィルタリング
+  const filteredFlags = useMemo(() => {
+    return eventFlags.filter((flag) => {
+      if (flag.mall && selectedChannels[flag.mall] === false) return false;
+      return true;
+    });
+  }, [eventFlags, selectedChannels]);
+
   // グラフ用データ（広告費合計を追加 + フラグ日付も含める）
   const chartData = useMemo(() => {
     // 既存データの日付セット
     const existingDates = new Set(filteredData.map(d => d.date));
 
     // フラグの日付で、既存データにない日付を追加
-    const flagDates = eventFlags
+    const flagDates = filteredFlags
       .filter(flag => flag.date >= startDate && flag.date <= endDate && !existingDates.has(flag.date))
       .map(flag => ({
         id: `flag-${flag.id}`,
@@ -811,31 +576,19 @@ export default function DashboardPage() {
         totalAd,
       };
     });
-  }, [filteredData, showAdCost, eventFlags, startDate, endDate, selectedMalls]);
+  }, [filteredData, showAdCost, filteredFlags, startDate, endDate, selectedMalls]);
 
-  // 合計売上を計算（商品選択時はproductSalesDataを使用、チェックボックスで媒体選択）
+  // 合計売上を計算（商品選択時のみ）
   const totalSales = useMemo(() => {
-    if (selectedProduct && productSalesData.length > 0) {
-      // 商品選択時：productSalesDataから合計（チェックボックスで媒体選択）
-      return productSalesData.reduce((sum, day) => {
-        let dayTotal = 0;
-        if (selectedMalls.amazon) dayTotal += day.amazonSales;
-        if (selectedMalls.rakuten) dayTotal += day.rakutenSales;
-        if (selectedMalls.qoo10) dayTotal += day.qoo10Sales;
-        if (selectedMalls.ownSite) dayTotal += day.ownSiteSales;
-        if (selectedMalls.ainsTolpe) dayTotal += day.ainsTolpeSales;
-        return sum + dayTotal;
-      }, 0);
-    }
-    // ダミー商品時：filteredDataから合計
-    return filteredData.reduce((sum, day) => {
+    if (!selectedProduct) return 0;
+    return productSalesData.reduce((sum, day) => {
       let dayTotal = 0;
-      if (selectedMalls.amazon) dayTotal += day.amazon;
-      if (selectedMalls.rakuten) dayTotal += day.rakuten;
-      if (selectedMalls.qoo10) dayTotal += day.qoo10;
+      ALL_CHANNELS.forEach(ch => {
+        if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_sales`] as number) || 0;
+      });
       return sum + dayTotal;
     }, 0);
-  }, [filteredData, selectedMalls, selectedProduct, productSalesData]);
+  }, [selectedChannels, selectedProduct, productSalesData]);
 
   // 合計広告費を計算（商品選択時は0）
   const totalAdCost = useMemo(() => {
@@ -866,15 +619,45 @@ export default function DashboardPage() {
     }, 0);
   }, [filteredData, showExternalAd, selectedProduct]);
 
+  // 合計再生数
+  const totalViews = useMemo(() => {
+    if (selectedProduct && productSalesData.length > 0) {
+      return productSalesData.reduce((sum, day) => sum + (day.totalViews || 0), 0);
+    }
+    return 0;
+  }, [selectedProduct, productSalesData]);
+
+  // 前期間の合計売上
+  const prevTotalSales = useMemo(() => {
+    if (!selectedProduct) return 0;
+    return prevProductSalesData.reduce((sum, day) => {
+      let dayTotal = 0;
+      ALL_CHANNELS.forEach(ch => {
+        if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_sales`] as number) || 0;
+      });
+      return sum + dayTotal;
+    }, 0);
+  }, [selectedChannels, selectedProduct, prevProductSalesData]);
+
+  // 前期間の合計再生数
+  const prevTotalViews = useMemo(() => {
+    if (selectedProduct && prevProductSalesData.length > 0) {
+      return prevProductSalesData.reduce((sum, day) => sum + (day.totalViews || 0), 0);
+    }
+    return 0;
+  }, [selectedProduct, prevProductSalesData]);
+
   // 広告費が1つでも選択されているか
   const isAnyAdSelected = showAdCost.amazon || showAdCost.rakuten || showAdCost.qoo10;
 
   // チェックボックスの変更ハンドラ
-  const handleMallChange = (mall: keyof typeof selectedMalls) => {
-    setSelectedMalls((prev) => ({
-      ...prev,
-      [mall]: !prev[mall],
-    }));
+  const handleChannelToggle = (channelKey: string) => {
+    setSelectedChannels((prev) => ({ ...prev, [channelKey]: !prev[channelKey] }));
+  };
+  // 旧互換
+  const handleMallChange = (mall: string) => {
+    const keyMap: Record<string, string> = { amazon: "Amazon", rakuten: "楽天", qoo10: "Qoo10" };
+    handleChannelToggle(keyMap[mall] || mall);
   };
 
   // 広告費チェックボックスの変更ハンドラ
@@ -1036,7 +819,7 @@ export default function DashboardPage() {
                 onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
                 className="flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-[180px] text-sm"
               >
-                <span className="truncate">{selectedProduct || "ダミー商品"}</span>
+                <span className={`truncate ${!selectedProduct ? "text-gray-400" : ""}`}>{selectedProduct || "商品を選択してください"}</span>
                 <ChevronDown className={`w-4 h-4 ml-2 transition-transform ${isProductDropdownOpen ? "rotate-180" : ""}`} />
               </button>
               {isProductDropdownOpen && (
@@ -1044,9 +827,9 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     onClick={() => handleProductSelect("")}
-                    className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${selectedProduct === "" ? "bg-blue-100 font-medium" : ""}`}
+                    className={`w-full text-left px-3 py-2 text-sm text-gray-400 hover:bg-blue-50 ${selectedProduct === "" ? "bg-blue-100" : ""}`}
                   >
-                    ダミー商品
+                    選択解除
                   </button>
                   {uniqueProductNames.map((productName) => {
                     const hasMultipleSku = registeredProducts.filter(p => p.productName === productName && p.skuName).length > 1;
@@ -1123,84 +906,28 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex flex-col md:flex-row gap-6 flex-wrap">
-            {/* 売上（媒体選択） */}
+            {/* オンライン売上 */}
             <div>
-              <label className="block text-sm font-medium text-gray-600 mb-2">
-                売上（棒グラフ）
-              </label>
-              <div className="flex gap-4 flex-wrap">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedMalls.amazon}
-                    onChange={() => handleMallChange("amazon")}
-                    className="w-4 h-4 rounded accent-amazon"
-                  />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.amazon }}
-                  >
-                    Amazon
-                  </span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedMalls.rakuten}
-                    onChange={() => handleMallChange("rakuten")}
-                    className="w-4 h-4 rounded accent-rakuten"
-                  />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.rakuten }}
-                  >
-                    楽天
-                  </span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedMalls.qoo10}
-                    onChange={() => handleMallChange("qoo10")}
-                    className="w-4 h-4 rounded accent-qoo10"
-                  />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.qoo10 }}
-                  >
-                    Qoo10
-                  </span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedMalls.ownSite}
-                    onChange={() => handleMallChange("ownSite")}
-                    className="w-4 h-4 rounded"
-                    style={{ accentColor: MALL_COLORS.ownSite }}
-                  />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.ownSite }}
-                  >
-                    自社サイト
-                  </span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedMalls.ainsTolpe}
-                    onChange={() => handleMallChange("ainsTolpe")}
-                    className="w-4 h-4 rounded"
-                    style={{ accentColor: MALL_COLORS.ainsTolpe }}
-                  />
-                  <span
-                    className="font-medium text-sm"
-                    style={{ color: MALL_COLORS.ainsTolpe }}
-                  >
-                    アインズ&トルペ
-                  </span>
-                </label>
+              <label className="block text-sm font-medium text-gray-600 mb-2">オンライン</label>
+              <div className="flex gap-3 flex-wrap">
+                {ALL_CHANNELS.filter(c => c.category === "online").map(ch => (
+                  <label key={ch.key} className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={selectedChannels[ch.key]} onChange={() => handleChannelToggle(ch.key)} className="w-4 h-4 rounded" style={{ accentColor: ch.color }} />
+                    <span className="font-medium text-sm" style={{ color: ch.color }}>{ch.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            {/* 店舗売上 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-2">店舗</label>
+              <div className="flex gap-3 flex-wrap">
+                {ALL_CHANNELS.filter(c => c.category === "store").map(ch => (
+                  <label key={ch.key} className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={selectedChannels[ch.key]} onChange={() => handleChannelToggle(ch.key)} className="w-4 h-4 rounded" style={{ accentColor: ch.color }} />
+                    <span className="font-medium text-sm" style={{ color: ch.color }}>{ch.label}</span>
+                  </label>
+                ))}
               </div>
             </div>
 
@@ -1318,51 +1045,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Amazon売上同期ボタン */}
-      {isRealDataUser && (
-        <div className="flex gap-2 items-center flex-wrap">
-          <button
-            onClick={syncAmazonSales}
-            disabled={amazonSyncLoading}
-            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-            style={{ backgroundColor: amazonSyncLoading ? '#999' : '#FF9900' }}
-          >
-            {amazonSyncLoading ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            Amazon売上を同期
-          </button>
-          <span className="text-xs text-gray-500">
-            {startDate} 〜 {endDate} の売上をAmazonから取得
-          </span>
-        </div>
-      )}
-
-      {/* 売上データ同期ボタン（商品選択時のみ表示） */}
-      {isRealDataUser && selectedProduct && (
-        <div className="flex gap-2 items-center">
-          <button
-            onClick={syncProductSalesData}
-            disabled={syncLoading}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-          >
-            {syncLoading ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            売上データを更新
-          </button>
-          <span className="text-xs text-gray-500">
-            ※ {startDate} 〜 {endDate} の売上をAPIから取得してDBに保存します
-          </span>
-        </div>
-      )}
-
       {/* KPIカード */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow-sm p-3 text-white">
           <div className="flex items-center gap-2">
             <div className="p-2 bg-white/20 rounded-lg">
@@ -1371,9 +1055,40 @@ export default function DashboardPage() {
             <div>
               <p className="text-blue-100 text-xs">合計売上</p>
               <p className="text-lg font-bold">{formatCurrency(totalSales)}</p>
+              {totalSales > 0 && prevTotalSales > 0 && (() => {
+                const diff = totalSales - prevTotalSales;
+                const pct = Math.round((diff / prevTotalSales) * 100);
+                return (
+                  <p className={`text-xs ${diff >= 0 ? "text-green-200" : "text-red-200"}`}>
+                    前期比 {diff >= 0 ? "+" : ""}{formatCurrency(diff)}（{diff >= 0 ? "+" : ""}{pct}%）
+                  </p>
+                );
+              })()}
             </div>
           </div>
         </div>
+        {totalViews > 0 && (
+          <div className="bg-gradient-to-r from-pink-400 to-pink-500 rounded-lg shadow-sm p-3 text-white">
+            <div className="flex items-center gap-2">
+              <div className="p-2 bg-white/20 rounded-lg">
+                <Eye size={18} />
+              </div>
+              <div>
+                <p className="text-pink-100 text-xs">合計再生数</p>
+                <p className="text-lg font-bold">{totalViews.toLocaleString()}</p>
+                {prevTotalViews > 0 && (() => {
+                  const diff = totalViews - prevTotalViews;
+                  const pct = Math.round((diff / prevTotalViews) * 100);
+                  return (
+                    <p className={`text-xs ${diff >= 0 ? "text-green-200" : "text-red-200"}`}>
+                      前期比 {diff >= 0 ? "+" : ""}{diff.toLocaleString()}（{diff >= 0 ? "+" : ""}{pct}%）
+                    </p>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-lg shadow-sm p-3 text-white">
           <div className="flex items-center gap-2">
             <div className="p-2 bg-white/20 rounded-lg">
@@ -1425,30 +1140,53 @@ export default function DashboardPage() {
           ) : (
             <div className="h-72 relative">
               {/* フラグマーカー（グラフの上に重ねて表示） */}
-              {showFlags && eventFlags
-                .filter(flag => flag.date >= startDate && flag.date <= endDate)
+              {showFlags && filteredFlags
+                .filter(flag => {
+                  const end = flag.endDate || flag.date;
+                  return flag.date <= endDate && end >= startDate;
+                })
                 .map((flag) => {
-                  const dataIndex = productSalesData.findIndex(d => d.date === flag.date);
-                  if (dataIndex === -1) return null;
+                  const startIdx = productSalesData.findIndex(d => d.date >= flag.date);
+                  if (startIdx === -1) return null;
+                  const endIdx = flag.endDate
+                    ? productSalesData.findLastIndex(d => d.date <= flag.endDate!)
+                    : startIdx;
+                  if (endIdx === -1) return null;
                   const graphLeftMargin = 55;
                   const graphRightMargin = 55;
-                  const position = ((dataIndex + 0.5) / productSalesData.length) * 100;
+                  const startPos = ((startIdx + 0.5) / productSalesData.length) * 100;
+                  const endPos = ((endIdx + 0.5) / productSalesData.length) * 100;
+                  const hasRange = flag.endDate && endIdx > startIdx;
+                  const mallColor = flag.mall ? ({"Amazon":"#FF9900","楽天":"#BF0000","Qoo10":"#3266CC"} as Record<string,string>)[flag.mall] || "#9333EA" : "#9333EA";
                   return (
-                    <div
-                      key={flag.id}
-                      className="absolute z-10 cursor-pointer"
-                      style={{
-                        top: '20px',
-                        left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${position / 100})`,
-                        transform: 'translateX(-50%)',
-                      }}
-                      onClick={() => setSelectedFlag(flag)}
-                    >
-                      <div className="flex flex-col items-center">
-                        <span className="text-purple-600 text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border border-purple-200">
-                          🚩 {flag.name}
-                        </span>
-                        <div className="w-0.5 h-44 opacity-80" style={{ background: 'repeating-linear-gradient(to bottom, #9333EA 0, #9333EA 4px, transparent 4px, transparent 8px)' }} />
+                    <div key={flag.id}>
+                      {hasRange && (
+                        <div
+                          className="absolute z-5 opacity-15 rounded"
+                          style={{
+                            top: '20px',
+                            height: '220px',
+                            backgroundColor: mallColor,
+                            left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                            width: `calc((100% - ${graphLeftMargin + graphRightMargin}px) * ${(endPos - startPos) / 100})`,
+                          }}
+                        />
+                      )}
+                      <div
+                        className="absolute z-10 cursor-pointer"
+                        style={{
+                          top: '20px',
+                          left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                          transform: 'translateX(-50%)',
+                        }}
+                        onClick={() => setSelectedFlag(flag)}
+                      >
+                        <div className="flex flex-col items-center">
+                          <span className="text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border" style={{ color: mallColor, borderColor: mallColor + '40' }}>
+                            {flag.name}
+                          </span>
+                          <div className="w-0.5 h-44 opacity-80" style={{ background: `repeating-linear-gradient(to bottom, ${mallColor} 0, ${mallColor} 4px, transparent 4px, transparent 8px)` }} />
+                        </div>
                       </div>
                     </div>
                   );
@@ -1482,58 +1220,36 @@ export default function DashboardPage() {
                     scale="linear"
                     padding={{ top: 20 }}
                   />
-                  {showViews && productSalesData.some(d => d.totalViews > 0) && (
-                    <YAxis
-                      yAxisId="views"
-                      orientation="right"
-                      tick={{ fill: "#F472B6", fontSize: 12 }}
-                      tickFormatter={(value) =>
-                        value >= 10000 ? `${(value / 10000).toFixed(0)}万` : value.toLocaleString()
-                      }
-                      domain={[0, 'dataMax']}
-                      type="number"
-                      scale="linear"
-                      padding={{ top: 20 }}
-                    />
-                  )}
+                  <YAxis
+                    yAxisId="views"
+                    orientation="right"
+                    tick={showViews && productSalesData.some(d => d.totalViews > 0) ? { fill: "#F472B6", fontSize: 12 } : false}
+                    tickFormatter={(value) =>
+                      value >= 10000 ? `${(value / 10000).toFixed(0)}万` : value.toLocaleString()
+                    }
+                    domain={[0, 'dataMax']}
+                    type="number"
+                    scale="linear"
+                    padding={{ top: 20 }}
+                    hide={!showViews || !productSalesData.some(d => d.totalViews > 0)}
+                  />
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (active && payload && payload.length) {
                         const getVal = (key: string) => (payload.find((p: any) => p.dataKey === key)?.value as number) || 0;
-                        const amazonVal = getVal('amazonSales');
-                        const rakutenVal = getVal('rakutenSales');
-                        const qoo10Val = getVal('qoo10Sales');
-                        const ownSiteVal = getVal('ownSiteSales');
-                        const ainsTolpeVal = getVal('ainsTolpeSales');
                         const viewsVal = getVal('totalViews');
                         return (
                           <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
                             <p className="font-semibold text-gray-700 mb-2">{label}</p>
-                            {selectedMalls.amazon && amazonVal > 0 && (
-                              <p style={{ color: MALL_COLORS.amazon }} className="text-sm">
-                                Amazon: {formatCurrency(amazonVal)}
-                              </p>
-                            )}
-                            {selectedMalls.rakuten && rakutenVal > 0 && (
-                              <p style={{ color: MALL_COLORS.rakuten }} className="text-sm">
-                                楽天: {formatCurrency(rakutenVal)}
-                              </p>
-                            )}
-                            {selectedMalls.qoo10 && qoo10Val > 0 && (
-                              <p style={{ color: MALL_COLORS.qoo10 }} className="text-sm">
-                                Qoo10: {formatCurrency(qoo10Val)}
-                              </p>
-                            )}
-                            {ownSiteVal > 0 && (
-                              <p style={{ color: MALL_COLORS.ownSite }} className="text-sm">
-                                自社サイト: {formatCurrency(ownSiteVal)}
-                              </p>
-                            )}
-                            {ainsTolpeVal > 0 && (
-                              <p style={{ color: MALL_COLORS.ainsTolpe }} className="text-sm">
-                                アインズ&トルペ: {formatCurrency(ainsTolpeVal)}
-                              </p>
-                            )}
+                            {ALL_CHANNELS.map(ch => {
+                              const val = getVal(`${ch.key}_sales`);
+                              if (!selectedChannels[ch.key] || val <= 0) return null;
+                              return (
+                                <p key={ch.key} style={{ color: ch.color }} className="text-sm">
+                                  {ch.label}: {formatCurrency(val)}
+                                </p>
+                              );
+                            })}
                             {viewsVal > 0 && (
                               <p style={{ color: "#F472B6" }} className="text-sm">
                                 再生数: {viewsVal.toLocaleString()}回
@@ -1545,57 +1261,23 @@ export default function DashboardPage() {
                       return null;
                     }}
                   />
-                  {/* Amazon売上（積み上げ） */}
-                  {selectedMalls.amazon && (
-                    <Bar
-                      yAxisId="sales"
-                      dataKey="amazonSales"
-                      stackId="productSales"
-                      fill={MALL_COLORS.amazon}
-                      barSize={30}
-                    />
-                  )}
-                  {/* 楽天売上（積み上げ） */}
-                  {selectedMalls.rakuten && (
-                    <Bar
-                      yAxisId="sales"
-                      dataKey="rakutenSales"
-                      stackId="productSales"
-                      fill={MALL_COLORS.rakuten}
-                      barSize={30}
-                    />
-                  )}
-                  {/* Qoo10売上（積み上げ） */}
-                  {selectedMalls.qoo10 && (
-                    <Bar
-                      yAxisId="sales"
-                      dataKey="qoo10Sales"
-                      stackId="productSales"
-                      fill={MALL_COLORS.qoo10}
-                      barSize={30}
-                    />
-                  )}
-                  {/* 自社サイト売上（積み上げ） */}
-                  {selectedMalls.ownSite && productSalesData.some(d => d.ownSiteSales > 0) && (
-                    <Bar
-                      yAxisId="sales"
-                      dataKey="ownSiteSales"
-                      stackId="productSales"
-                      fill={MALL_COLORS.ownSite}
-                      barSize={30}
-                    />
-                  )}
-                  {/* アインズ&トルペ売上（積み上げ） */}
-                  {selectedMalls.ainsTolpe && productSalesData.some(d => d.ainsTolpeSales > 0) && (
-                    <Bar
-                      yAxisId="sales"
-                      dataKey="ainsTolpeSales"
-                      stackId="productSales"
-                      fill={MALL_COLORS.ainsTolpe}
-                      barSize={30}
-                      radius={[4, 4, 0, 0]}
-                    />
-                  )}
+                  {/* チャネル別売上（積み上げ棒グラフ） */}
+                  {ALL_CHANNELS.map((ch, idx) => {
+                    const salesKey = `${ch.key}_sales`;
+                    if (!selectedChannels[ch.key]) return null;
+                    if (!productSalesData.some(d => (d[salesKey] as number) > 0)) return null;
+                    return (
+                      <Bar
+                        key={ch.key}
+                        yAxisId="sales"
+                        dataKey={salesKey}
+                        stackId="productSales"
+                        fill={ch.color}
+                        barSize={30}
+                        radius={idx === ALL_CHANNELS.length - 1 ? [4, 4, 0, 0] : undefined}
+                      />
+                    );
+                  })}
                   {/* 再生数（折れ線グラフ・右軸） */}
                   {showViews && productSalesData.some(d => d.totalViews > 0) && (
                     <Line
@@ -1613,36 +1295,16 @@ export default function DashboardPage() {
 
               {/* カスタム凡例 */}
               <div className="flex flex-wrap justify-center gap-4 mt-2 text-sm">
-                {selectedMalls.amazon && (
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.amazon }} />
-                    <span>Amazon</span>
-                  </div>
-                )}
-                {selectedMalls.rakuten && (
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.rakuten }} />
-                    <span>楽天</span>
-                  </div>
-                )}
-                {selectedMalls.qoo10 && (
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.qoo10 }} />
-                    <span>Qoo10</span>
-                  </div>
-                )}
-                {selectedMalls.ownSite && productSalesData.some(d => d.ownSiteSales > 0) && (
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.ownSite }} />
-                    <span>自社サイト</span>
-                  </div>
-                )}
-                {selectedMalls.ainsTolpe && productSalesData.some(d => d.ainsTolpeSales > 0) && (
-                  <div className="flex items-center gap-1">
-                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: MALL_COLORS.ainsTolpe }} />
-                    <span>アインズ&トルペ</span>
-                  </div>
-                )}
+                {ALL_CHANNELS.map(ch => {
+                  if (!selectedChannels[ch.key]) return null;
+                  if (!productSalesData.some(d => ((d[`${ch.key}_sales`] as number) || 0) > 0)) return null;
+                  return (
+                    <div key={ch.key} className="flex items-center gap-1">
+                      <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: ch.color }} />
+                      <span>{ch.label}</span>
+                    </div>
+                  );
+                })}
                 {showViews && productSalesData.some(d => d.totalViews > 0) && (
                   <div className="flex items-center gap-1">
                     <div className="w-6 h-0.5 rounded" style={{ backgroundColor: "#F472B6" }} />
@@ -1652,43 +1314,65 @@ export default function DashboardPage() {
               </div>
             </div>
           )
-        ) : chartData.length === 0 ? (
+        ) : (
           <div className="h-72 flex items-center justify-center text-gray-500">
             <div className="text-center">
-              <p>データがありません</p>
-              <p className="text-sm mt-2">バックエンドの /scrape エンドポイントを呼び出してデータを追加してください</p>
+              <p>商品が選択されていません</p>
+              <p className="text-sm mt-2">上のドロップダウンから商品を選択してください</p>
             </div>
           </div>
-        ) : (
-          <div className="h-72 relative">
-            {/* フラグマーカー（グラフの上に重ねて表示） */}
-            {showFlags && eventFlags
-              .filter(flag => flag.date >= startDate && flag.date <= endDate)
+        )}
+
+        {false && (
+          <div className="h-72 relative hidden">
+            {/* 旧メインチャート（未使用） */}
+            {showFlags && filteredFlags
+              .filter(flag => {
+                const end = flag.endDate || flag.date;
+                return flag.date <= endDate && end >= startDate;
+              })
               .map((flag) => {
-                const dataIndex = chartData.findIndex(d => d.date === flag.date);
-                if (dataIndex === -1) return null;
-                // ComposedChartのmargin: { top: 20, right: 30, left: 20, bottom: 5 }
-                // 左Y軸ラベル幅 + margin.left ≈ 55px, 右Y軸ラベル幅 + margin.right ≈ 55px
+                const startIdx = chartData.findIndex(d => d.date >= flag.date);
+                if (startIdx === -1) return null;
+                const endIdx = flag.endDate
+                  ? chartData.findLastIndex(d => d.date <= flag.endDate!)
+                  : startIdx;
+                if (endIdx === -1) return null;
                 const graphLeftMargin = 55;
                 const graphRightMargin = 55;
-                // 棒グラフの中心位置を計算
-                const position = ((dataIndex + 0.5) / chartData.length) * 100;
+                const startPos = ((startIdx + 0.5) / chartData.length) * 100;
+                const endPos = ((endIdx + 0.5) / chartData.length) * 100;
+                const hasRange = flag.endDate && endIdx > startIdx;
+                const mallColor = flag.mall ? ({"Amazon":"#FF9900","楽天":"#BF0000","Qoo10":"#3266CC"} as Record<string,string>)[flag.mall] || "#9333EA" : "#9333EA";
                 return (
-                  <div
-                    key={flag.id}
-                    className="absolute z-10 cursor-pointer"
-                    style={{
-                      top: '20px', // グラフのtop marginに合わせる
-                      left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${position / 100})`,
-                      transform: 'translateX(-50%)',
-                    }}
-                    onClick={() => setSelectedFlag(flag)}
-                  >
-                    <div className="flex flex-col items-center">
-                      <span className="text-purple-600 text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border border-purple-200">
-                        🚩 {flag.name}
-                      </span>
-                      <div className="w-0.5 h-44 opacity-80" style={{ background: 'repeating-linear-gradient(to bottom, #9333EA 0, #9333EA 4px, transparent 4px, transparent 8px)' }} />
+                  <div key={flag.id}>
+                    {hasRange && (
+                      <div
+                        className="absolute z-5 opacity-15 rounded"
+                        style={{
+                          top: '20px',
+                          height: '220px',
+                          backgroundColor: mallColor,
+                          left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                          width: `calc((100% - ${graphLeftMargin + graphRightMargin}px) * ${(endPos - startPos) / 100})`,
+                        }}
+                      />
+                    )}
+                    <div
+                      className="absolute z-10 cursor-pointer"
+                      style={{
+                        top: '20px',
+                        left: `calc(${graphLeftMargin}px + (100% - ${graphLeftMargin + graphRightMargin}px) * ${startPos / 100})`,
+                        transform: 'translateX(-50%)',
+                      }}
+                      onClick={() => setSelectedFlag(flag)}
+                    >
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-bold whitespace-nowrap bg-white/90 px-1 rounded shadow-sm border" style={{ color: mallColor, borderColor: mallColor + '40' }}>
+                          {flag.name}
+                        </span>
+                        <div className="w-0.5 h-44 opacity-80" style={{ background: `repeating-linear-gradient(to bottom, ${mallColor} 0, ${mallColor} 4px, transparent 4px, transparent 8px)` }} />
+                      </div>
                     </div>
                   </div>
                 );
@@ -1840,29 +1524,40 @@ export default function DashboardPage() {
         )}
 
         {/* フラグリスト（グラフ下に表示） */}
-        {showFlags && eventFlags.filter(flag => flag.date >= startDate && flag.date <= endDate).length > 0 && (
+        {showFlags && filteredFlags.filter(flag => {
+          const end = flag.endDate || flag.date;
+          return flag.date <= endDate && end >= startDate;
+        }).length > 0 && (
           <div className="mt-4 pt-4 border-t border-gray-200">
             <h3 className="text-sm font-medium text-gray-600 mb-2 flex items-center gap-1">
               <Flag className="w-4 h-4 text-purple-600" />
               期間内のイベント
             </h3>
             <div className="flex flex-wrap gap-2">
-              {eventFlags
-                .filter(flag => flag.date >= startDate && flag.date <= endDate)
+              {filteredFlags
+                .filter(flag => {
+                  const end = flag.endDate || flag.date;
+                  return flag.date <= endDate && end >= startDate;
+                })
                 .sort((a, b) => a.date.localeCompare(b.date))
-                .map((flag) => (
-                  <button
-                    key={flag.id}
-                    onClick={() => setSelectedFlag(flag)}
-                    className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm hover:bg-purple-200 transition-colors"
-                  >
-                    <Flag className="w-3 h-3" />
-                    <span className="font-medium">{flag.name}</span>
-                    <span className="text-purple-500 text-xs">
-                      ({new Date(flag.date).getMonth() + 1}/{new Date(flag.date).getDate()})
-                    </span>
-                  </button>
-                ))}
+                .map((flag) => {
+                  const mallColor = flag.mall ? ({"Amazon":"#FF9900","楽天":"#BF0000","Qoo10":"#3266CC"} as Record<string,string>)[flag.mall] || "#9333EA" : "#9333EA";
+                  const d = new Date(flag.date);
+                  const dateLabel = `${d.getMonth() + 1}/${d.getDate()}`;
+                  const endLabel = flag.endDate ? (() => { const ed = new Date(flag.endDate); return `〜${ed.getMonth() + 1}/${ed.getDate()}`; })() : "";
+                  return (
+                    <button
+                      key={flag.id}
+                      onClick={() => setSelectedFlag(flag)}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm hover:opacity-80 transition-colors"
+                      style={{ backgroundColor: mallColor + '20', color: mallColor }}
+                    >
+                      <Flag className="w-3 h-3" />
+                      <span className="font-medium">{flag.name}</span>
+                      <span className="text-xs opacity-70">({dateLabel}{endLabel})</span>
+                    </button>
+                  );
+                })}
             </div>
           </div>
         )}

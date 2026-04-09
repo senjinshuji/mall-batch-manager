@@ -130,34 +130,72 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
-      const lines = text.split(/\r?\n/).filter(line => line.trim());
-      if (lines.length < 2) { setCsvErrors(["CSVにデータ行がありません"]); setCsvPreview([]); return; }
 
-      const rows = lines.slice(1).map(line => {
-        const result: string[] = [];
+      // マルチライン対応CSVパーサー（ダブルクォート内の改行を正しく処理）
+      const parseMultilineCsv = (csv: string): string[][] => {
+        const rows: string[][] = [];
         let current = "";
         let inQuotes = false;
-        for (const char of line) {
-          if (char === '"') inQuotes = !inQuotes;
-          else if (char === ',' && !inQuotes) { result.push(current.trim()); current = ""; }
-          else current += char;
+        const currentRow: string[] = [];
+
+        for (let i = 0; i < csv.length; i++) {
+          const ch = csv[i];
+          if (ch === '"') {
+            inQuotes = !inQuotes;
+          } else if (ch === ',' && !inQuotes) {
+            currentRow.push(current.trim());
+            current = "";
+          } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+            if (ch === '\r' && csv[i + 1] === '\n') i++; // CRLF
+            currentRow.push(current.trim());
+            current = "";
+            if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+            currentRow.length = 0;
+          } else {
+            current += ch;
+          }
         }
-        result.push(current.trim());
-        return result;
+        // 最後の行
+        currentRow.push(current.trim());
+        if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+
+        return rows;
+      };
+
+      const allRows = parseMultilineCsv(text);
+      if (allRows.length < 2) { setCsvErrors(["CSVにデータ行がありません"]); setCsvPreview([]); return; }
+
+      // ヘッダー行を検出（「商材名」を含む行）
+      let headerIdx = 0;
+      for (let i = 0; i < allRows.length; i++) {
+        if (allRows[i].some(cell => cell.includes("商材名"))) { headerIdx = i; break; }
+      }
+
+      // 空行・必須フィールドが全て空の行をスキップ
+      const rows = allRows.slice(headerIdx + 1).filter(row => {
+        // 商材名またはアクセストークンがある行のみ対象
+        return row[0] || row[platform === "tiktok" ? 4 : 3];
       });
 
       // バリデーション（新列順: 商材名, プロフィールURL, アカウント名, ...）
       const errors: string[] = [];
-      const atCol = platform === "tiktok" ? 4 : 3; // アクセストークンの列
+      const atCol = platform === "tiktok" ? 4 : 3;
       rows.forEach((row, i) => {
-        const rowNum = i + 2;
+        const rowNum = i + 1;
         if (!row[0]) errors.push(`${rowNum}行目: 商材名が空です`);
         if (!row[1]) errors.push(`${rowNum}行目: プロフィールURLが空です`);
         if (platform === "tiktok" && !row[3]) errors.push(`${rowNum}行目: オープンIDが空です`);
         if (!row[atCol]) errors.push(`${rowNum}行目: アクセストークンが空です`);
       });
 
-      setCsvErrors(errors);
+      // エラーが多すぎる場合は先頭のみ表示
+      if (errors.length > 20) {
+        const truncated = errors.slice(0, 20);
+        truncated.push(`...他 ${errors.length - 20} 件のエラー`);
+        setCsvErrors(truncated);
+      } else {
+        setCsvErrors(errors);
+      }
       setCsvPreview(rows.slice(0, 5));
     };
     reader.readAsText(file, "utf-8");
@@ -258,33 +296,54 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
   // CSV一括登録
   const handleCsvSubmit = async () => {
     if (!csvFile) { setResult({ type: "error", message: "CSVファイルを選択してください" }); return; }
-    if (csvErrors.length > 0) { setResult({ type: "error", message: "CSVにエラーがあります" }); return; }
 
     setIsSubmitting(true); setResult(null);
     try {
       const text = await csvFile.text();
-      const lines = text.split(/\r?\n/).filter(line => line.trim());
-      const rows = lines.slice(1);
+
+      // マルチライン対応CSVパーサー
+      const parseMultilineCsv = (csv: string): string[][] => {
+        const rows: string[][] = [];
+        let current = "";
+        let inQuotes = false;
+        const currentRow: string[] = [];
+        for (let i = 0; i < csv.length; i++) {
+          const ch = csv[i];
+          if (ch === '"') { inQuotes = !inQuotes; }
+          else if (ch === ',' && !inQuotes) { currentRow.push(current.trim()); current = ""; }
+          else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+            if (ch === '\r' && csv[i + 1] === '\n') i++;
+            currentRow.push(current.trim()); current = "";
+            if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+            currentRow.length = 0;
+          } else { current += ch; }
+        }
+        currentRow.push(current.trim());
+        if (currentRow.some(c => c.length > 0)) rows.push([...currentRow]);
+        return rows;
+      };
+
+      const allRows = parseMultilineCsv(text);
+      let headerIdx = 0;
+      for (let i = 0; i < allRows.length; i++) {
+        if (allRows[i].some(cell => cell.includes("商材名"))) { headerIdx = i; break; }
+      }
+      const dataRows = allRows.slice(headerIdx + 1).filter(row => {
+        return row[0] || row[platform === "tiktok" ? 4 : 3];
+      });
 
       const productNameToId: Record<string, string> = {};
       products.forEach(p => { productNameToId[p.productName] = p.id; });
 
-      const accounts = rows.map(line => {
-        const cols: string[] = [];
-        let current = "";
-        let inQuotes = false;
-        for (const char of line) {
-          if (char === '"') inQuotes = !inQuotes;
-          else if (char === ',' && !inQuotes) { cols.push(current.trim()); current = ""; }
-          else current += char;
-        }
-        cols.push(current.trim());
+      // URLからクエリパラメータを除去
+      const stripParams = (url: string) => url ? url.split("?")[0] : "";
 
+      const accounts = dataRows.map(cols => {
         // 新列順: 商材名, プロフィールURL, アカウント名, ...
         if (platform === "tiktok") {
           return {
             productId: productNameToId[cols[0]] || "",
-            profileUrl: cols[1] || "", userName: cols[2] || "",
+            profileUrl: stripParams(cols[1] || ""), userName: cols[2] || "",
             openId: cols[3] || "", accessToken: cols[4] || "",
             refreshToken: cols[5] || "", device: cols[6] || "",
             email: cols[7] || "", password: cols[8] || "", operator: cols[9] || "",
@@ -293,7 +352,7 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
         // Instagram
         return {
           productId: productNameToId[cols[0]] || "",
-          profileUrl: cols[1] || "", userName: cols[2] || "",
+          profileUrl: stripParams(cols[1] || ""), userName: cols[2] || "",
           accessToken: cols[3] || "", device: cols[4] || "",
           email: cols[5] || "", password: cols[6] || "", operator: cols[7] || "",
         };
@@ -548,7 +607,7 @@ export default function AccountRegistrationModal({ isOpen, platform, onClose, on
                 </div>
               )}
 
-              {csvPreview.length > 0 && csvErrors.length === 0 && (
+              {csvPreview.length > 0 && (
                 <div>
                   <p className="text-xs text-gray-500 mb-2">プレビュー（先頭{csvPreview.length}件）</p>
                   <div className="overflow-x-auto">

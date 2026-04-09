@@ -25,11 +25,8 @@ type RegisteredProduct = {
   skuName?: string;
 };
 
-// デモ用のフラグデータ
-const demoFlags: EventFlag[] = [
-  { id: "demo-1", name: "楽天スーパーSALE", date: "2025-12-04", endDate: "2025-12-11", description: "楽天スーパーSALE", scope: "global", mall: "楽天" },
-  { id: "demo-2", name: "新商品発売", date: "2025-11-15", description: "オーガニックシャンプー新発売", scope: "product" },
-];
+// デモ用データ（空）
+const demoFlags: EventFlag[] = [];
 
 // 2026年の媒体セールプリセット
 const SALE_PRESETS: Omit<EventFlag, "id">[] = [
@@ -81,7 +78,7 @@ export default function FlagsPage() {
   const [isAdding, setIsAdding] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<FlagScope>("global");
+  const [activeTab, setActiveTab] = useState<FlagScope>(isAdmin ? "global" : "product");
 
   const [newFlag, setNewFlag] = useState({
     name: "",
@@ -430,41 +427,47 @@ export default function FlagsPage() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={handleDownloadTemplate}
-            className="flex items-center gap-2 px-3 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm"
-          >
-            <Download className="w-4 h-4" />
-            テンプレートDL
-          </button>
-          <div>
-            <input
-              type="file"
-              ref={csvFileRef}
-              accept=".csv"
-              onChange={handleCsvImport}
-              className="hidden"
-              id="flag-csv-upload"
-              disabled={csvUploading}
-            />
-            <label
-              htmlFor="flag-csv-upload"
-              className={`flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors cursor-pointer text-sm ${csvUploading ? "opacity-50 cursor-not-allowed" : ""}`}
+        {(isAdmin || activeTab === "product") && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {isAdmin && (
+              <>
+                <button
+                  onClick={handleDownloadTemplate}
+                  className="flex items-center gap-2 px-3 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm"
+                >
+                  <Download className="w-4 h-4" />
+                  テンプレートDL
+                </button>
+                <div>
+                  <input
+                    type="file"
+                    ref={csvFileRef}
+                    accept=".csv"
+                    onChange={handleCsvImport}
+                    className="hidden"
+                    id="flag-csv-upload"
+                    disabled={csvUploading}
+                  />
+                  <label
+                    htmlFor="flag-csv-upload"
+                    className={`flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors cursor-pointer text-sm ${csvUploading ? "opacity-50 cursor-not-allowed" : ""}`}
+                  >
+                    {csvUploading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                    {csvUploading ? "登録中..." : "CSV一括登録"}
+                  </label>
+                </div>
+              </>
+            )}
+            <button
+              onClick={() => { setIsAdding(true); setNewFlag({ ...newFlag, scope: activeTab }); }}
+              disabled={isAdding}
+              className="flex items-center gap-2 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
             >
-              {csvUploading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-              {csvUploading ? "登録中..." : "CSV一括登録"}
-            </label>
+              <Plus className="w-4 h-4" />
+              新規登録
+            </button>
           </div>
-          <button
-            onClick={() => { setIsAdding(true); setNewFlag({ ...newFlag, scope: activeTab }); }}
-            disabled={isAdding}
-            className="flex items-center gap-2 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-          >
-            <Plus className="w-4 h-4" />
-            新規登録
-          </button>
-        </div>
+        )}
       </div>
 
       <p className="text-gray-600 mb-4">
@@ -634,7 +637,9 @@ export default function FlagsPage() {
                   <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">対象商品</th>
                 )}
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">詳細</th>
-                <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">操作</th>
+                {(isAdmin || activeTab === "product") && (
+                  <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">操作</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
@@ -713,12 +718,14 @@ export default function FlagsPage() {
                           </td>
                         )}
                         <td className="px-4 py-3 text-gray-600 text-sm">{flag.description || "-"}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-center gap-2">
-                            <button onClick={() => handleStartEdit(flag)} className="p-1 text-blue-600 hover:bg-blue-100 rounded" title="編集"><Edit2 className="w-5 h-5" /></button>
-                            <button onClick={() => handleDeleteFlag(flag.id)} className="p-1 text-red-600 hover:bg-red-100 rounded" title="削除"><Trash2 className="w-5 h-5" /></button>
-                          </div>
-                        </td>
+                        {(isAdmin || activeTab === "product") && (
+                          <td className="px-4 py-3">
+                            <div className="flex justify-center gap-2">
+                              <button onClick={() => handleStartEdit(flag)} className="p-1 text-blue-600 hover:bg-blue-100 rounded" title="編集"><Edit2 className="w-5 h-5" /></button>
+                              <button onClick={() => handleDeleteFlag(flag.id)} className="p-1 text-red-600 hover:bg-red-100 rounded" title="削除"><Trash2 className="w-5 h-5" /></button>
+                            </div>
+                          </td>
+                        )}
                       </>
                     )}
                   </tr>

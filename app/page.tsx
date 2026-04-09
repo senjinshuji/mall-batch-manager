@@ -40,7 +40,7 @@ export default function LoginPage() {
             モール一括管理くん
           </h1>
           <p className="text-blue-100 mt-2">
-            Amazon・楽天・Qoo10の売上を一元管理
+            モール・店舗の売上を一元管理
           </p>
         </div>
 
@@ -132,7 +132,7 @@ export default function LoginPage() {
 
         {/* フッター */}
         <p className="text-center text-blue-100 text-sm mt-6">
-          &copy; 2024 モール一括管理くん
+          &copy; 2026 モール一括管理くん
         </p>
       </div>
     </div>
