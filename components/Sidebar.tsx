@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Users, Flag, BarChart3, UserCog } from "lucide-react";
+import { LayoutDashboard, Settings, LogOut, Menu, X, Package, Users, Flag, BarChart3, UserCog, Table } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
@@ -24,6 +24,12 @@ const menuItems = [
     name: "動画分析",
     href: "/video-analytics",
     icon: BarChart3,
+    adminOnly: false,
+  },
+  {
+    name: "再生数記録",
+    href: "/view-records",
+    icon: Table,
     adminOnly: false,
   },
   {

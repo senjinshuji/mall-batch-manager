@@ -4244,6 +4244,7 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
       const productId = accountData.productId;
       const productName = productNameMap[productId] || "";
       const accountName = accountData.tiktokUserName || "";
+      const accountOperator = accountData.operator || "";
 
       const videosSnapshot = await db.collection("tiktok_videos")
         .where("accountId", "==", accountId)
@@ -4261,6 +4262,8 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
           videoId,
           accountId,
           productId,
+          accountName,
+          operator: accountOperator,
           date: today,
           viewCount: video.viewCount || 0,
           likeCount: video.likeCount || 0,
@@ -4395,6 +4398,8 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
               videoId: video.videoId,
               accountId: igAccountId,
               productId: igAccount.productId,
+              accountName: igAccount.instagramUserName || "",
+              operator: igAccount.operator || "",
               date: today,
               reach: video.reach || 0,
               likeCount: video.likeCount || 0,
@@ -7277,11 +7282,9 @@ app.post("/tiktok/save-daily-snapshots/:productId", async (req: Request, res: Re
     const accountsSnapshot = await db.collection("tiktok_accounts")
       .where("productId", "==", productId)
       .get();
-    const accountIds = accountsSnapshot.docs
-      .filter(doc => doc.data().hidden !== true)  // 非表示アカウントを除外
-      .map(doc => doc.id);
+    const accountDocs = accountsSnapshot.docs.filter(doc => doc.data().hidden !== true);
 
-    if (accountIds.length === 0) {
+    if (accountDocs.length === 0) {
       return res.status(404).json({ success: false, message: "TikTokアカウントが見つかりません" });
     }
 
@@ -7289,7 +7292,9 @@ app.post("/tiktok/save-daily-snapshots/:productId", async (req: Request, res: Re
     const batch = db.batch();
 
     // 各動画の現在のデータをスナップショットとして保存
-    for (const accountId of accountIds) {
+    for (const accountDoc of accountDocs) {
+      const accountId = accountDoc.id;
+      const accData = accountDoc.data();
       const videosSnapshot = await db.collection("tiktok_videos")
         .where("accountId", "==", accountId)
         .get();
@@ -7304,6 +7309,8 @@ app.post("/tiktok/save-daily-snapshots/:productId", async (req: Request, res: Re
           videoId,
           accountId,
           productId,
+          accountName: accData.tiktokUserName || "",
+          operator: accData.operator || "",
           date: today,
           viewCount: video.viewCount || 0,
           likeCount: video.likeCount || 0,
@@ -7367,6 +7374,8 @@ app.post("/tiktok/save-all-daily-snapshots", async (req: Request, res: Response)
           videoId,
           accountId,
           productId,
+          accountName: accountData.tiktokUserName || "",
+          operator: accountData.operator || "",
           date: today,
           viewCount: video.viewCount || 0,
           likeCount: video.likeCount || 0,
@@ -7771,19 +7780,24 @@ app.post("/tiktok/backfill-snapshots/:productId", async (req: Request, res: Resp
     const accountsSnapshot = await db.collection("tiktok_accounts")
       .where("productId", "==", productId)
       .get();
-    const accountIds = accountsSnapshot.docs
-      .filter(doc => doc.data().hidden !== true)  // 非表示アカウントを除外
-      .map(doc => doc.id);
+    const accountDocs2 = accountsSnapshot.docs.filter(doc => doc.data().hidden !== true);
 
-    if (accountIds.length === 0) {
+    if (accountDocs2.length === 0) {
       return res.status(404).json({ success: false, message: "TikTokアカウントが見つかりません" });
+    }
+
+    // アカウント情報マップ
+    const accountInfoMap: { [id: string]: { name: string; operator: string } } = {};
+    for (const doc of accountDocs2) {
+      const d = doc.data();
+      accountInfoMap[doc.id] = { name: d.tiktokUserName || "", operator: d.operator || "" };
     }
 
     // 現在の動画データを取得
     const allVideos: { id: string; data: any }[] = [];
-    for (const accountId of accountIds) {
+    for (const accountDoc of accountDocs2) {
       const videosSnapshot = await db.collection("tiktok_videos")
-        .where("accountId", "==", accountId)
+        .where("accountId", "==", accountDoc.id)
         .get();
 
       for (const doc of videosSnapshot.docs) {
@@ -7805,12 +7819,15 @@ app.post("/tiktok/backfill-snapshots/:productId", async (req: Request, res: Resp
       const batch = db.batch();
       for (const video of allVideos) {
         const snapshotId = `${video.id}_${dateStr}`;
+        const accInfo = accountInfoMap[video.data.accountId] || { name: "", operator: "" };
         const snapshotRef = db.collection("tiktok_video_daily_snapshots").doc(snapshotId);
 
         batch.set(snapshotRef, {
           videoId: video.id,
           accountId: video.data.accountId,
           productId,
+          accountName: accInfo.name,
+          operator: accInfo.operator,
           date: dateStr,
           viewCount: video.data.viewCount || 0,
           likeCount: video.data.likeCount || 0,
