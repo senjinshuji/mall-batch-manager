@@ -231,11 +231,29 @@ function computeAllFacts(currentDailyData: DailyData[], historicalDailyData: Dai
     };
   }).filter((d): d is NonNullable<typeof d> => d !== null);
 
+  // データがあるチャネル（売上が1円以上ある）
+  const channelsWithData = channels.filter(ch => (currentChannelStats[ch]?.total || 0) > 0);
+
+  // モール名 → チャネルキーのマッピング
+  const mallToChannel: Record<string, string> = {
+    "Amazon": "Amazon",
+    "楽天": "楽天",
+    "Qoo10": "Qoo10",
+    "Yahoo": "Yahoo",
+  };
+
   // 5. 当期間のグローバルセール（モール共通）と前回セール比較
-  const currentGlobalSales = flags.filter(f =>
-    (f.scope || "global") === "global" &&
-    f.date <= currentEnd && (f.endDate || f.date) >= currentStart
-  );
+  // 該当モールのデータがある場合のみ
+  const currentGlobalSales = flags.filter(f => {
+    if ((f.scope || "global") !== "global") return false;
+    if (!(f.date <= currentEnd && (f.endDate || f.date) >= currentStart)) return false;
+    // モール指定がある場合、そのモールのデータがあるかチェック
+    if (f.mall) {
+      const channelKey = mallToChannel[f.mall];
+      if (channelKey && !channelsWithData.includes(channelKey)) return false;
+    }
+    return true;
+  });
   const saleComparisons = currentGlobalSales.map(sale => {
     const current = computeFactsForSale(allData, channels, sale);
     const prev = findPreviousSale(sale, flags);
@@ -262,6 +280,7 @@ function computeAllFacts(currentDailyData: DailyData[], historicalDailyData: Dai
 
   return {
     channels,
+    channelsWithData,
     currentChannelStats,
     currentViewStats,
     topSalesDays,
@@ -283,9 +302,20 @@ function factsToMarkdown(facts: ReturnType<typeof computeAllFacts>, productName:
   lines.push(`期間: ${currentStart} 〜 ${currentEnd}`);
   lines.push(``);
 
+  // 売上データがあるチャネル（重要）
+  lines.push(`## ⚠️ 重要: この商品で売上データがあるチャネル`);
+  if (facts.channelsWithData.length === 0) {
+    lines.push(`- **売上データなし**`);
+  } else {
+    lines.push(`- **${facts.channelsWithData.join(" / ")}**`);
+    lines.push(`- 上記以外のチャネル（例: 楽天、Qoo10、Yahoo、自社サイト等）には**売上データが一切ありません**。レポートでは絶対に言及しないこと。`);
+  }
+  lines.push(``);
+
   // チャネル別統計
   lines.push(`## 1. チャネル別売上統計（当期間）`);
   for (const [ch, s] of Object.entries(facts.currentChannelStats)) {
+    if (s.total === 0) continue; // 0のチャネルは表示しない
     lines.push(`- **${ch}**: 合計 ${formatYen(s.total)} / 1日平均 ${formatYen(s.avgPerDay)} / 売上のあった日数 ${s.daysWithSales}日 / 売上0の日数 ${s.zerodays}日`);
   }
   lines.push(``);
@@ -343,28 +373,42 @@ function factsToMarkdown(facts: ReturnType<typeof computeAllFacts>, productName:
   }
   lines.push(``);
 
-  // セール比較
+  // セール比較（売上データがあるチャネルのセールのみ）
   lines.push(`## 7. セール期間と前回比較`);
   if (facts.saleComparisons.length === 0) {
-    lines.push(`- 当期間にセールなし`);
+    lines.push(`- 売上データのあるチャネルのセールは当期間に該当なし`);
   } else {
     facts.saleComparisons.forEach(s => {
       lines.push(`### ${s.saleName}${s.mall ? `（${s.mall}）` : ""}`);
       lines.push(`- **今回**: ${s.current.start} 〜 ${s.current.end}（${s.current.days}日間）`);
-      lines.push(`  - 売上合計: ${formatYen(s.current.totalSales)}`);
-      Object.entries(s.current.channelTotals).forEach(([ch, v]) => {
-        if ((v as number) > 0) lines.push(`  - ${ch}: ${formatYen(v as number)}`);
-      });
+      // 売上があるチャネルのみ表示
+      const currentChannelsWithSales = Object.entries(s.current.channelTotals).filter(([, v]) => (v as number) > 0);
+      if (currentChannelsWithSales.length === 0) {
+        lines.push(`  - 売上データなし`);
+      } else {
+        const channelTotal = currentChannelsWithSales.reduce((sum, [, v]) => sum + (v as number), 0);
+        lines.push(`  - 売上合計: ${formatYen(channelTotal)}`);
+        currentChannelsWithSales.forEach(([ch, v]) => {
+          lines.push(`  - ${ch}: ${formatYen(v as number)}`);
+        });
+      }
       lines.push(`  - 期間内再生数合計: ${formatNum(s.current.viewsTotal)}回`);
       if (s.previous) {
+        const prevChannelsWithSales = Object.entries(s.previous.channelTotals).filter(([, v]) => (v as number) > 0);
         lines.push(`- **前回**: ${s.previous.start} 〜 ${s.previous.end}（${s.previous.days}日間）`);
-        lines.push(`  - 売上合計: ${formatYen(s.previous.totalSales)}`);
-        Object.entries(s.previous.channelTotals).forEach(([ch, v]) => {
-          if ((v as number) > 0) lines.push(`  - ${ch}: ${formatYen(v as number)}`);
-        });
-        const diff = s.current.totalSales - s.previous.totalSales;
-        const pct = s.previous.totalSales > 0 ? Math.round((diff / s.previous.totalSales) * 1000) / 10 : 0;
-        lines.push(`- **差分**: ${diff >= 0 ? "+" : ""}${formatYen(diff)}（${diff >= 0 ? "+" : ""}${pct}%）`);
+        if (prevChannelsWithSales.length === 0) {
+          lines.push(`  - 売上データなし`);
+        } else {
+          const prevTotal = prevChannelsWithSales.reduce((sum, [, v]) => sum + (v as number), 0);
+          lines.push(`  - 売上合計: ${formatYen(prevTotal)}`);
+          prevChannelsWithSales.forEach(([ch, v]) => {
+            lines.push(`  - ${ch}: ${formatYen(v as number)}`);
+          });
+          const currentTotal = Object.entries(s.current.channelTotals).reduce((sum, [, v]) => sum + (v as number), 0);
+          const diff = currentTotal - prevTotal;
+          const pct = prevTotal > 0 ? Math.round((diff / prevTotal) * 1000) / 10 : 0;
+          lines.push(`- **差分**: ${diff >= 0 ? "+" : ""}${formatYen(diff)}（${diff >= 0 ? "+" : ""}${pct}%）`);
+        }
       } else {
         lines.push(`- **前回**: 過去90日内に該当セールなし`);
       }
@@ -412,13 +456,15 @@ const SYSTEM_PROMPT = `あなたはプロのECデータアナリストです。
 - **数値は計算済みファクトシートに記載されているものだけを使うこと。** ファクトシートに無い数字を勝手に計算したり推測したりしてはいけない。
 - ファクトシートの数値はサーバー側で正確に計算されています。これを唯一の真実として扱ってください。
 - レポート内の全ての数値は、ファクトシートからそのまま引用すること。
+- **🚨 絶対禁止: ファクトシート冒頭の「売上データがあるチャネル」セクションに記載されていないチャネル（楽天、Qoo10、Yahoo、自社サイト等）について、レポートで一切言及してはいけません。** たとえセール情報（楽天マラソン等）が他のセクションに見えても、そのモールの売上データがなければ「楽天マラソンの影響」のような考察は絶対に書かないこと。データがないのに推測で語ることは厳禁です。
+- **モール別分析は、データがあるモールだけ実施すること。** Amazonしかデータがなければ、Amazon分析だけを書く。「楽天分析」「Qoo10分析」のセクションは一切作らないこと。
 
 ## あなたの仕事
 ファクトシートを読み、以下のレポートを書いてください:
 
 1. **サマリー**（3〜5行）: 期間全体の概況
 2. **注目日の分析**: ファクトシートの「注目日」セクションから、特に重要な日を取り上げ、SNSが売上に効いた可能性を考察
-3. **モール別分析（Amazon、楽天、Qoo10、その他データがあるチャネル）**: 各モールの売上推移と、セール期間がある場合は前回比較を引用
+3. **モール別分析（売上データがあるチャネルのみ）**: ファクトシート冒頭の「売上データがあるチャネル」に記載されているモールだけ個別に分析する。データがないモールのセクションは絶対に作らない。
 4. **商品別フラグの影響分析**（該当する場合のみ）: 商品別フラグがある場合、フラグ前後の売上変化から「売上に影響があったか」を判定。影響が見られないフラグ（フラグ前後で売上に有意な変化なし）はレポートから除外して構わない。**売上に明確な影響が見られた場合のみ言及すること。**
 5. **ファインディングスと提言**: SNSが売上に効いた/効かなかったの結論、最も売上に貢献した日とその理由、今後のSNS運用への提言
 
