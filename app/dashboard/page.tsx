@@ -535,13 +535,22 @@ export default function DashboardPage() {
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [salesData, startDate, endDate]);
 
-  // フラグを媒体選択でフィルタリング
+  // フラグを媒体選択＋商品スコープでフィルタリング
+  // - global: モールフィルタのみ
+  // - product: 現在表示中の商品(selectedSkuProducts)に紐づくものだけ表示
+  //   selectedSkuProductsはクライアントの場合allowedProductIdsで既に絞られているため、
+  //   他クライアントの個別フラグが漏れることも防げる
   const filteredFlags = useMemo(() => {
+    const visibleProductIds = new Set(selectedSkuProducts.map((p) => p.id));
     return eventFlags.filter((flag) => {
       if (flag.mall && selectedChannels[flag.mall] === false) return false;
+      if (flag.scope === "product") {
+        if (!flag.productId) return false;
+        return visibleProductIds.has(flag.productId);
+      }
       return true;
     });
-  }, [eventFlags, selectedChannels]);
+  }, [eventFlags, selectedChannels, selectedSkuProducts]);
 
   // グラフ用データ（広告費合計を追加 + フラグ日付も含める）
   const chartData = useMemo(() => {

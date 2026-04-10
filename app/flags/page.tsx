@@ -70,7 +70,7 @@ const MALL_COLORS: Record<string, string> = {
 };
 
 export default function FlagsPage() {
-  const { isRealDataUser, isAuthLoading, isAdmin } = useAuth();
+  const { isRealDataUser, isAuthLoading, isAdmin, allowedProductIds } = useAuth();
   const [globalFlags, setGlobalFlags] = useState<EventFlag[]>([]);
   const [productFlags, setProductFlags] = useState<EventFlag[]>([]);
   const [products, setProducts] = useState<RegisteredProduct[]>([]);
@@ -140,15 +140,26 @@ export default function FlagsPage() {
         }));
 
         allFlags.sort((a, b) => b.date.localeCompare(a.date));
-        setGlobalFlags(allFlags.filter((f) => f.scope === "global"));
-        setProductFlags(allFlags.filter((f) => f.scope === "product"));
 
+        // クライアントユーザーは自分のallowedProductIdsに紐づく個別フラグのみ閲覧可
+        const allowedSet = allowedProductIds ? new Set(allowedProductIds) : null;
+        const visibleProductFlags = allFlags.filter((f) => {
+          if (f.scope !== "product") return false;
+          if (!allowedSet) return true; // admin/管理者
+          return f.productId ? allowedSet.has(f.productId) : false;
+        });
+
+        setGlobalFlags(allFlags.filter((f) => f.scope === "global"));
+        setProductFlags(visibleProductFlags);
+
+        // 商品一覧もクライアントの許可商品だけに絞る
+        const allProducts = productsSnap.docs.map((d) => ({
+          id: d.id,
+          productName: d.data().productName || "",
+          skuName: d.data().skuName || "",
+        }));
         setProducts(
-          productsSnap.docs.map((d) => ({
-            id: d.id,
-            productName: d.data().productName || "",
-            skuName: d.data().skuName || "",
-          }))
+          allowedSet ? allProducts.filter((p) => allowedSet.has(p.id)) : allProducts
         );
       } catch (error) {
         console.error("フラグ取得エラー:", error);
@@ -158,7 +169,7 @@ export default function FlagsPage() {
     };
 
     fetchData();
-  }, [isRealDataUser, isAuthLoading]);
+  }, [isRealDataUser, isAuthLoading, allowedProductIds]);
 
   const currentFlags = activeTab === "global" ? globalFlags : productFlags;
   const setCurrentFlags = activeTab === "global" ? setGlobalFlags : setProductFlags;
