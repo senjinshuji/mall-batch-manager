@@ -131,9 +131,15 @@ export default function LoginPage() {
         </div>
 
         {/* フッター */}
-        <p className="text-center text-blue-100 text-sm mt-6">
-          &copy; 2026 モール一括管理くん
-        </p>
+        <div className="text-center mt-6 space-y-2">
+          <div className="flex justify-center gap-4">
+            <a href="/privacy" className="text-blue-200 hover:text-white text-xs underline">プライバシーポリシー</a>
+            <a href="/terms" className="text-blue-200 hover:text-white text-xs underline">利用規約</a>
+          </div>
+          <p className="text-blue-100 text-sm">
+            &copy; 2026 モール一括管理くん
+          </p>
+        </div>
       </div>
     </div>
   );

@@ -82,7 +82,14 @@ function normalizeInstagramAccount(a: Record<string, unknown>): AccountData {
 }
 
 export default function AccountListPage() {
-  const [platform, setPlatform] = useState<Platform>("tiktok");
+  // URLパラメータにigSuccessがあればInstagramを初期表示
+  const [platform, setPlatform] = useState<Platform>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("igSuccess") || params.get("igError")) return "instagram";
+    }
+    return "tiktok";
+  });
   const [accounts, setAccounts] = useState<AccountData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);

@@ -4139,24 +4139,21 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
       let videoSyncSuccess = 0;
       let videoSyncError = 0;
 
-      for (const accountDoc of accountsSnapshot.docs) {
+      // アカウント単位の同期処理（並列化用）
+      const syncOneAccount = async (accountDoc: any) => {
         const accountId = accountDoc.id;
         let account = accountDoc.data();
 
         if (!account.accessToken) {
           console.warn(`Skipping account ${accountId}: No access token`);
-          continue;
+          return;
         }
 
         // リフレッシュトークンがあれば、バッチ実行前にトークンを更新
         if (account.refreshToken) {
-          console.log(`Refreshing token for account ${accountId}...`);
           const refreshResult = await refreshTikTokAccessToken(accountId, account.refreshToken);
           if (refreshResult) {
             account = { ...account, accessToken: refreshResult.accessToken, refreshToken: refreshResult.refreshToken };
-            console.log(`Token refreshed successfully for account ${accountId}`);
-          } else {
-            console.warn(`Token refresh failed for account ${accountId}, trying with existing token`);
           }
         }
 
@@ -4168,11 +4165,9 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
               tiktokAvatarUrl: userInfo.avatarUrl,
               tiktokUserName: userInfo.displayName || account.tiktokUserName,
             });
-            console.log(`Updated avatar for account ${accountId}`);
           }
 
-          // 動画リストを取得（アカウントIDでoEmbed取得も実行）
-          // tiktokAccountIdがなければprofileUrlから抽出
+          // 動画リストを取得
           let accountUsername = account.tiktokAccountId || "";
           if (!accountUsername && account.profileUrl) {
             const urlMatch = account.profileUrl.match(/@([^/?]+)/);
@@ -4180,13 +4175,8 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
           }
           const videos = await fetchAllTikTokVideos(account.accessToken, account.tiktokUserId, accountUsername);
 
-          // Firestoreに保存（サムネイルURLも更新される）
-          await saveTikTokVideosToFirestore(
-            accountId,
-            account.tiktokUserId,
-            account.productId,
-            videos
-          );
+          // Firestoreに保存
+          await saveTikTokVideosToFirestore(accountId, account.tiktokUserId, account.productId, videos);
 
           // アカウントの最終同期日時を更新
           await db.collection("tiktok_accounts").doc(accountId).update({
@@ -4203,9 +4193,15 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
           console.error(`Error syncing account ${accountId}:`, accountError?.message);
           videoSyncError++;
         }
+      };
 
-        // レート制限対策
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // 5並列でアカウント同期を実行
+      const CONCURRENCY = 5;
+      const accountDocs = accountsSnapshot.docs;
+      for (let i = 0; i < accountDocs.length; i += CONCURRENCY) {
+        const chunk = accountDocs.slice(i, i + CONCURRENCY);
+        await Promise.all(chunk.map(doc => syncOneAccount(doc)));
+        console.log(`TikTok sync progress: ${Math.min(i + CONCURRENCY, accountDocs.length)}/${accountDocs.length}`);
       }
 
       batchLog.steps.push({
@@ -4359,31 +4355,19 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
     let igTotalSnapshots = 0;
 
     if (!igAccountsSnapshot.empty) {
-      for (const igAccountDoc of igAccountsSnapshot.docs) {
+      const syncOneIgAccount = async (igAccountDoc: any) => {
         const igAccount = igAccountDoc.data();
         const igAccountId = igAccountDoc.id;
 
-        if (!igAccount.accessToken) {
-          console.warn(`Skipping Instagram account ${igAccountId}: No access token`);
-          continue;
-        }
+        if (!igAccount.accessToken) return;
 
         try {
-          // IG Business Account ID を取得
           const igBiz = await getInstagramBusinessAccountId(igAccount.accessToken);
-          if (!igBiz) {
-            console.warn(`Skipping Instagram account ${igAccountId}: No IG Business Account found`);
-            igVideoSyncError++;
-            continue;
-          }
+          if (!igBiz) { igVideoSyncError++; return; }
 
-          // 動画一覧+インサイト取得
           const igVideos = await fetchAllInstagramVideos(igBiz.pageToken, igBiz.igAccountId);
-
-          // Firestoreに保存
           await saveInstagramVideosToFirestore(igAccountId, igAccount.productId, igVideos);
 
-          // アカウントの最終同期日時を更新
           await db.collection("instagram_accounts").doc(igAccountId).update({
             lastVideoSyncAt: Timestamp.now(),
             totalVideos: igVideos.length,
@@ -4393,36 +4377,31 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
           const igBatch = db.batch();
           for (const video of igVideos) {
             const snapshotId = `${video.videoId}_${today}`;
-            const snapshotRef = db.collection("instagram_video_daily_snapshots").doc(snapshotId);
-            igBatch.set(snapshotRef, {
-              videoId: video.videoId,
-              accountId: igAccountId,
-              productId: igAccount.productId,
-              accountName: igAccount.instagramUserName || "",
-              operator: igAccount.operator || "",
-              date: today,
-              reach: video.reach || 0,
-              likeCount: video.likeCount || 0,
-              commentCount: video.commentCount || 0,
-              shares: video.shares || 0,
-              saved: video.saved || 0,
-              reelsVideoViewTotalTime: video.reelsVideoViewTotalTime || 0,
-              reelsAvgWatchTime: video.reelsAvgWatchTime || 0,
-              savedAt: new Date(),
+            igBatch.set(db.collection("instagram_video_daily_snapshots").doc(snapshotId), {
+              videoId: video.videoId, accountId: igAccountId, productId: igAccount.productId,
+              accountName: igAccount.instagramUserName || "", operator: igAccount.operator || "",
+              date: today, reach: video.reach || 0, likeCount: video.likeCount || 0,
+              commentCount: video.commentCount || 0, shares: video.shares || 0,
+              saved: video.saved || 0, reelsVideoViewTotalTime: video.reelsVideoViewTotalTime || 0,
+              reelsAvgWatchTime: video.reelsAvgWatchTime || 0, savedAt: new Date(),
             }, { merge: true });
             igTotalSnapshots++;
           }
           await igBatch.commit();
 
           igVideoSyncSuccess++;
-          console.log(`Instagram: Synced account ${igAccount.instagramUserName || igAccountId}: ${igVideos.length} videos`);
+          console.log(`Instagram: Synced ${igAccount.instagramUserName || igAccountId}: ${igVideos.length} videos`);
         } catch (igErr: any) {
           console.error(`Error syncing Instagram account ${igAccountId}:`, igErr?.message);
           igVideoSyncError++;
         }
+      };
 
-        // レート制限対策
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // 3並列でInstagramアカウント同期
+      const igDocs = igAccountsSnapshot.docs;
+      for (let i = 0; i < igDocs.length; i += 3) {
+        const chunk = igDocs.slice(i, i + 3);
+        await Promise.all(chunk.map(doc => syncOneIgAccount(doc)));
       }
     }
 
@@ -5929,29 +5908,29 @@ async function fetchAllTikTokVideos(
     }
   }
 
-  // oEmbed APIでタイトル・サムネ・share_urlを取得
+  // oEmbed APIでタイトル・サムネ・share_urlを取得（5並列）
   if (tiktokAccountId && allVideos.length > 0) {
     console.log(`Fetching oEmbed data for ${allVideos.length} videos (@${tiktokAccountId})...`);
-    for (const video of allVideos) {
-      try {
+    const OEMBED_CONCURRENCY = 5;
+    for (let i = 0; i < allVideos.length; i += OEMBED_CONCURRENCY) {
+      const chunk = allVideos.slice(i, i + OEMBED_CONCURRENCY);
+      await Promise.all(chunk.map(async (video) => {
         const videoUrl = `https://www.tiktok.com/@${tiktokAccountId}/video/${video.id}`;
-        const oembedRes = await axios.get('https://www.tiktok.com/oembed', {
-          params: { url: videoUrl },
-          timeout: 5000,
-        });
-        const oembed = oembedRes.data;
-        if (oembed) {
-          video.title = oembed.title || "";
-          video.cover_image_url = oembed.thumbnail_url || "";
+        try {
+          const oembedRes = await axios.get('https://www.tiktok.com/oembed', {
+            params: { url: videoUrl },
+            timeout: 5000,
+          });
+          const oembed = oembedRes.data;
+          if (oembed) {
+            video.title = oembed.title || "";
+            video.cover_image_url = oembed.thumbnail_url || "";
+            video.share_url = videoUrl;
+          }
+        } catch (err: any) {
           video.share_url = videoUrl;
         }
-      } catch (err: any) {
-        // oEmbed失敗は無視（動画が非公開等）
-        video.share_url = `https://www.tiktok.com/@${tiktokAccountId}/video/${video.id}`;
-        console.log(`oEmbed failed for ${video.id}: ${err?.message}`);
-      }
-      // レート制限対策
-      await new Promise(resolve => setTimeout(resolve, 200));
+      }));
     }
     console.log(`oEmbed data fetched for ${allVideos.length} videos`);
   }
@@ -9130,11 +9109,14 @@ async function fetchAllInstagramVideos(
       const data: any = response.data;
       const mediaItems: any[] = data?.data || [];
 
-      for (const item of mediaItems) {
-        // VIDEO/REELS のみ対象
-        if (item.media_type !== 'VIDEO') continue;
+      // VIDEO/REELSのみフィルタ
+      const videoItems = mediaItems.filter((item: any) => item.media_type === 'VIDEO');
 
-        // インサイト取得
+      // インサイトを5並列で取得
+      const IG_INSIGHT_CONCURRENCY = 5;
+      for (let vi = 0; vi < videoItems.length; vi += IG_INSIGHT_CONCURRENCY) {
+        const chunk = videoItems.slice(vi, vi + IG_INSIGHT_CONCURRENCY);
+        await Promise.all(chunk.map(async (item: any) => {
         let insights: Record<string, number> = {};
         try {
           const insightProof = generateProof(accessToken);
@@ -9171,8 +9153,7 @@ async function fetchAllInstagramVideos(
           reelsAvgWatchTime: insights.ig_reels_avg_watch_time || 0,
         });
 
-        // レート制限対策
-        await new Promise(resolve => setTimeout(resolve, 200));
+        }));
       }
 
       console.log(`Instagram: Fetched ${mediaItems.length} media items (${allVideos.length} videos total)`);
