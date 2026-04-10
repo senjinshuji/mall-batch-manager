@@ -780,39 +780,112 @@ export default function DashboardPage() {
     setAiResult(null);
 
     try {
-      // 売上データを整形（チャネル別）- 売上0の日も含める
-      const formatSalesData = (data: ProductSalesData[]) => data.map(day => {
-        const channels: Record<string, number> = {};
-        ALL_CHANNELS.forEach(ch => {
-          const val = (day[`${ch.key}_sales`] as number) || 0;
-          if (val > 0) channels[ch.label] = val;
-        });
-        return { date: day.date, views: day.totalViews || 0, ...channels };
-      });
+      // 商品IDを特定
+      const targetProducts = registeredProducts.filter(p => p.productName === selectedProduct);
+      const productIds = targetProducts.map(p => p.id);
 
-      const salesData = formatSalesData(productSalesData);
-      const prevSalesData = formatSalesData(prevProductSalesData);
+      // 過去90日分の起点
+      const historicalStart = new Date(startDate);
+      historicalStart.setDate(historicalStart.getDate() - 90);
+      const historicalStartStr = historicalStart.toISOString().split("T")[0];
 
-      // フラグデータ（前期間も含む）
-      const daysDiff = Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1;
-      const prevStart = new Date(startDate);
-      prevStart.setDate(prevStart.getDate() - daysDiff);
-      const prevStartStr = prevStart.toISOString().split("T")[0];
+      // 5コレクションから過去90日分の生データを並列取得
+      type RawRow = { date: string; channel: string; sales: number; qty: number; views?: number };
+      const rawRows: RawRow[] = [];
+      const safeQuery = async (colName: string, productId: string) => {
+        try { return await getDocs(query(collection(db, colName), where("productId", "==", productId))); }
+        catch { return null; }
+      };
 
-      const flagsData = eventFlags
-        .filter(f => f.date <= endDate && (f.endDate || f.date) >= prevStartStr)
+      const promises: Promise<void>[] = [];
+      for (const pid of productIds) {
+        promises.push(
+          safeQuery("amazon_daily_sales", pid).then(snap => {
+            snap?.docs.forEach(d => {
+              const data = d.data();
+              if (data.date >= historicalStartStr && data.date <= endDate) {
+                rawRows.push({ date: data.date, channel: "Amazon", sales: data.salesAmount || 0, qty: data.orderedUnits || 0 });
+              }
+            });
+          })
+        );
+        promises.push(
+          safeQuery("rakuten_daily_sales", pid).then(snap => {
+            snap?.docs.forEach(d => {
+              const data = d.data();
+              if (data.date >= historicalStartStr && data.date <= endDate) {
+                rawRows.push({ date: data.date, channel: "楽天", sales: data.salesAmount || 0, qty: data.salesCount || data.orderedUnits || 0 });
+              }
+            });
+          })
+        );
+        promises.push(
+          safeQuery("product_sales", pid).then(snap => {
+            snap?.docs.forEach(d => {
+              const data = d.data();
+              if (data.date >= historicalStartStr && data.date <= endDate) {
+                const ch = data.mall === "amazon" ? "Amazon" : data.mall === "qoo10" ? "Qoo10" : data.mall === "rakuten" ? "楽天" : null;
+                if (ch) rawRows.push({ date: data.date, channel: ch, sales: data.sales || 0, qty: data.quantity || 0 });
+              }
+            });
+          })
+        );
+        promises.push(
+          safeQuery("unified_daily_sales", pid).then(snap => {
+            snap?.docs.forEach(d => {
+              const data = d.data();
+              if (data.date >= historicalStartStr && data.date <= endDate) {
+                rawRows.push({ date: data.date, channel: data.channel, sales: data.salesAmount || 0, qty: data.quantity || 0 });
+              }
+            });
+          })
+        );
+        promises.push(
+          safeQuery("daily_views", pid).then(snap => {
+            snap?.docs.forEach(d => {
+              const data = d.data();
+              if (data.date >= historicalStartStr && data.date <= endDate) {
+                rawRows.push({ date: data.date, channel: "__views__", sales: 0, qty: 0, views: data.views || 0 });
+              }
+            });
+          })
+        );
+      }
+      await Promise.allSettled(promises);
+
+      // 集計: 日付ごとにチャネル別売上 + 再生数
+      const aggregated: Record<string, Record<string, number>> = {};
+      for (const row of rawRows) {
+        if (!aggregated[row.date]) aggregated[row.date] = { views: 0 };
+        if (row.channel === "__views__") {
+          aggregated[row.date].views = (aggregated[row.date].views || 0) + (row.views || 0);
+        } else {
+          aggregated[row.date][row.channel] = (aggregated[row.date][row.channel] || 0) + row.sales;
+        }
+      }
+
+      // 配列化してソート
+      const allDailyData = Object.entries(aggregated)
+        .map(([date, data]) => ({ date, ...data }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      // 当期間と過去のデータに分割
+      const currentDailyData = allDailyData.filter(d => d.date >= startDate && d.date <= endDate);
+      const historicalDailyData = allDailyData.filter(d => d.date < startDate);
+
+      // フラグデータ（過去90日分も含めて全て送る）
+      const allFlags = eventFlags
+        .filter(f => f.date <= endDate && (f.endDate || f.date) >= historicalStartStr)
         .map(f => ({ name: f.name, date: f.date, endDate: f.endDate || "", mall: f.mall || "", scope: f.scope || "global" }));
 
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          salesData,
-          prevSalesData,
-          flagsData,
+          currentPeriod: { startDate, endDate, dailyData: currentDailyData },
+          historicalData: { startDate: historicalStartStr, endDate: (() => { const d = new Date(startDate); d.setDate(d.getDate() - 1); return d.toISOString().split("T")[0]; })(), dailyData: historicalDailyData },
+          flagsData: allFlags,
           productName: selectedProduct,
-          startDate,
-          endDate,
         }),
       });
 
