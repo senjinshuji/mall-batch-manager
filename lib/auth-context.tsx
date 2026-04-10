@@ -68,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const data = doc.data();
 
         if (data.password !== password) {
-          return { success: false, error: "パスワードが正しくありません" };
+          return { success: false, error: "IDまたはパスワードが正しくありません" };
         }
 
         const newUser: User = {
@@ -86,13 +86,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch (err) {
       console.error("クライアントアカウント照合エラー:", err);
+      return { success: false, error: "ログイン処理でエラーが発生しました" };
     }
 
-    // 3. デモユーザー
-    const newUser: User = { loginId, isRealDataUser: false, role: "demo" };
-    setUser(newUser);
-    sessionStorage.setItem("mall_manager_user", JSON.stringify(newUser));
-    return { success: true };
+    // 登録済みアカウントでない場合はログイン拒否
+    return { success: false, error: "IDまたはパスワードが正しくありません" };
   };
 
   const logout = () => {
