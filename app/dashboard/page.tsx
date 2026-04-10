@@ -127,6 +127,11 @@ export default function DashboardPage() {
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
   const [aiResult, setAiResult] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [aiFactsMarkdown, setAiFactsMarkdown] = useState<string | null>(null);
+  // チャット用
+  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const today = new Date();
@@ -778,6 +783,8 @@ export default function DashboardPage() {
     setAiAnalyzing(true);
     setAiError(null);
     setAiResult(null);
+    setAiFactsMarkdown(null);
+    setChatMessages([]);
 
     try {
       // 商品IDを特定
@@ -907,11 +914,46 @@ export default function DashboardPage() {
         setAiError(data.error);
       } else {
         setAiResult(data.analysis);
+        setAiFactsMarkdown(data.factsMarkdown || null);
       }
     } catch (err: unknown) {
       setAiError(err instanceof Error ? err.message : "分析に失敗しました");
     } finally {
       setAiAnalyzing(false);
+    }
+  };
+
+  // チャット送信
+  const handleChatSend = async () => {
+    const text = chatInput.trim();
+    if (!text || !aiFactsMarkdown || chatLoading) return;
+
+    const newMessages: { role: "user" | "assistant"; content: string }[] = [...chatMessages, { role: "user", content: text }];
+    setChatMessages(newMessages);
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const response = await fetch("/api/analyze/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          factsMarkdown: aiFactsMarkdown,
+          messages: newMessages,
+          productName: selectedProduct,
+        }),
+      });
+      const data = await response.json();
+      if (data.error) {
+        setChatMessages([...newMessages, { role: "assistant", content: `エラー: ${data.error}` }]);
+      } else {
+        setChatMessages([...newMessages, { role: "assistant", content: data.reply }]);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "通信エラー";
+      setChatMessages([...newMessages, { role: "assistant", content: `エラー: ${msg}` }]);
+    } finally {
+      setChatLoading(false);
     }
   };
 
@@ -1755,20 +1797,74 @@ export default function DashboardPage() {
           )}
 
           {aiResult && (
-            <div className="prose prose-sm max-w-none text-gray-700 max-h-[600px] overflow-y-auto">
-              {aiResult.split("\n").map((line, i) => {
-                if (line.startsWith("# ")) return <h1 key={i} className="text-xl font-bold text-gray-900 mt-4 mb-2">{line.slice(2)}</h1>;
-                if (line.startsWith("## ")) return <h2 key={i} className="text-lg font-bold text-gray-800 mt-4 mb-2">{line.slice(3)}</h2>;
-                if (line.startsWith("### ")) return <h3 key={i} className="text-base font-bold text-gray-700 mt-3 mb-1">{line.slice(4)}</h3>;
-                if (line.startsWith("#### ")) return <h4 key={i} className="text-sm font-bold text-gray-700 mt-2 mb-1">{line.slice(5)}</h4>;
-                if (line.startsWith("- ") || line.startsWith("* ")) return <li key={i} className="ml-4 text-sm">{line.slice(2)}</li>;
-                if (line.startsWith("|")) return <pre key={i} className="text-xs bg-gray-50 px-2 py-0.5 rounded overflow-x-auto">{line}</pre>;
-                if (line.startsWith("```")) return null;
-                if (line.trim() === "") return <br key={i} />;
-                if (line.startsWith("**") && line.endsWith("**")) return <p key={i} className="font-bold text-sm mt-2">{line.slice(2, -2)}</p>;
-                return <p key={i} className="text-sm leading-relaxed">{line}</p>;
-              })}
-            </div>
+            <>
+              <div className="prose prose-sm max-w-none text-gray-700 max-h-[600px] overflow-y-auto">
+                {aiResult.split("\n").map((line, i) => {
+                  if (line.startsWith("# ")) return <h1 key={i} className="text-xl font-bold text-gray-900 mt-4 mb-2">{line.slice(2)}</h1>;
+                  if (line.startsWith("## ")) return <h2 key={i} className="text-lg font-bold text-gray-800 mt-4 mb-2">{line.slice(3)}</h2>;
+                  if (line.startsWith("### ")) return <h3 key={i} className="text-base font-bold text-gray-700 mt-3 mb-1">{line.slice(4)}</h3>;
+                  if (line.startsWith("#### ")) return <h4 key={i} className="text-sm font-bold text-gray-700 mt-2 mb-1">{line.slice(5)}</h4>;
+                  if (line.startsWith("- ") || line.startsWith("* ")) return <li key={i} className="ml-4 text-sm">{line.slice(2)}</li>;
+                  if (line.startsWith("|")) return <pre key={i} className="text-xs bg-gray-50 px-2 py-0.5 rounded overflow-x-auto">{line}</pre>;
+                  if (line.startsWith("```")) return null;
+                  if (line.trim() === "") return <br key={i} />;
+                  if (line.startsWith("**") && line.endsWith("**")) return <p key={i} className="font-bold text-sm mt-2">{line.slice(2, -2)}</p>;
+                  return <p key={i} className="text-sm leading-relaxed">{line}</p>;
+                })}
+              </div>
+
+              {/* チャット */}
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="flex items-center gap-2 mb-3">
+                  <Sparkles className="w-4 h-4 text-purple-500" />
+                  <h3 className="text-sm font-semibold text-gray-700">フォローアップ質問</h3>
+                </div>
+
+                {chatMessages.length > 0 && (
+                  <div className="space-y-3 mb-3 max-h-[400px] overflow-y-auto pr-2">
+                    {chatMessages.map((msg, i) => (
+                      <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                        <div className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${msg.role === "user" ? "bg-purple-100 text-purple-900" : "bg-gray-100 text-gray-700"}`}>
+                          {msg.content.split("\n").map((line, j) => {
+                            if (line.startsWith("- ") || line.startsWith("* ")) return <li key={j} className="ml-4 text-sm">{line.slice(2)}</li>;
+                            if (line.startsWith("**") && line.endsWith("**")) return <p key={j} className="font-bold">{line.slice(2, -2)}</p>;
+                            if (line.trim() === "") return <br key={j} />;
+                            return <p key={j} className="leading-relaxed">{line}</p>;
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                    {chatLoading && (
+                      <div className="flex justify-start">
+                        <div className="px-3 py-2 rounded-lg bg-gray-100 flex items-center gap-2">
+                          <RefreshCw className="w-3 h-3 animate-spin text-gray-500" />
+                          <span className="text-xs text-gray-500">考えています...</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleChatSend(); } }}
+                    disabled={chatLoading}
+                    placeholder="例: 3/22のバズについて詳しく / もっと深掘りして"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none text-sm disabled:opacity-50"
+                  />
+                  <button
+                    onClick={handleChatSend}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    送信
+                  </button>
+                </div>
+              </div>
+            </>
           )}
         </div>
       )}

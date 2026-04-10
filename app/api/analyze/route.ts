@@ -528,7 +528,8 @@ ${factsMarkdown}
 
     const responseText = response.choices[0]?.message?.content || "分析結果を取得できませんでした。";
 
-    return NextResponse.json({ analysis: responseText });
+    // ファクトシートも返す（チャットで再利用するため）
+    return NextResponse.json({ analysis: responseText, factsMarkdown });
   } catch (error: unknown) {
     console.error("AI分析エラー:", error);
     const msg = error instanceof Error ? error.message : String(error);
