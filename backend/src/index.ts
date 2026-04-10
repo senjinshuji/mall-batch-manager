@@ -4195,8 +4195,8 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
         }
       };
 
-      // 5並列でアカウント同期を実行
-      const CONCURRENCY = 5;
+      // 10並列でアカウント同期を実行
+      const CONCURRENCY = 10;
       const accountDocs = accountsSnapshot.docs;
       for (let i = 0; i < accountDocs.length; i += CONCURRENCY) {
         const chunk = accountDocs.slice(i, i + CONCURRENCY);
@@ -4397,10 +4397,10 @@ app.post("/trigger-batch", async (req: Request, res: Response) => {
         }
       };
 
-      // 3並列でInstagramアカウント同期
+      // 10並列でInstagramアカウント同期
       const igDocs = igAccountsSnapshot.docs;
-      for (let i = 0; i < igDocs.length; i += 3) {
-        const chunk = igDocs.slice(i, i + 3);
+      for (let i = 0; i < igDocs.length; i += 10) {
+        const chunk = igDocs.slice(i, i + 10);
         await Promise.all(chunk.map(doc => syncOneIgAccount(doc)));
       }
     }
@@ -5911,7 +5911,7 @@ async function fetchAllTikTokVideos(
   // oEmbed APIでタイトル・サムネ・share_urlを取得（5並列）
   if (tiktokAccountId && allVideos.length > 0) {
     console.log(`Fetching oEmbed data for ${allVideos.length} videos (@${tiktokAccountId})...`);
-    const OEMBED_CONCURRENCY = 5;
+    const OEMBED_CONCURRENCY = 10;
     for (let i = 0; i < allVideos.length; i += OEMBED_CONCURRENCY) {
       const chunk = allVideos.slice(i, i + OEMBED_CONCURRENCY);
       await Promise.all(chunk.map(async (video) => {
@@ -9113,7 +9113,7 @@ async function fetchAllInstagramVideos(
       const videoItems = mediaItems.filter((item: any) => item.media_type === 'VIDEO');
 
       // インサイトを5並列で取得
-      const IG_INSIGHT_CONCURRENCY = 5;
+      const IG_INSIGHT_CONCURRENCY = 10;
       for (let vi = 0; vi < videoItems.length; vi += IG_INSIGHT_CONCURRENCY) {
         const chunk = videoItems.slice(vi, vi + IG_INSIGHT_CONCURRENCY);
         await Promise.all(chunk.map(async (item: any) => {
