@@ -11,7 +11,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X, Eye, Package } from "lucide-react";
+import { TrendingUp, Megaphone, Share2, ChevronDown, RefreshCw, Flag, X, Eye, Package, Sparkles } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, query, orderBy, onSnapshot, Timestamp, getDocs, where } from "firebase/firestore";
 import { formatCurrency } from "@/lib/mockData";
@@ -122,6 +122,11 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [productLoading, setProductLoading] = useState(false);
   const fetchGenRef = useRef(0); // フェッチ世代カウンター
+
+  // AI分析用
+  const [aiAnalyzing, setAiAnalyzing] = useState(false);
+  const [aiResult, setAiResult] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const today = new Date();
@@ -757,6 +762,63 @@ export default function DashboardPage() {
       </div>
     );
   }
+
+  // AI分析実行
+  const handleAiAnalysis = async () => {
+    if (!selectedProduct || productSalesData.length === 0) return;
+    setAiAnalyzing(true);
+    setAiError(null);
+    setAiResult(null);
+
+    try {
+      // 売上データを整形（チャネル別）- 売上0の日も含める
+      const formatSalesData = (data: ProductSalesData[]) => data.map(day => {
+        const channels: Record<string, number> = {};
+        ALL_CHANNELS.forEach(ch => {
+          const val = (day[`${ch.key}_sales`] as number) || 0;
+          if (val > 0) channels[ch.label] = val;
+        });
+        return { date: day.date, views: day.totalViews || 0, ...channels };
+      });
+
+      const salesData = formatSalesData(productSalesData);
+      const prevSalesData = formatSalesData(prevProductSalesData);
+
+      // フラグデータ（前期間も含む）
+      const daysDiff = Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1;
+      const prevStart = new Date(startDate);
+      prevStart.setDate(prevStart.getDate() - daysDiff);
+      const prevStartStr = prevStart.toISOString().split("T")[0];
+
+      const flagsData = eventFlags
+        .filter(f => f.date <= endDate && (f.endDate || f.date) >= prevStartStr)
+        .map(f => ({ name: f.name, date: f.date, endDate: f.endDate || "", mall: f.mall || "", scope: f.scope || "global" }));
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          salesData,
+          prevSalesData,
+          flagsData,
+          productName: selectedProduct,
+          startDate,
+          endDate,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.error) {
+        setAiError(data.error);
+      } else {
+        setAiResult(data.analysis);
+      }
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : "分析に失敗しました");
+    } finally {
+      setAiAnalyzing(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -1564,6 +1626,58 @@ export default function DashboardPage() {
       </div>
 
       {/* フラグ詳細モーダル */}
+      {/* AI分析（β版） */}
+      {selectedProduct && productSalesData.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-purple-600" />
+              <h2 className="text-base font-semibold text-gray-700">AI分析（β版）</h2>
+            </div>
+            <button
+              onClick={handleAiAnalysis}
+              disabled={aiAnalyzing}
+              className="flex items-center gap-2 px-4 py-1.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-lg hover:from-violet-600 hover:to-purple-700 disabled:opacity-50 transition-all text-sm"
+            >
+              {aiAnalyzing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {aiAnalyzing ? "分析中..." : aiResult ? "再分析" : "分析する"}
+            </button>
+          </div>
+
+          {!aiResult && !aiAnalyzing && !aiError && (
+            <p className="text-sm text-gray-400 py-6 text-center">「分析する」ボタンを押すと、SNS再生数と売上の相関をAIが分析します</p>
+          )}
+
+          {aiAnalyzing && (
+            <div className="flex items-center justify-center py-8 gap-3">
+              <RefreshCw className="w-6 h-6 text-purple-500 animate-spin" />
+              <p className="text-gray-500 text-sm">データを解析しています。30秒ほどお待ちください...</p>
+            </div>
+          )}
+
+          {aiError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{aiError}</div>
+          )}
+
+          {aiResult && (
+            <div className="prose prose-sm max-w-none text-gray-700 max-h-[600px] overflow-y-auto">
+              {aiResult.split("\n").map((line, i) => {
+                if (line.startsWith("# ")) return <h1 key={i} className="text-xl font-bold text-gray-900 mt-4 mb-2">{line.slice(2)}</h1>;
+                if (line.startsWith("## ")) return <h2 key={i} className="text-lg font-bold text-gray-800 mt-4 mb-2">{line.slice(3)}</h2>;
+                if (line.startsWith("### ")) return <h3 key={i} className="text-base font-bold text-gray-700 mt-3 mb-1">{line.slice(4)}</h3>;
+                if (line.startsWith("#### ")) return <h4 key={i} className="text-sm font-bold text-gray-700 mt-2 mb-1">{line.slice(5)}</h4>;
+                if (line.startsWith("- ") || line.startsWith("* ")) return <li key={i} className="ml-4 text-sm">{line.slice(2)}</li>;
+                if (line.startsWith("|")) return <pre key={i} className="text-xs bg-gray-50 px-2 py-0.5 rounded overflow-x-auto">{line}</pre>;
+                if (line.startsWith("```")) return null;
+                if (line.trim() === "") return <br key={i} />;
+                if (line.startsWith("**") && line.endsWith("**")) return <p key={i} className="font-bold text-sm mt-2">{line.slice(2, -2)}</p>;
+                return <p key={i} className="text-sm leading-relaxed">{line}</p>;
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {selectedFlag && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
