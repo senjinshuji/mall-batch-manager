@@ -15,7 +15,7 @@ const db = getFirestore(app);
 // =====================================================================
 
 type DailyData = { date: string; views?: number; [channel: string]: number | string | undefined };
-type Flag = { name: string; date: string; endDate?: string; mall?: string; scope?: string };
+type Flag = { name: string; date: string; endDate?: string; mall?: string; scope?: string; description?: string };
 
 const formatYen = (n: number) => `¥${n.toLocaleString()}`;
 const formatNum = (n: number) => n.toLocaleString();
@@ -133,6 +133,42 @@ function computeFactsForSale(allData: DailyData[], channels: string[], sale: Fla
   return { start, end, days: inPeriod.length, channelTotals, totalSales, viewsTotal };
 }
 
+// 商品別フラグの影響を計算（フラグ前 N 日 vs フラグ後 N 日の売上比較）
+function computeProductFlagImpact(allData: DailyData[], channels: string[], flag: Flag, windowDays: number = 7) {
+  const flagStart = new Date(flag.date);
+  const flagEnd = new Date(flag.endDate || flag.date);
+
+  // フラグ前 windowDays日
+  const beforeStart = new Date(flagStart);
+  beforeStart.setDate(beforeStart.getDate() - windowDays);
+  const beforeEnd = new Date(flagStart);
+  beforeEnd.setDate(beforeEnd.getDate() - 1);
+
+  // フラグ期間（含む）
+  const duringStart = flagStart;
+  const duringEnd = flagEnd;
+
+  // フラグ後 windowDays日
+  const afterStart = new Date(flagEnd);
+  afterStart.setDate(afterStart.getDate() + 1);
+  const afterEnd = new Date(flagEnd);
+  afterEnd.setDate(afterEnd.getDate() + windowDays);
+
+  const toStr = (d: Date) => d.toISOString().split("T")[0];
+
+  const sumInRange = (from: string, to: string) => {
+    const inRange = allData.filter(d => d.date >= from && d.date <= to);
+    const total = inRange.reduce((s, d) => s + getDayTotalSales(d, channels), 0);
+    return { total, days: inRange.length, avgPerDay: inRange.length > 0 ? Math.round(total / inRange.length) : 0 };
+  };
+
+  const before = sumInRange(toStr(beforeStart), toStr(beforeEnd));
+  const during = sumInRange(toStr(duringStart), toStr(duringEnd));
+  const after = sumInRange(toStr(afterStart), toStr(afterEnd));
+
+  return { before, during, after };
+}
+
 // 通常期 vs セール期の比較
 function computePeriodComparison(data: DailyData[], channels: string[], saleDateRanges: { start: string; end: string }[]) {
   const isInSale = (date: string) => saleDateRanges.some(r => date >= r.start && date <= r.end);
@@ -195,17 +231,33 @@ function computeAllFacts(currentDailyData: DailyData[], historicalDailyData: Dai
     };
   }).filter((d): d is NonNullable<typeof d> => d !== null);
 
-  // 5. 当期間のセール期間と前回セール比較
-  const currentSales = flags.filter(f => f.date <= currentEnd && (f.endDate || f.date) >= currentStart);
-  const saleComparisons = currentSales.map(sale => {
+  // 5. 当期間のグローバルセール（モール共通）と前回セール比較
+  const currentGlobalSales = flags.filter(f =>
+    (f.scope || "global") === "global" &&
+    f.date <= currentEnd && (f.endDate || f.date) >= currentStart
+  );
+  const saleComparisons = currentGlobalSales.map(sale => {
     const current = computeFactsForSale(allData, channels, sale);
     const prev = findPreviousSale(sale, flags);
     const previous = prev ? computeFactsForSale(allData, channels, prev) : null;
     return { saleName: sale.name, mall: sale.mall || "", current, previous };
   });
 
-  // 6. 通常期 vs セール期
-  const saleRanges = currentSales.map(s => ({ start: s.date, end: s.endDate || s.date }));
+  // 6. 当期間の商品別フラグ（売上への影響を前後比較）
+  const currentProductFlags = flags.filter(f =>
+    f.scope === "product" &&
+    f.date <= currentEnd && (f.endDate || f.date) >= currentStart
+  );
+  const productFlagImpacts = currentProductFlags.map(flag => ({
+    name: flag.name,
+    description: flag.description || "",
+    date: flag.date,
+    endDate: flag.endDate || flag.date,
+    impact: computeProductFlagImpact(allData, channels, flag, 7),
+  }));
+
+  // 7. 通常期 vs セール期
+  const saleRanges = currentGlobalSales.map(s => ({ start: s.date, end: s.endDate || s.date }));
   const periodComparison = computePeriodComparison(currentDailyData, channels, saleRanges);
 
   return {
@@ -217,6 +269,7 @@ function computeAllFacts(currentDailyData: DailyData[], historicalDailyData: Dai
     spikeDays,
     attentionDayDetails,
     saleComparisons,
+    productFlagImpacts,
     periodComparison,
   };
 }
@@ -319,8 +372,30 @@ function factsToMarkdown(facts: ReturnType<typeof computeAllFacts>, productName:
   }
   lines.push(``);
 
+  // 商品別フラグの影響
+  lines.push(`## 8. 商品別フラグと売上影響（フラグ前7日 vs 期間中 vs フラグ後7日）`);
+  if (facts.productFlagImpacts.length === 0) {
+    lines.push(`- 当期間に商品別フラグなし`);
+  } else {
+    facts.productFlagImpacts.forEach(f => {
+      lines.push(`### ${f.name}（${f.date}${f.endDate !== f.date ? ` 〜 ${f.endDate}` : ""}）`);
+      if (f.description) lines.push(`- 詳細: ${f.description}`);
+      lines.push(`- フラグ前7日: 1日平均 ${formatYen(f.impact.before.avgPerDay)} / 合計 ${formatYen(f.impact.before.total)}`);
+      lines.push(`- フラグ期間中: 1日平均 ${formatYen(f.impact.during.avgPerDay)} / 合計 ${formatYen(f.impact.during.total)}`);
+      lines.push(`- フラグ後7日: 1日平均 ${formatYen(f.impact.after.avgPerDay)} / 合計 ${formatYen(f.impact.after.total)}`);
+      // 影響度の判定（前7日と期間中+後7日の平均比）
+      const beforeAvg = f.impact.before.avgPerDay;
+      const afterAvg = Math.round((f.impact.during.total + f.impact.after.total) / Math.max(f.impact.during.days + f.impact.after.days, 1));
+      if (beforeAvg > 0) {
+        const lift = Math.round(((afterAvg - beforeAvg) / beforeAvg) * 1000) / 10;
+        lines.push(`- フラグ前後の比率: ${lift >= 0 ? "+" : ""}${lift}%（フラグ後7日+期間中の1日平均 vs フラグ前7日の1日平均）`);
+      }
+    });
+  }
+  lines.push(``);
+
   // 通常期 vs セール期
-  lines.push(`## 8. 通常期 vs セール期の比較`);
+  lines.push(`## 9. 通常期 vs セール期の比較`);
   lines.push(`- セール期間: ${facts.periodComparison.saleDays}日 / 1日平均 ${formatYen(facts.periodComparison.saleAvgPerDay)} / 合計 ${formatYen(facts.periodComparison.saleTotal)}`);
   lines.push(`- 通常期間: ${facts.periodComparison.normalDays}日 / 1日平均 ${formatYen(facts.periodComparison.normalAvgPerDay)} / 合計 ${formatYen(facts.periodComparison.normalTotal)}`);
 
@@ -344,13 +419,15 @@ const SYSTEM_PROMPT = `あなたはプロのECデータアナリストです。
 1. **サマリー**（3〜5行）: 期間全体の概況
 2. **注目日の分析**: ファクトシートの「注目日」セクションから、特に重要な日を取り上げ、SNSが売上に効いた可能性を考察
 3. **モール別分析（Amazon、楽天、Qoo10、その他データがあるチャネル）**: 各モールの売上推移と、セール期間がある場合は前回比較を引用
-4. **ファインディングスと提言**: SNSが売上に効いた/効かなかったの結論、最も売上に貢献した日とその理由、今後のSNS運用への提言
+4. **商品別フラグの影響分析**（該当する場合のみ）: 商品別フラグがある場合、フラグ前後の売上変化から「売上に影響があったか」を判定。影響が見られないフラグ（フラグ前後で売上に有意な変化なし）はレポートから除外して構わない。**売上に明確な影響が見られた場合のみ言及すること。**
+5. **ファインディングスと提言**: SNSが売上に効いた/効かなかったの結論、最も売上に貢献した日とその理由、今後のSNS運用への提言
 
 ## 注意事項
 - 売上トップ5日の中に再生数が高い日があれば、SNSが売上に貢献した強い証拠として言及すること
 - 売上0の日が多い場合は「売上なし」と正直に書くこと
 - 前回セール比較は必ずファクトシートの「### XXX」セクションから日付付きで引用すること
-- 推測や予想を語るときは「〜と考えられる」「〜の可能性がある」と明示`;
+- 推測や予想を語るときは「〜と考えられる」「〜の可能性がある」と明示
+- 商品別フラグの影響を判定する際の目安: フラグ前後の比率が±20%以上変化していれば「影響あり」と評価する。それ未満なら「影響は見られない」として言及をスキップしてよい。`;
 
 // =====================================================================
 // API ハンドラ

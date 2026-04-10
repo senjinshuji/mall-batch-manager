@@ -874,9 +874,22 @@ export default function DashboardPage() {
       const historicalDailyData = allDailyData.filter(d => d.date < startDate);
 
       // フラグデータ（過去90日分も含めて全て送る）
+      // 商品別フラグは選択中商品に紐づくものだけに絞る
+      const productIdSet = new Set(productIds);
       const allFlags = eventFlags
         .filter(f => f.date <= endDate && (f.endDate || f.date) >= historicalStartStr)
-        .map(f => ({ name: f.name, date: f.date, endDate: f.endDate || "", mall: f.mall || "", scope: f.scope || "global" }));
+        .filter(f => {
+          if (f.scope !== "product") return true; // global flagsは全て
+          return f.productId && productIdSet.has(f.productId); // 商品別は紐づくものだけ
+        })
+        .map(f => ({
+          name: f.name,
+          date: f.date,
+          endDate: f.endDate || "",
+          mall: f.mall || "",
+          scope: f.scope || "global",
+          description: f.description || "",
+        }));
 
       const response = await fetch("/api/analyze", {
         method: "POST",
