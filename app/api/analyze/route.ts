@@ -10,111 +10,356 @@ const firebaseConfig = {
 const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-const SYSTEM_PROMPT = `あなたはプロのECデータアナリストです。数値に基づいた厳密な分析を行います。
+// =====================================================================
+// 事前計算ロジック - 全ての数値はここで計算する。GPTには計算済みの事実のみ渡す
+// =====================================================================
 
-## 絶対ルール
-- **全ての主張に具体的な数値（円額・件数・%）を必ず添えること。** 数値のない考察は禁止。
-- **「増加した」「貢献した」等の主張は、必ず比較対象の数値とセットで記述すること。**
-  - 良い例: 「楽天の今回マラソン期間（4/4〜4/10）売上は¥523,000（前回マラソン3/4〜3/10 ¥312,000 → +67.6%）」
-  - 悪い例: 「売上が大幅に増加しました」
-- **売れていない場合は正直に「売れていない」と書くこと。** 無理にポジティブな解釈をしない。
-- データが0円の日が続く場合、それは「安定」ではなく「売上なし」と表現すること。
-- セール比較では**必ず前回セールの開催日付**（例: 「前回マラソン 3/4〜3/10」）を明記すること。
+type DailyData = { date: string; views?: number; [channel: string]: number | string | undefined };
+type Flag = { name: string; date: string; endDate?: string; mall?: string; scope?: string };
 
-## セールの定義
-* 楽天: 【大】楽天スーパーSALE / 【中】お買い物マラソン、ブラックフライデー等 / 【小】5と0のつく日、ワンダフルデー等
-* Amazon: 【大】プライムデー、ブラックフライデー / 【中】プライム感謝祭、新生活SALE等 / 【小】タイムセール祭り等
-* Qoo10: 【大】メガ割 / 【小】メガポ、スーパーセール等
+const formatYen = (n: number) => `¥${n.toLocaleString()}`;
+const formatNum = (n: number) => n.toLocaleString();
 
----
+function getChannelKeys(data: DailyData[]): string[] {
+  const keys = new Set<string>();
+  for (const d of data) {
+    for (const k of Object.keys(d)) {
+      if (k !== "date" && k !== "views") keys.add(k);
+    }
+  }
+  return Array.from(keys);
+}
 
-## 分析手順（必ずこの順で実行）
+function getDayTotalSales(d: DailyData, channels: string[]): number {
+  return channels.reduce((sum, ch) => sum + ((d[ch] as number) || 0), 0);
+}
 
-### Step 1: データの実態把握
-当期間データを見て以下を算出:
-- 各モールの売上合計額・1日平均
-- 再生数の合計・1日平均
-- 売上が0の日数 / データがある日数
+function computeChannelStats(data: DailyData[], channels: string[]) {
+  const stats: Record<string, { total: number; daysWithSales: number; avgPerDay: number; zerodays: number }> = {};
+  for (const ch of channels) {
+    const total = data.reduce((s, d) => s + ((d[ch] as number) || 0), 0);
+    const daysWithSales = data.filter(d => ((d[ch] as number) || 0) > 0).length;
+    stats[ch] = {
+      total,
+      daysWithSales,
+      avgPerDay: data.length > 0 ? Math.round(total / data.length) : 0,
+      zerodays: data.length - daysWithSales,
+    };
+  }
+  return stats;
+}
 
-### Step 2: 注目日の特定（重要）
-以下の3つの方法で**「注目日」**を特定し、和集合を分析対象とする:
+function computeViewStats(data: DailyData[]) {
+  const totalViews = data.reduce((s, d) => s + (d.views || 0), 0);
+  const daysWithViews = data.filter(d => (d.views || 0) > 0).length;
+  return {
+    totalViews,
+    daysWithViews,
+    avgPerDay: data.length > 0 ? Math.round(totalViews / data.length) : 0,
+  };
+}
 
-**方法1: 売上トップ5日**
-- 当期間で全モール合計売上が最も高い日トップ5を抽出
-- それぞれの日付・売上額・その日の再生数を記載
+function getTopSalesDays(data: DailyData[], channels: string[], n: number) {
+  return [...data]
+    .map(d => ({
+      date: d.date,
+      total: getDayTotalSales(d, channels),
+      views: d.views || 0,
+      channels: Object.fromEntries(channels.map(ch => [ch, (d[ch] as number) || 0])),
+    }))
+    .filter(d => d.total > 0)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, n);
+}
 
-**方法2: 再生数トップ5日**
-- 当期間で再生数が最も高い日トップ5を抽出
-- それぞれの日付・再生数・その日の全モール売上を記載
+function getTopViewDays(data: DailyData[], channels: string[], n: number) {
+  return [...data]
+    .map(d => ({
+      date: d.date,
+      views: d.views || 0,
+      total: getDayTotalSales(d, channels),
+      channels: Object.fromEntries(channels.map(ch => [ch, (d[ch] as number) || 0])),
+    }))
+    .filter(d => d.views > 0)
+    .sort((a, b) => b.views - a.views)
+    .slice(0, n);
+}
 
-**方法3: 移動平均バズ日**
-- 各日について直近7日間の平均再生数を算出
-- 平均の2倍以上の日を抽出
+function getMovingAvgSpikeDays(data: DailyData[], windowDays: number = 7, multiplier: number = 2) {
+  const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date));
+  const spikes: { date: string; views: number; movingAvg: number; ratio: number }[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const views = sorted[i].views || 0;
+    if (views === 0) continue;
+    const start = Math.max(0, i - windowDays);
+    const window = sorted.slice(start, i);
+    if (window.length < 3) continue;
+    const avg = window.reduce((s, d) => s + (d.views || 0), 0) / window.length;
+    if (avg > 0 && views >= avg * multiplier) {
+      spikes.push({ date: sorted[i].date, views, movingAvg: Math.round(avg), ratio: Math.round((views / avg) * 10) / 10 });
+    }
+  }
+  return spikes;
+}
 
-**和集合をすべて「注目日」として、各日について分析:**
-- 当日の再生数と各モール売上の数値
-- 前1〜3日と当日〜+3日の売上の動き（数値で）
-- SNSが売上に効いた可能性の評価
+// セール期間中のデータを抽出
+function getDataInPeriod(data: DailyData[], from: string, to: string) {
+  return data.filter(d => d.date >= from && d.date <= to);
+}
 
-**重要**: 売上トップ5の日に再生数が高ければ、それは「SNSが直接売上に貢献した可能性」を示唆する強い証拠。必ず言及すること。
+// セール期間の売上を集計
+function computeSalePeriodSales(data: DailyData[], channels: string[], from: string, to: string) {
+  const inPeriod = getDataInPeriod(data, from, to);
+  return Object.fromEntries(channels.map(ch => [ch, inPeriod.reduce((s, d) => s + ((d[ch] as number) || 0), 0)]));
+}
 
-### Step 3: セール期間の特定と前回比較
-**当期間のフラグからセールを抽出**:
-- 当期間に重なる全てのセール期間を特定
-- 各セールについて以下を算出:
-  - 当回セール期間の該当モール売上合計（X月Y日〜X月Y日）
-  - **historicalDataから同名セールの前回出現を検索**
-  - 前回セール期間の該当モール売上合計（前回 X月Y日〜X月Y日）
-  - 差分（金額・%）
-- 過去90日内に該当セールがなければ「過去90日内に該当セールなし」と明記
-- **必ず日付付きで記載**: 「前回 3/4〜3/10 のお買い物マラソン: ¥XXX → 今回 4/4〜4/10: ¥YYY（+ZZ%）」
+// 当期間のセールに対して、過去90日のフラグから同名セールを検索
+function findPreviousSale(currentSale: Flag, allFlags: Flag[]) {
+  // 当期間のセールより前で、同じnameのフラグを探す
+  const candidates = allFlags
+    .filter(f => f.name === currentSale.name && f.date < currentSale.date)
+    .sort((a, b) => b.date.localeCompare(a.date));
+  return candidates[0] || null;
+}
 
-### Step 4: 通常期 vs セール期の比較
-- セール期間を除外した通常期の1日平均売上
-- セール期間中の1日平均売上
-- 比率を算出
+// セール期間の前後 N 日の売上から、SNS効果を計算
+function computeFactsForSale(allData: DailyData[], channels: string[], sale: Flag) {
+  const start = sale.date;
+  const end = sale.endDate || sale.date;
+  const inPeriod = getDataInPeriod(allData, start, end);
+  const channelTotals = computeSalePeriodSales(allData, channels, start, end);
+  const totalSales = Object.values(channelTotals).reduce((s, v) => s + v, 0);
+  const viewsTotal = inPeriod.reduce((s, d) => s + (d.views || 0), 0);
+  return { start, end, days: inPeriod.length, channelTotals, totalSales, viewsTotal };
+}
 
----
+// 通常期 vs セール期の比較
+function computePeriodComparison(data: DailyData[], channels: string[], saleDateRanges: { start: string; end: string }[]) {
+  const isInSale = (date: string) => saleDateRanges.some(r => date >= r.start && date <= r.end);
+  const saleData = data.filter(d => isInSale(d.date));
+  const normalData = data.filter(d => !isInSale(d.date));
 
-## 出力形式（マークダウン）
+  const saleTotal = saleData.reduce((s, d) => s + getDayTotalSales(d, channels), 0);
+  const normalTotal = normalData.reduce((s, d) => s + getDayTotalSales(d, channels), 0);
 
-### 1. サマリー
-3〜5行。各モール売上合計・再生数合計・注目すべき事実を数値で。最も売上が高かった日と、それが何によるものかを必ず1行で言及。
+  return {
+    saleDays: saleData.length,
+    saleTotal,
+    saleAvgPerDay: saleData.length > 0 ? Math.round(saleTotal / saleData.length) : 0,
+    normalDays: normalData.length,
+    normalTotal,
+    normalAvgPerDay: normalData.length > 0 ? Math.round(normalTotal / normalData.length) : 0,
+  };
+}
 
-### 2. 注目日の分析
-Step 2で特定した注目日について、表または箇条書きで詳細を記載:
-- 売上トップ5日（日付・売上・再生数）
-- 再生数トップ5日（日付・再生数・売上）
-- それぞれの日について「SNSが効いたか」の判定
+// =====================================================================
+// 全ての事実を計算してテキスト化
+// =====================================================================
 
-### 3. Amazon分析
-- 期間売上合計、1日平均、売上が0の日数
-- セール期間がある場合: 「今回 X月Y日〜X月Y日: ¥AAA vs 前回 X月Y日〜X月Y日: ¥BBB（+CC%）」
-- 注目日のうちAmazon売上が高かった日と再生数の関係
+function computeAllFacts(currentDailyData: DailyData[], historicalDailyData: DailyData[], flags: Flag[], currentStart: string, currentEnd: string) {
+  const channels = getChannelKeys(currentDailyData);
+  const allData = [...historicalDailyData, ...currentDailyData];
 
-### 4. 楽天分析
-- 期間売上合計、1日平均、売上が0の日数
-- セール期間がある場合: 「今回 X月Y日〜X月Y日 のマラソン: ¥AAA vs 前回 X月Y日〜X月Y日 のマラソン: ¥BBB（+CC%）」
-- 注目日のうち楽天売上が高かった日と再生数の関係
+  // 1. 当期間の基本統計
+  const currentChannelStats = computeChannelStats(currentDailyData, channels);
+  const currentViewStats = computeViewStats(currentDailyData);
 
-### 5. Qoo10分析
-- 期間売上合計、1日平均、売上が0の日数
-- セール期間がある場合: 「今回 X月Y日〜X月Y日 のメガ割: ¥AAA vs 前回 X月Y日〜X月Y日 のメガ割: ¥BBB（+CC%）」
-- 注目日のうちQoo10売上が高かった日と再生数の関係
+  // 2. 売上トップ5日と再生数トップ5日
+  const topSalesDays = getTopSalesDays(currentDailyData, channels, 5);
+  const topViewDays = getTopViewDays(currentDailyData, channels, 5);
+  const spikeDays = getMovingAvgSpikeDays(currentDailyData);
 
-### 6. ファインディングスと提言
-- SNSが売上に効いた/効かなかった、の結論を数値根拠で
-- **最も売上に貢献した日とその理由**（注目日の分析から導出）
-- 今後のSNS運用への具体的提言（投稿タイミング・頻度）
+  // 3. 注目日（和集合）
+  const attentionDates = new Set([
+    ...topSalesDays.map(d => d.date),
+    ...topViewDays.map(d => d.date),
+    ...spikeDays.map(d => d.date),
+  ]);
 
-※データがないモールはスキップ。その他チャネル（自社サイト、Yahoo、店舗等）がある場合は個別に言及。
-※前回セールのデータが提供データ内にない場合は「過去90日内に該当セールなし」と明記。`;
+  // 4. 各注目日の詳細（前後3日の売上トレンドも含む）
+  const sortedData = [...currentDailyData].sort((a, b) => a.date.localeCompare(b.date));
+  const dateIndexMap = new Map(sortedData.map((d, i) => [d.date, i]));
+  const attentionDayDetails = Array.from(attentionDates).sort().map(date => {
+    const idx = dateIndexMap.get(date) ?? -1;
+    const day = sortedData[idx];
+    if (!day) return null;
+    const prev3 = sortedData.slice(Math.max(0, idx - 3), idx).map(d => ({ date: d.date, total: getDayTotalSales(d, channels), views: d.views || 0 }));
+    const next3 = sortedData.slice(idx + 1, idx + 4).map(d => ({ date: d.date, total: getDayTotalSales(d, channels), views: d.views || 0 }));
+    return {
+      date,
+      views: day.views || 0,
+      totalSales: getDayTotalSales(day, channels),
+      channels: Object.fromEntries(channels.map(ch => [ch, (day[ch] as number) || 0])),
+      prev3DaysAvgSales: prev3.length > 0 ? Math.round(prev3.reduce((s, d) => s + d.total, 0) / prev3.length) : 0,
+      next3DaysAvgSales: next3.length > 0 ? Math.round(next3.reduce((s, d) => s + d.total, 0) / next3.length) : 0,
+    };
+  }).filter((d): d is NonNullable<typeof d> => d !== null);
+
+  // 5. 当期間のセール期間と前回セール比較
+  const currentSales = flags.filter(f => f.date <= currentEnd && (f.endDate || f.date) >= currentStart);
+  const saleComparisons = currentSales.map(sale => {
+    const current = computeFactsForSale(allData, channels, sale);
+    const prev = findPreviousSale(sale, flags);
+    const previous = prev ? computeFactsForSale(allData, channels, prev) : null;
+    return { saleName: sale.name, mall: sale.mall || "", current, previous };
+  });
+
+  // 6. 通常期 vs セール期
+  const saleRanges = currentSales.map(s => ({ start: s.date, end: s.endDate || s.date }));
+  const periodComparison = computePeriodComparison(currentDailyData, channels, saleRanges);
+
+  return {
+    channels,
+    currentChannelStats,
+    currentViewStats,
+    topSalesDays,
+    topViewDays,
+    spikeDays,
+    attentionDayDetails,
+    saleComparisons,
+    periodComparison,
+  };
+}
+
+// 計算結果をマークダウンの「事実シート」として整形
+function factsToMarkdown(facts: ReturnType<typeof computeAllFacts>, productName: string, currentStart: string, currentEnd: string) {
+  const lines: string[] = [];
+  lines.push(`# 計算済みファクトシート`);
+  lines.push(``);
+  lines.push(`商品: ${productName}`);
+  lines.push(`期間: ${currentStart} 〜 ${currentEnd}`);
+  lines.push(``);
+
+  // チャネル別統計
+  lines.push(`## 1. チャネル別売上統計（当期間）`);
+  for (const [ch, s] of Object.entries(facts.currentChannelStats)) {
+    lines.push(`- **${ch}**: 合計 ${formatYen(s.total)} / 1日平均 ${formatYen(s.avgPerDay)} / 売上のあった日数 ${s.daysWithSales}日 / 売上0の日数 ${s.zerodays}日`);
+  }
+  lines.push(``);
+
+  // 再生数統計
+  lines.push(`## 2. 再生数統計（当期間）`);
+  lines.push(`- 合計: ${formatNum(facts.currentViewStats.totalViews)}回`);
+  lines.push(`- 1日平均: ${formatNum(facts.currentViewStats.avgPerDay)}回`);
+  lines.push(`- 再生数のあった日数: ${facts.currentViewStats.daysWithViews}日`);
+  lines.push(``);
+
+  // 売上トップ5日
+  lines.push(`## 3. 売上トップ5日（当期間）`);
+  if (facts.topSalesDays.length === 0) {
+    lines.push(`- データなし`);
+  } else {
+    facts.topSalesDays.forEach((d, i) => {
+      const chDetail = Object.entries(d.channels).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${formatYen(v)}`).join(", ");
+      lines.push(`${i + 1}. **${d.date}**: 売上合計 ${formatYen(d.total)} (${chDetail}) / 再生数 ${formatNum(d.views)}回`);
+    });
+  }
+  lines.push(``);
+
+  // 再生数トップ5日
+  lines.push(`## 4. 再生数トップ5日（当期間）`);
+  if (facts.topViewDays.length === 0) {
+    lines.push(`- データなし`);
+  } else {
+    facts.topViewDays.forEach((d, i) => {
+      const chDetail = Object.entries(d.channels).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${formatYen(v)}`).join(", ") || "売上なし";
+      lines.push(`${i + 1}. **${d.date}**: 再生数 ${formatNum(d.views)}回 / 売上合計 ${formatYen(d.total)} (${chDetail})`);
+    });
+  }
+  lines.push(``);
+
+  // 移動平均バズ日
+  lines.push(`## 5. 移動平均バズ日（直近7日平均の2倍以上）`);
+  if (facts.spikeDays.length === 0) {
+    lines.push(`- 該当なし`);
+  } else {
+    facts.spikeDays.forEach(d => {
+      lines.push(`- **${d.date}**: 再生数 ${formatNum(d.views)}回（直近7日平均 ${formatNum(d.movingAvg)}回 → ${d.ratio}倍）`);
+    });
+  }
+  lines.push(``);
+
+  // 注目日の前後トレンド
+  lines.push(`## 6. 注目日の詳細（売上トップ5 ∪ 再生数トップ5 ∪ 移動平均バズ日の和集合）`);
+  if (facts.attentionDayDetails.length === 0) {
+    lines.push(`- データなし`);
+  } else {
+    facts.attentionDayDetails.forEach(d => {
+      lines.push(`- **${d.date}**: 売上 ${formatYen(d.totalSales)} / 再生数 ${formatNum(d.views)}回 / 前3日平均売上 ${formatYen(d.prev3DaysAvgSales)} / 翌3日平均売上 ${formatYen(d.next3DaysAvgSales)}`);
+    });
+  }
+  lines.push(``);
+
+  // セール比較
+  lines.push(`## 7. セール期間と前回比較`);
+  if (facts.saleComparisons.length === 0) {
+    lines.push(`- 当期間にセールなし`);
+  } else {
+    facts.saleComparisons.forEach(s => {
+      lines.push(`### ${s.saleName}${s.mall ? `（${s.mall}）` : ""}`);
+      lines.push(`- **今回**: ${s.current.start} 〜 ${s.current.end}（${s.current.days}日間）`);
+      lines.push(`  - 売上合計: ${formatYen(s.current.totalSales)}`);
+      Object.entries(s.current.channelTotals).forEach(([ch, v]) => {
+        if ((v as number) > 0) lines.push(`  - ${ch}: ${formatYen(v as number)}`);
+      });
+      lines.push(`  - 期間内再生数合計: ${formatNum(s.current.viewsTotal)}回`);
+      if (s.previous) {
+        lines.push(`- **前回**: ${s.previous.start} 〜 ${s.previous.end}（${s.previous.days}日間）`);
+        lines.push(`  - 売上合計: ${formatYen(s.previous.totalSales)}`);
+        Object.entries(s.previous.channelTotals).forEach(([ch, v]) => {
+          if ((v as number) > 0) lines.push(`  - ${ch}: ${formatYen(v as number)}`);
+        });
+        const diff = s.current.totalSales - s.previous.totalSales;
+        const pct = s.previous.totalSales > 0 ? Math.round((diff / s.previous.totalSales) * 1000) / 10 : 0;
+        lines.push(`- **差分**: ${diff >= 0 ? "+" : ""}${formatYen(diff)}（${diff >= 0 ? "+" : ""}${pct}%）`);
+      } else {
+        lines.push(`- **前回**: 過去90日内に該当セールなし`);
+      }
+    });
+  }
+  lines.push(``);
+
+  // 通常期 vs セール期
+  lines.push(`## 8. 通常期 vs セール期の比較`);
+  lines.push(`- セール期間: ${facts.periodComparison.saleDays}日 / 1日平均 ${formatYen(facts.periodComparison.saleAvgPerDay)} / 合計 ${formatYen(facts.periodComparison.saleTotal)}`);
+  lines.push(`- 通常期間: ${facts.periodComparison.normalDays}日 / 1日平均 ${formatYen(facts.periodComparison.normalAvgPerDay)} / 合計 ${formatYen(facts.periodComparison.normalTotal)}`);
+
+  return lines.join("\n");
+}
+
+// =====================================================================
+// プロンプト
+// =====================================================================
+
+const SYSTEM_PROMPT = `あなたはプロのECデータアナリストです。
+
+## 重要な制約
+- **数値は計算済みファクトシートに記載されているものだけを使うこと。** ファクトシートに無い数字を勝手に計算したり推測したりしてはいけない。
+- ファクトシートの数値はサーバー側で正確に計算されています。これを唯一の真実として扱ってください。
+- レポート内の全ての数値は、ファクトシートからそのまま引用すること。
+
+## あなたの仕事
+ファクトシートを読み、以下のレポートを書いてください:
+
+1. **サマリー**（3〜5行）: 期間全体の概況
+2. **注目日の分析**: ファクトシートの「注目日」セクションから、特に重要な日を取り上げ、SNSが売上に効いた可能性を考察
+3. **モール別分析（Amazon、楽天、Qoo10、その他データがあるチャネル）**: 各モールの売上推移と、セール期間がある場合は前回比較を引用
+4. **ファインディングスと提言**: SNSが売上に効いた/効かなかったの結論、最も売上に貢献した日とその理由、今後のSNS運用への提言
+
+## 注意事項
+- 売上トップ5日の中に再生数が高い日があれば、SNSが売上に貢献した強い証拠として言及すること
+- 売上0の日が多い場合は「売上なし」と正直に書くこと
+- 前回セール比較は必ずファクトシートの「### XXX」セクションから日付付きで引用すること
+- 推測や予想を語るときは「〜と考えられる」「〜の可能性がある」と明示`;
+
+// =====================================================================
+// API ハンドラ
+// =====================================================================
 
 export async function POST(req: NextRequest) {
   try {
     const { currentPeriod, historicalData, flagsData, productName } = await req.json();
 
-    // 環境変数 → Firestoreのsettingsコレクションからフォールバック
     let apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       try {
@@ -128,33 +373,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "OpenAI APIキーが設定されていません。" }, { status: 500 });
     }
 
+    // ===== サーバー側で全ての数値を事前計算 =====
+    const facts = computeAllFacts(
+      currentPeriod.dailyData,
+      historicalData.dailyData,
+      flagsData,
+      currentPeriod.startDate,
+      currentPeriod.endDate
+    );
+    const factsMarkdown = factsToMarkdown(facts, productName, currentPeriod.startDate, currentPeriod.endDate);
+
     const client = new OpenAI({ apiKey });
 
-    const userMessage = `以下のデータを分析してください。
+    const userMessage = `以下の計算済みファクトシートを元に、分析レポートを作成してください。
 
-## 対象商品: ${productName}
+${factsMarkdown}
 
-## 【当期間】 ${currentPeriod.startDate} 〜 ${currentPeriod.endDate}
-日別データ（viewsが再生数、それ以外のキーはチャネル別売上額）:
-\`\`\`json
-${JSON.stringify(currentPeriod.dailyData, null, 2)}
-\`\`\`
+---
 
-## 【過去90日】 ${historicalData.startDate} 〜 ${historicalData.endDate}
-前回セール比較用の過去データ:
-\`\`\`json
-${JSON.stringify(historicalData.dailyData, null, 2)}
-\`\`\`
-
-## イベントフラグ（当期間+過去90日のセール情報）
-\`\`\`json
-${JSON.stringify(flagsData, null, 2)}
-\`\`\`
-
-【重要】
-- 過去90日間のフラグから「同名セールの前回出現」を必ず探して比較すること。
-- 前回セール比較では必ず日付（X月Y日〜X月Y日）を明記すること。
-- 当期間の売上トップ5日と再生数トップ5日を必ず特定し、両者の関係を分析すること。`;
+【厳守】上記のファクトシートに記載された数値だけを使ってレポートを書いてください。
+ファクトシートに無い数字を計算・推測してはいけません。`;
 
     const response = await client.chat.completions.create({
       model: "gpt-4o",
