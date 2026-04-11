@@ -322,7 +322,9 @@ export default function DashboardPage() {
     const prevStartStr = prevStart.toISOString().split("T")[0];
     const prevEndStr = prevEnd.toISOString().split("T")[0];
 
-    type RawRow = { date: string; channel: string; sales: number; qty: number; views?: number };
+    // 重複除外のため、(productId, date, channel) ごとに「優先度が高いソース」のデータのみ採用
+    // 優先度: unified_daily_sales > amazon_daily_sales / rakuten_daily_sales > product_sales
+    type RawRow = { productId: string; date: string; channel: string; sales: number; qty: number; views?: number; source: string };
     const rawRows: RawRow[] = [];
 
     const safeQuery = async (colName: string, productId: string) => {
@@ -342,7 +344,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ date: d.date, channel: "Amazon", sales: d.salesAmount || 0, qty: d.orderedUnits || 0 });
+                rawRows.push({ productId: product.id, date: d.date, channel: "Amazon", sales: d.salesAmount || 0, qty: d.orderedUnits || 0, source: "amazon_daily_sales" });
               }
             });
           })
@@ -352,7 +354,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ date: d.date, channel: "楽天", sales: d.salesAmount || 0, qty: d.salesCount || d.orderedUnits || 0 });
+                rawRows.push({ productId: product.id, date: d.date, channel: "楽天", sales: d.salesAmount || 0, qty: d.salesCount || d.orderedUnits || 0, source: "rakuten_daily_sales" });
               }
             });
           })
@@ -363,7 +365,7 @@ export default function DashboardPage() {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
                 const ch = d.mall === "amazon" ? "Amazon" : d.mall === "qoo10" ? "Qoo10" : d.mall === "rakuten" ? "楽天" : null;
-                if (ch) rawRows.push({ date: d.date, channel: ch, sales: d.sales || 0, qty: d.quantity || 0 });
+                if (ch) rawRows.push({ productId: product.id, date: d.date, channel: ch, sales: d.sales || 0, qty: d.quantity || 0, source: "product_sales" });
               }
             });
           })
@@ -373,7 +375,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ date: d.date, channel: d.channel, sales: d.salesAmount || 0, qty: d.quantity || 0 });
+                rawRows.push({ productId: product.id, date: d.date, channel: d.channel, sales: d.salesAmount || 0, qty: d.quantity || 0, source: "unified_daily_sales" });
               }
             });
           })
@@ -383,7 +385,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ date: d.date, channel: "__views__", sales: 0, qty: 0, views: d.views || 0 });
+                rawRows.push({ productId: product.id, date: d.date, channel: "__views__", sales: 0, qty: 0, views: d.views || 0, source: "daily_views" });
               }
             });
           })
@@ -392,13 +394,31 @@ export default function DashboardPage() {
 
       await Promise.allSettled(allPromises);
 
+      // 重複除外: (productId, date, channel) ごとに優先度が高いソースのみ残す
+      const sourcePriority: Record<string, number> = {
+        unified_daily_sales: 100,
+        amazon_daily_sales: 90,
+        rakuten_daily_sales: 90,
+        daily_views: 80,
+        product_sales: 10,
+      };
+      const dedupMap = new Map<string, RawRow>();
+      for (const row of rawRows) {
+        const key = `${row.productId}|${row.date}|${row.channel}`;
+        const existing = dedupMap.get(key);
+        if (!existing || (sourcePriority[row.source] || 0) > (sourcePriority[existing.source] || 0)) {
+          dedupMap.set(key, row);
+        }
+      }
+      const dedupedRows = Array.from(dedupMap.values());
+
       // 現在期間と前期間に分けて集計
       const aggregate = (fromDate: string, toDate: string) => {
         const data: { [date: string]: Record<string, number> } = {};
         const c = new Date(fromDate);
         const e = new Date(toDate);
         while (c <= e) { data[c.toISOString().split("T")[0]] = { totalViews: 0 }; c.setDate(c.getDate() + 1); }
-        for (const row of rawRows) {
+        for (const row of dedupedRows) {
           if (row.date < fromDate || row.date > toDate) continue;
           if (!data[row.date]) data[row.date] = { totalViews: 0 };
           if (row.channel === "__views__") {

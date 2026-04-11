@@ -1399,7 +1399,9 @@ export default function ProductsPage() {
           const chunk = rows.slice(i, i + batchSize);
 
           for (const row of chunk) {
-            const docRef = doc(collection(db, "unified_daily_sales"));
+            // 決定論的docID: productId_channel_date で重複防止
+            const docId = `${row.productId}_${row.channel}_${row.date}`;
+            const docRef = doc(db, "unified_daily_sales", docId);
             batch.set(docRef, {
               productId: row.productId,
               date: row.date,
@@ -1544,7 +1546,9 @@ export default function ProductsPage() {
           const batch = writeBatch(db);
           const chunk = rows.slice(i, i + batchSize);
           for (const row of chunk) {
-            const docRef = doc(collection(db, "daily_views"));
+            // 決定論的docID: productId_date で重複防止
+            const docId = `${selectedProductForViews}_${row.date}`;
+            const docRef = doc(db, "daily_views", docId);
             batch.set(docRef, {
               productId: selectedProductForViews,
               date: row.date,
@@ -1673,7 +1677,9 @@ export default function ProductsPage() {
           const batch = writeBatch(db);
           const chunk = rows.slice(i, i + batchSize);
           for (const row of chunk) {
-            const docRef = doc(collection(db, "unified_daily_sales"));
+            // 決定論的docID: productId_channel_date で重複防止
+            const docId = `${selectedProductForChannelSales}_${selectedChannel}_${row.date}`;
+            const docRef = doc(db, "unified_daily_sales", docId);
             batch.set(docRef, {
               productId: selectedProductForChannelSales,
               date: row.date,
