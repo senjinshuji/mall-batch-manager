@@ -1866,7 +1866,7 @@ export default function ProductsPage() {
 
   return (
     <div className="max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <Package className="w-8 h-8 text-blue-600" />
           <h1 className="text-2xl font-bold text-gray-800">商品登録</h1>
@@ -2403,12 +2403,12 @@ export default function ProductsPage() {
                   商品名
                 </th>
                 {isAdmin && <>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">SKU名</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">ブランド名</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-orange-600">Amazon</span></th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-red-600">楽天</span></th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-blue-600">Qoo10</span></th>
-                  <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">操作</th>
+                  <th className="hidden md:table-cell px-4 py-3 text-left text-sm font-semibold text-gray-700">SKU名</th>
+                  <th className="hidden md:table-cell px-4 py-3 text-left text-sm font-semibold text-gray-700">ブランド名</th>
+                  <th className="hidden md:table-cell px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-orange-600">Amazon</span></th>
+                  <th className="hidden md:table-cell px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-red-600">楽天</span></th>
+                  <th className="hidden md:table-cell px-4 py-3 text-left text-sm font-semibold text-gray-700"><span className="text-blue-600">Qoo10</span></th>
+                  <th className="hidden md:table-cell px-4 py-3 text-center text-sm font-semibold text-gray-700">操作</th>
                 </>}
                 <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
                   売上入稿
@@ -2532,9 +2532,9 @@ export default function ProductsPage() {
                           {product.productName}
                         </td>
                         {isAdmin && <>
-                          <td className="px-4 py-3 text-gray-600 text-sm">{product.skuName || "-"}</td>
-                          <td className="px-4 py-3 text-gray-600 text-sm">{product.brandName || "-"}</td>
-                          <td className="px-4 py-3">
+                          <td className="hidden md:table-cell px-4 py-3 text-gray-600 text-sm">{product.skuName || "-"}</td>
+                          <td className="hidden md:table-cell px-4 py-3 text-gray-600 text-sm">{product.brandName || "-"}</td>
+                          <td className="hidden md:table-cell px-4 py-3">
                             {product.amazonCode ? (
                               <div>
                                 <span className="text-sm font-mono text-orange-600">{product.amazonCode}</span>
@@ -2542,7 +2542,7 @@ export default function ProductsPage() {
                               </div>
                             ) : <span className="text-gray-400">-</span>}
                           </td>
-                          <td className="px-4 py-3">
+                          <td className="hidden md:table-cell px-4 py-3">
                             {product.rakutenCode ? (
                               <div>
                                 <span className="text-sm font-mono text-red-600">{product.rakutenCode}</span>
@@ -2550,7 +2550,7 @@ export default function ProductsPage() {
                               </div>
                             ) : <span className="text-gray-400">-</span>}
                           </td>
-                          <td className="px-4 py-3">
+                          <td className="hidden md:table-cell px-4 py-3">
                             {product.qoo10Code ? (
                               <div>
                                 <span className="text-sm font-mono text-blue-600">{product.qoo10Code}</span>
@@ -2558,7 +2558,7 @@ export default function ProductsPage() {
                               </div>
                             ) : <span className="text-gray-400">-</span>}
                           </td>
-                          <td className="px-4 py-3">
+                          <td className="hidden md:table-cell px-4 py-3">
                             <div className="flex justify-center gap-2">
                               <button onClick={() => handleStartEdit(product)} className="p-1 text-blue-600 hover:bg-blue-100 rounded" title="編集"><Edit2 className="w-5 h-5" /></button>
                               <button onClick={() => handleDeleteProduct(product.id)} className="p-1 text-red-600 hover:bg-red-100 rounded" title="削除"><Trash2 className="w-5 h-5" /></button>

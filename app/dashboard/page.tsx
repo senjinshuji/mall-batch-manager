@@ -1036,7 +1036,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
-                className="flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-[180px] text-sm"
+                className="flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-0 w-full sm:min-w-[180px] sm:w-auto text-sm"
               >
                 <span className={`truncate ${!selectedProduct ? "text-gray-400" : ""}`}>{selectedProduct || "商品を選択してください"}</span>
                 <ChevronDown className={`w-4 h-4 ml-2 transition-transform ${isProductDropdownOpen ? "rotate-180" : ""}`} />
@@ -1077,7 +1077,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => setIsSkuDropdownOpen(!isSkuDropdownOpen)}
-                className="flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-[160px] text-sm"
+                className="flex items-center justify-between px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-0 w-full sm:min-w-[160px] sm:w-auto text-sm"
               >
                 <span className="truncate">
                   {selectedSkus.size === 0 || isAllSkusSelected
@@ -1124,7 +1124,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="flex flex-col md:flex-row gap-6 flex-wrap">
+          <div className="flex flex-col gap-4 sm:gap-6 flex-wrap">
             {/* オンライン売上 */}
             <div>
               <label className="block text-sm font-medium text-gray-600 mb-2">オンライン</label>
@@ -1265,7 +1265,7 @@ export default function DashboardPage() {
       </div>
 
       {/* KPIカード */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow-sm p-3 text-white">
           <div className="flex items-center gap-2">
             <div className="p-2 bg-white/20 rounded-lg">
@@ -1357,7 +1357,7 @@ export default function DashboardPage() {
               </div>
             </div>
           ) : (
-            <div className="h-72 relative">
+            <div className="h-56 sm:h-72 relative">
               {/* フラグマーカー（グラフの上に重ねて表示） */}
               {showFlags && filteredFlags
                 .filter(flag => {
@@ -1543,7 +1543,7 @@ export default function DashboardPage() {
         )}
 
         {false && (
-          <div className="h-72 relative hidden">
+          <div className="h-56 sm:h-72 relative hidden">
             {/* 旧メインチャート（未使用） */}
             {showFlags && filteredFlags
               .filter(flag => {
@@ -1818,7 +1818,7 @@ export default function DashboardPage() {
 
           {aiResult && (
             <>
-              <div className="prose prose-sm max-w-none text-gray-700 max-h-[600px] overflow-y-auto">
+              <div className="prose prose-sm max-w-none text-gray-700 max-h-[400px] sm:max-h-[600px] overflow-y-auto">
                 {aiResult.split("\n").map((line, i) => {
                   if (line.startsWith("# ")) return <h1 key={i} className="text-xl font-bold text-gray-900 mt-4 mb-2">{line.slice(2)}</h1>;
                   if (line.startsWith("## ")) return <h2 key={i} className="text-lg font-bold text-gray-800 mt-4 mb-2">{line.slice(3)}</h2>;
@@ -1841,7 +1841,7 @@ export default function DashboardPage() {
                 </div>
 
                 {chatMessages.length > 0 && (
-                  <div className="space-y-3 mb-3 max-h-[400px] overflow-y-auto pr-2">
+                  <div className="space-y-3 mb-3 max-h-[250px] sm:max-h-[400px] overflow-y-auto pr-2">
                     {chatMessages.map((msg, i) => (
                       <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                         <div className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${msg.role === "user" ? "bg-purple-100 text-purple-900" : "bg-gray-100 text-gray-700"}`}>

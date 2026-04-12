@@ -439,7 +439,7 @@ export default function FlagsPage() {
           )}
         </div>
         {(isAdmin || activeTab === "product") && (
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
             {isAdmin && (
               <>
                 <button
@@ -486,7 +486,7 @@ export default function FlagsPage() {
       </p>
 
       {/* タブ */}
-      <div className="flex gap-1 mb-4 bg-gray-100 rounded-lg p-1 w-fit">
+      <div className="flex gap-1 mb-4 bg-gray-100 rounded-lg p-1 w-full sm:w-fit">
         <button
           onClick={() => setActiveTab("global")}
           className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${

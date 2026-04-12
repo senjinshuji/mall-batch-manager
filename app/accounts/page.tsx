@@ -199,7 +199,7 @@ export default function AccountsPage() {
   return (
     <div>
       {/* ヘッダー */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <UserCog className="text-blue-600" size={28} />
           <h1 className="text-2xl font-bold text-gray-800">マスター機能</h1>
@@ -414,7 +414,7 @@ export default function AccountsPage() {
                     </div>
                   </div>
                 </div>
-                <div className="flex gap-2 ml-4">
+                <div className="flex gap-2 ml-2 sm:ml-4">
                   <button
                     onClick={() => startEdit(account)}
                     className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"

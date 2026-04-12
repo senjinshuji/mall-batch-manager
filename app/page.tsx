@@ -36,7 +36,7 @@ export default function LoginPage() {
           <div className="inline-flex items-center justify-center w-16 h-16 bg-white rounded-2xl shadow-lg mb-4">
             <Store className="w-8 h-8 text-blue-600" />
           </div>
-          <h1 className="text-3xl font-bold text-white">
+          <h1 className="text-2xl sm:text-3xl font-bold text-white">
             モール一括管理くん
           </h1>
           <p className="text-blue-100 mt-2">
@@ -45,7 +45,7 @@ export default function LoginPage() {
         </div>
 
         {/* ログインカード */}
-        <div className="bg-white rounded-2xl shadow-xl p-8">
+        <div className="bg-white rounded-2xl shadow-xl p-5 sm:p-8">
           <h2 className="text-xl font-bold text-gray-800 text-center mb-6">
             ログイン
           </h2>
