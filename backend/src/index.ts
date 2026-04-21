@@ -459,6 +459,22 @@ function formatDateForFirestore(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+// 日付文字列をYYYY-MM-DD形式に正規化（YYYY/M/D, M/DD/YYYY 等に対応）
+function normalizeDateStr(d: string): string | null {
+  const cleaned = d.trim();
+  // YYYY/M/D or YYYY-M-D
+  const ymdMatch = cleaned.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+  if (ymdMatch) {
+    return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, "0")}-${ymdMatch[3].padStart(2, "0")}`;
+  }
+  // M/DD/YYYY or MM/DD/YYYY
+  const mdyMatch = cleaned.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (mdyMatch) {
+    return `${mdyMatch[3]}-${mdyMatch[1].padStart(2, "0")}-${mdyMatch[2].padStart(2, "0")}`;
+  }
+  return null;
+}
+
 // Qoo10 APIから注文データを取得（公式ドキュメント仕様）
 // ヘッダー: GiosisCertificationKey (SAK/APIキー)
 // Content-Type: application/x-www-form-urlencoded
@@ -8067,9 +8083,9 @@ app.post("/amazon/import-sales-csv/:productId", async (req: Request, res: Respon
     const batch = db.batch();
 
     for (const row of data) {
-      // 日付をパース (YYYY-MM-DD または YYYY/MM/DD 形式を想定)
-      const dateStr = row.date?.replace(/\//g, "-");
-      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      // 日付をパース (YYYY-MM-DD, YYYY/MM/DD, M/DD/YYYY 等に対応)
+      const dateStr = row.date ? normalizeDateStr(row.date) : null;
+      if (!dateStr) {
         continue;
       }
 
@@ -8328,9 +8344,9 @@ app.post("/rakuten/import-sales-csv/:productId", async (req: Request, res: Respo
     const batch = db.batch();
 
     for (const row of data) {
-      // 日付をパース (YYYY-MM-DD または YYYY/MM/DD 形式を想定)
-      const dateStr = row.date?.replace(/\//g, "-");
-      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      // 日付をパース (YYYY-MM-DD, YYYY/MM/DD, M/DD/YYYY 等に対応)
+      const dateStr = row.date ? normalizeDateStr(row.date) : null;
+      if (!dateStr) {
         continue;
       }
 
@@ -8469,8 +8485,9 @@ app.post("/qoo10/import-sales-csv/:productId", async (req: Request, res: Respons
     const batch = db.batch();
 
     for (const row of data) {
-      const dateStr = row.date?.replace(/\//g, "-");
-      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      // 日付をパース (YYYY-MM-DD, YYYY/MM/DD, M/DD/YYYY 等に対応)
+      const dateStr = row.date ? normalizeDateStr(row.date) : null;
+      if (!dateStr) {
         continue;
       }
 
