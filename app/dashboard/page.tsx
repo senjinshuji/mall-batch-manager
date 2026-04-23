@@ -330,7 +330,8 @@ export default function DashboardPage() {
     const safeQuery = async (colName: string, productId: string) => {
       try {
         return await getDocs(query(collection(db, colName), where("productId", "==", productId)));
-      } catch {
+      } catch (err) {
+        console.error(`[safeQuery] ${colName} (productId=${productId}) failed:`, err);
         return null;
       }
     };
