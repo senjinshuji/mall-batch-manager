@@ -668,6 +668,18 @@ export default function DashboardPage() {
     return 0;
   }, [selectedProduct, productSalesData]);
 
+  // 合計件数を計算（商品選択時のみ）
+  const totalCount = useMemo(() => {
+    if (!selectedProduct) return 0;
+    return productSalesData.reduce((sum, day) => {
+      let dayTotal = 0;
+      ALL_CHANNELS.forEach(ch => {
+        if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_qty`] as number) || 0;
+      });
+      return sum + dayTotal;
+    }, 0);
+  }, [selectedChannels, selectedProduct, productSalesData]);
+
   // 前期間の合計売上
   const prevTotalSales = useMemo(() => {
     if (!selectedProduct) return 0;
@@ -675,6 +687,18 @@ export default function DashboardPage() {
       let dayTotal = 0;
       ALL_CHANNELS.forEach(ch => {
         if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_sales`] as number) || 0;
+      });
+      return sum + dayTotal;
+    }, 0);
+  }, [selectedChannels, selectedProduct, prevProductSalesData]);
+
+  // 前期間の合計件数
+  const prevTotalCount = useMemo(() => {
+    if (!selectedProduct) return 0;
+    return prevProductSalesData.reduce((sum, day) => {
+      let dayTotal = 0;
+      ALL_CHANNELS.forEach(ch => {
+        if (selectedChannels[ch.key]) dayTotal += (day[`${ch.key}_qty`] as number) || 0;
       });
       return sum + dayTotal;
     }, 0);
@@ -1274,17 +1298,35 @@ export default function DashboardPage() {
               <TrendingUp size={18} />
             </div>
             <div>
-              <p className="text-blue-100 text-xs">合計売上</p>
-              <p className="text-lg font-bold">{formatCurrency(totalSales)}</p>
-              {totalSales > 0 && prevTotalSales > 0 && (() => {
-                const diff = totalSales - prevTotalSales;
-                const pct = Math.round((diff / prevTotalSales) * 100);
-                return (
-                  <p className={`text-xs ${diff >= 0 ? "text-green-200" : "text-red-200"}`}>
-                    前期比 {diff >= 0 ? "+" : ""}{formatCurrency(diff)}（{diff >= 0 ? "+" : ""}{pct}%）
-                  </p>
-                );
-              })()}
+              {displayMode === 'sales' ? (
+                <>
+                  <p className="text-blue-100 text-xs">合計売上</p>
+                  <p className="text-lg font-bold">{formatCurrency(totalSales)}</p>
+                  {totalSales > 0 && prevTotalSales > 0 && (() => {
+                    const diff = totalSales - prevTotalSales;
+                    const pct = Math.round((diff / prevTotalSales) * 100);
+                    return (
+                      <p className={`text-xs ${diff >= 0 ? "text-green-200" : "text-red-200"}`}>
+                        前期比 {diff >= 0 ? "+" : ""}{formatCurrency(diff)}（{diff >= 0 ? "+" : ""}{pct}%）
+                      </p>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  <p className="text-blue-100 text-xs">合計件数</p>
+                  <p className="text-lg font-bold">{totalCount.toLocaleString()}件</p>
+                  {totalCount > 0 && prevTotalCount > 0 && (() => {
+                    const diff = totalCount - prevTotalCount;
+                    const pct = Math.round((diff / prevTotalCount) * 100);
+                    return (
+                      <p className={`text-xs ${diff >= 0 ? "text-green-200" : "text-red-200"}`}>
+                        前期比 {diff >= 0 ? "+" : ""}{diff.toLocaleString()}件（{diff >= 0 ? "+" : ""}{pct}%）
+                      </p>
+                    );
+                  })()}
+                </>
+              )}
             </div>
           </div>
         </div>
