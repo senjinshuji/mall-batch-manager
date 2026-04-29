@@ -428,7 +428,6 @@ export default function DashboardPage() {
           } else {
             data[row.date][`${row.channel}_sales`] = (data[row.date][`${row.channel}_sales`] || 0) + row.sales;
             data[row.date][`${row.channel}_qty`] = (data[row.date][`${row.channel}_qty`] || 0) + row.qty;
-            data[row.date][`${row.channel}_order_count`] = (data[row.date][`${row.channel}_order_count`] || 0) + row.orderCount;
           }
         }
         return Object.entries(data).map(([date, d]) => ({ date, ...d } as ProductSalesData)).sort((a, b) => a.date.localeCompare(b.date));
@@ -1478,7 +1477,7 @@ export default function DashboardPage() {
                       if (active && payload && payload.length) {
                         const getVal = (key: string) => (payload.find((p: any) => p.dataKey === key)?.value as number) || 0;
                         const viewsVal = getVal('totalViews');
-                        const dataKeySuffix = displayMode === 'sales' ? '_sales' : '_order_count';
+                        const dataKeySuffix = displayMode === 'sales' ? '_sales' : '_qty';
                         return (
                           <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
                             <p className="font-semibold text-gray-700 mb-2">{label}</p>
@@ -1504,7 +1503,7 @@ export default function DashboardPage() {
                   />
                   {/* チャネル別売上/件数（積み上げ棒グラフ） */}
                   {ALL_CHANNELS.map((ch, idx) => {
-                    const dataKey = displayMode === 'sales' ? `${ch.key}_sales` : `${ch.key}_order_count`;
+                    const dataKey = displayMode === 'sales' ? `${ch.key}_sales` : `${ch.key}_qty`;
                     if (!selectedChannels[ch.key]) return null;
                     if (!productSalesData.some(d => (d[dataKey] as number) > 0)) return null;
                     return (
@@ -1538,7 +1537,7 @@ export default function DashboardPage() {
               <div className="flex flex-wrap justify-center gap-4 mt-2 text-sm">
                 {ALL_CHANNELS.map(ch => {
                   if (!selectedChannels[ch.key]) return null;
-                  const legendKey = displayMode === 'sales' ? `${ch.key}_sales` : `${ch.key}_order_count`;
+                  const legendKey = displayMode === 'sales' ? `${ch.key}_sales` : `${ch.key}_qty`;
                   if (!productSalesData.some(d => ((d[legendKey] as number) || 0) > 0)) return null;
                   return (
                     <div key={ch.key} className="flex items-center gap-1">
