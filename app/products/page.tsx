@@ -1415,11 +1415,26 @@ export default function ProductsPage() {
           return;
         }
 
+        // 同一(productId, channel, date)の複数行を合算（同ブランド内の複数SKUを集計）
+        const aggMap = new Map<string, typeof rows[number]>();
+        for (const r of rows) {
+          const key = `${r.productId}|${r.channel}|${r.date}`;
+          const existing = aggMap.get(key);
+          if (existing) {
+            existing.orderCount += r.orderCount;
+            existing.quantity += r.quantity;
+            existing.salesAmount += r.salesAmount;
+          } else {
+            aggMap.set(key, { ...r });
+          }
+        }
+        const aggregatedRows = Array.from(aggMap.values());
+
         // Firestoreにバッチ書き込み（500件ずつ）
         const batchSize = 400;
-        for (let i = 0; i < rows.length; i += batchSize) {
+        for (let i = 0; i < aggregatedRows.length; i += batchSize) {
           const batch = writeBatch(db);
-          const chunk = rows.slice(i, i + batchSize);
+          const chunk = aggregatedRows.slice(i, i + batchSize);
 
           for (const row of chunk) {
             // 決定論的docID: productId_channel_date で重複防止
@@ -1441,7 +1456,7 @@ export default function ProductsPage() {
           savedCount += chunk.length;
         }
 
-        let msg = `${savedCount}件のデータを保存しました（${Array.from(matchedProducts).join(", ")}）`;
+        let msg = `${savedCount}件（${rows.length}行を集計）のデータを保存しました（${Array.from(matchedProducts).join(", ")}）`;
         if (unmatchedBrands.size > 0) {
           msg += `\n未マッチのブランド: ${Array.from(unmatchedBrands).join(", ")}`;
         }
