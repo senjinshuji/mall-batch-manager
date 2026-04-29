@@ -1343,11 +1343,14 @@ export default function ProductsPage() {
         const dateIdx = header.findIndex((h) => h === "order_date" || h === "date" || h === "日付");
         const storeIdx = header.findIndex((h) => h === "store_name" || h === "store" || h === "チャネル" || h === "モール");
         const brandIdx = header.findIndex((h) => h === "brand" || h === "ブランド");
+        const itemCodeIdx = header.findIndex((h) => h === "item_code");
+        const itemNameIdx = header.findIndex((h) => h === "item_name");
+        const orderCountIdx = header.findIndex((h) => h === "order_count");
         const qtyIdx = header.findIndex((h) => h === "quantity" || h === "数量");
         const salesIdx = header.findIndex((h) => h === "sales_amount" || h === "売上" || h === "売上額");
 
         if (dateIdx === -1 || storeIdx === -1 || brandIdx === -1 || qtyIdx === -1 || salesIdx === -1) {
-          setUnifiedError("CSVヘッダーが不正です。必要な列: order_date, store_name, brand, quantity, sales_amount");
+          setUnifiedError("CSVヘッダーが不正です。必要な列: order_date, store_name, brand, item_code, item_name, order_count, quantity, sales_amount");
           setUnifiedUploading(false);
           return;
         }
@@ -1370,7 +1373,7 @@ export default function ProductsPage() {
         const matchedProducts = new Set<string>();
         let savedCount = 0;
 
-        const rows: { date: string; channel: string; productId: string; productName: string; quantity: number; salesAmount: number }[] = [];
+        const rows: { date: string; channel: string; productId: string; productName: string; orderCount: number; quantity: number; salesAmount: number }[] = [];
 
         for (let i = 1; i < lines.length; i++) {
           const values = lines[i].split(",").map((v) => v.trim());
@@ -1379,17 +1382,28 @@ export default function ProductsPage() {
           const date = values[dateIdx];
           const store = values[storeIdx];
           const brand = values[brandIdx];
+          const itemName = itemNameIdx !== -1 ? values[itemNameIdx] || "" : "";
+          const orderCount = orderCountIdx !== -1 ? parseInt(values[orderCountIdx]) || 0 : 0;
           const quantity = parseInt(values[qtyIdx]) || 0;
           const salesAmount = parseInt(values[salesIdx]) || 0;
 
-          const matched = brandMap.get(brand.toLowerCase());
+          // hirituブランドは item_name で商品を振り分け
+          let matched = brandMap.get(brand.toLowerCase());
+          if (brand.toLowerCase() === "hiritu" && itemName) {
+            if (itemName.includes("柔軟剤")) {
+              matched = brandMap.get("hiritu柔軟剤");
+            } else if (itemName.includes("スクラブ")) {
+              matched = brandMap.get("hirituスクラブ");
+            }
+          }
+
           if (!matched) {
             unmatchedBrands.add(brand);
             continue;
           }
 
           matchedProducts.add(matched.productName);
-          rows.push({ date, channel: store, productId: matched.productId, productName: matched.productName, quantity, salesAmount });
+          rows.push({ date, channel: store, productId: matched.productId, productName: matched.productName, orderCount, quantity, salesAmount });
         }
 
         if (rows.length === 0) {
@@ -1416,6 +1430,7 @@ export default function ProductsPage() {
               date: row.date,
               channel: row.channel,
               productName: row.productName,
+              orderCount: row.orderCount,
               quantity: row.quantity,
               salesAmount: row.salesAmount,
               createdAt: Timestamp.now(),

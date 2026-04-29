@@ -145,6 +145,7 @@ export default function DashboardPage() {
     Object.fromEntries(ALL_CHANNELS.map(c => [c.key, DEFAULT_ON_CHANNELS.has(c.key)]))
   );
   const [showViews, setShowViews] = useState(true);
+  const [displayMode, setDisplayMode] = useState<'sales' | 'count'>('sales');
   // 旧互換エイリアス
   const selectedMalls = { amazon: selectedChannels["Amazon"], rakuten: selectedChannels["楽天"], qoo10: selectedChannels["Qoo10"] };
   const [showAdCost, setShowAdCost] = useState({
@@ -324,7 +325,7 @@ export default function DashboardPage() {
 
     // 重複除外のため、(productId, date, channel) ごとに「優先度が高いソース」のデータのみ採用
     // 優先度: unified_daily_sales > amazon_daily_sales / rakuten_daily_sales > product_sales
-    type RawRow = { productId: string; date: string; channel: string; sales: number; qty: number; views?: number; source: string };
+    type RawRow = { productId: string; date: string; channel: string; sales: number; qty: number; orderCount: number; views?: number; source: string };
     const rawRows: RawRow[] = [];
 
     const safeQuery = async (colName: string, productId: string) => {
@@ -345,7 +346,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ productId: product.id, date: d.date, channel: "Amazon", sales: d.salesAmount || 0, qty: d.orderedUnits || 0, source: "amazon_daily_sales" });
+                rawRows.push({ productId: product.id, date: d.date, channel: "Amazon", sales: d.salesAmount || 0, qty: d.orderedUnits || 0, orderCount: d.orderCount || 0, source: "amazon_daily_sales" });
               }
             });
           })
@@ -355,7 +356,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ productId: product.id, date: d.date, channel: "楽天", sales: d.salesAmount || 0, qty: d.salesCount || d.orderedUnits || 0, source: "rakuten_daily_sales" });
+                rawRows.push({ productId: product.id, date: d.date, channel: "楽天", sales: d.salesAmount || 0, qty: d.salesCount || d.orderedUnits || 0, orderCount: d.orderCount || 0, source: "rakuten_daily_sales" });
               }
             });
           })
@@ -366,7 +367,7 @@ export default function DashboardPage() {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
                 const ch = d.mall === "amazon" ? "Amazon" : d.mall === "qoo10" ? "Qoo10" : d.mall === "rakuten" ? "楽天" : null;
-                if (ch) rawRows.push({ productId: product.id, date: d.date, channel: ch, sales: d.sales || 0, qty: d.quantity || 0, source: "product_sales" });
+                if (ch) rawRows.push({ productId: product.id, date: d.date, channel: ch, sales: d.sales || 0, qty: d.quantity || 0, orderCount: d.orderCount || 0, source: "product_sales" });
               }
             });
           })
@@ -376,7 +377,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ productId: product.id, date: d.date, channel: d.channel, sales: d.salesAmount || 0, qty: d.quantity || 0, source: "unified_daily_sales" });
+                rawRows.push({ productId: product.id, date: d.date, channel: d.channel, sales: d.salesAmount || 0, qty: d.quantity || 0, orderCount: d.orderCount || 0, source: "unified_daily_sales" });
               }
             });
           })
@@ -386,7 +387,7 @@ export default function DashboardPage() {
             snap?.docs.forEach(doc => {
               const d = doc.data();
               if (d.date >= prevStartStr && d.date <= endDate) {
-                rawRows.push({ productId: product.id, date: d.date, channel: "__views__", sales: 0, qty: 0, views: d.views || 0, source: "daily_views" });
+                rawRows.push({ productId: product.id, date: d.date, channel: "__views__", sales: 0, qty: 0, orderCount: 0, views: d.views || 0, source: "daily_views" });
               }
             });
           })
@@ -427,6 +428,7 @@ export default function DashboardPage() {
           } else {
             data[row.date][`${row.channel}_sales`] = (data[row.date][`${row.channel}_sales`] || 0) + row.sales;
             data[row.date][`${row.channel}_qty`] = (data[row.date][`${row.channel}_qty`] || 0) + row.qty;
+            data[row.date][`${row.channel}_order_count`] = (data[row.date][`${row.channel}_order_count`] || 0) + row.orderCount;
           }
         }
         return Object.entries(data).map(([date, d]) => ({ date, ...d } as ProductSalesData)).sort((a, b) => a.date.localeCompare(b.date));
@@ -1335,12 +1337,28 @@ export default function DashboardPage() {
 
       {/* グラフエリア */}
       <div className="bg-white rounded-xl shadow-sm p-4">
-        <h2 className="text-base font-semibold text-gray-700 mb-2">
-          {selectedProduct ? `${selectedProductDisplayName} - 日次売上推移` : "日次売上・広告費推移"}
-          {productLoading && (
-            <RefreshCw className="inline-block ml-2 w-4 h-4 animate-spin text-blue-500" />
-          )}
-        </h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-base font-semibold text-gray-700">
+            {selectedProduct ? `${selectedProductDisplayName} - 日次${displayMode === 'sales' ? '売上' : '件数'}推移` : "日次売上・広告費推移"}
+            {productLoading && (
+              <RefreshCw className="inline-block ml-2 w-4 h-4 animate-spin text-blue-500" />
+            )}
+          </h2>
+          <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => setDisplayMode('sales')}
+              className={`px-3 py-1 text-sm rounded-md font-medium transition-colors ${displayMode === 'sales' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              金額
+            </button>
+            <button
+              onClick={() => setDisplayMode('count')}
+              className={`px-3 py-1 text-sm rounded-md font-medium transition-colors ${displayMode === 'count' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              件数
+            </button>
+          </div>
+        </div>
 
         {/* 商品選択時は商品別グラフを表示 */}
         {selectedProduct ? (
@@ -1433,7 +1451,9 @@ export default function DashboardPage() {
                     yAxisId="sales"
                     tick={{ fill: "#6b7280", fontSize: 12 }}
                     tickFormatter={(value) =>
-                      `¥${(value / 10000).toFixed(0)}万`
+                      displayMode === 'sales'
+                        ? `¥${(value / 10000).toFixed(0)}万`
+                        : value.toLocaleString()
                     }
                     domain={[0, 'dataMax']}
                     type="number"
@@ -1458,15 +1478,16 @@ export default function DashboardPage() {
                       if (active && payload && payload.length) {
                         const getVal = (key: string) => (payload.find((p: any) => p.dataKey === key)?.value as number) || 0;
                         const viewsVal = getVal('totalViews');
+                        const dataKeySuffix = displayMode === 'sales' ? '_sales' : '_order_count';
                         return (
                           <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
                             <p className="font-semibold text-gray-700 mb-2">{label}</p>
                             {ALL_CHANNELS.map(ch => {
-                              const val = getVal(`${ch.key}_sales`);
+                              const val = getVal(`${ch.key}${dataKeySuffix}`);
                               if (!selectedChannels[ch.key] || val <= 0) return null;
                               return (
                                 <p key={ch.key} style={{ color: ch.color }} className="text-sm">
-                                  {ch.label}: {formatCurrency(val)}
+                                  {ch.label}: {displayMode === 'sales' ? formatCurrency(val) : `${val.toLocaleString()}件`}
                                 </p>
                               );
                             })}
@@ -1481,16 +1502,16 @@ export default function DashboardPage() {
                       return null;
                     }}
                   />
-                  {/* チャネル別売上（積み上げ棒グラフ） */}
+                  {/* チャネル別売上/件数（積み上げ棒グラフ） */}
                   {ALL_CHANNELS.map((ch, idx) => {
-                    const salesKey = `${ch.key}_sales`;
+                    const dataKey = displayMode === 'sales' ? `${ch.key}_sales` : `${ch.key}_order_count`;
                     if (!selectedChannels[ch.key]) return null;
-                    if (!productSalesData.some(d => (d[salesKey] as number) > 0)) return null;
+                    if (!productSalesData.some(d => (d[dataKey] as number) > 0)) return null;
                     return (
                       <Bar
                         key={ch.key}
                         yAxisId="sales"
-                        dataKey={salesKey}
+                        dataKey={dataKey}
                         stackId="productSales"
                         fill={ch.color}
                         barSize={30}
@@ -1517,7 +1538,8 @@ export default function DashboardPage() {
               <div className="flex flex-wrap justify-center gap-4 mt-2 text-sm">
                 {ALL_CHANNELS.map(ch => {
                   if (!selectedChannels[ch.key]) return null;
-                  if (!productSalesData.some(d => ((d[`${ch.key}_sales`] as number) || 0) > 0)) return null;
+                  const legendKey = displayMode === 'sales' ? `${ch.key}_sales` : `${ch.key}_order_count`;
+                  if (!productSalesData.some(d => ((d[legendKey] as number) || 0) > 0)) return null;
                   return (
                     <div key={ch.key} className="flex items-center gap-1">
                       <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: ch.color }} />
