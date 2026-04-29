@@ -2019,7 +2019,7 @@ export default function ProductsPage() {
 
           <div className="mt-4 bg-gray-50 p-4 rounded-lg text-sm text-gray-600">
             <p className="font-medium mb-1">CSVフォーマット:</p>
-            <p className="text-xs font-mono">order_date, store_name, brand, quantity, sales_amount</p>
+            <p className="text-xs font-mono">order_date, store_name, brand, item_code, item_name, order_count, quantity, sales_amount</p>
             <p className="text-xs mt-1 text-gray-400">store_name: Amazon, 楽天, Qoo10, 自社サイト, アインズ&トルペ 等</p>
             <p className="text-xs text-gray-400">brand: 商品に設定した「ブランド名」と一致させてください</p>
           </div>
